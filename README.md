@@ -23,7 +23,7 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
    ffmpeg -version
    ```
 
-💡 **Troubleshooting**: If you encounter any issues, copy the error message paste it in ChatGPT and ask for troubleshooting steps.
+💡 **Troubleshooting**: If you encounter any issues, copy the error message and search for solutions online or ask for help in relevant forums.
 
 ---
 
@@ -36,24 +36,21 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 ### 2. Open PowerShell and Navigate to the Script's Directory
 - PowerShell is required — other terminals won't work as expected
 - Use `cd` command to navigate to your script folder:
-  
   ```powershell
   cd "C:\path\to\your\script\folder"
   ```
 
 ### 3. Run the Script
- You can run it in one of two ways:
+You can run it in one of two ways:
 
- **Option A: Command Line**
- ```powershell
+**Option A: Command Line**
+```powershell
 .\Video-Audio-Tool.ps1
 ```
- **OR**
 
-
-   **Option B: Right-Click Method (Easier)**
-   - Right-click the script file
-   - Select "Run with PowerShell"
+**Option B: Right-Click Method**
+- Right-click the script file
+- Select "Run with PowerShell"
 
 ---
 
@@ -81,3 +78,11 @@ If you encounter issues:
 2. Ensure you have `.mp4` files in the same directory as the script
 3. Run PowerShell as Administrator if you get permission errors
 4. Copy any error messages for troubleshooting
+
+---
+
+## ⚠️ Disclaimer
+
+This tool is a user-friendly wrapper/interface for existing software. I do not own, develop, or maintain FFmpeg or any of the underlying technologies used in this script. FFmpeg is developed and maintained by the FFmpeg team and contributors. This project simply aims to make the process of using FFmpeg more accessible and user-friendly through a PowerShell interface.
+
+All credit for the core functionality goes to the respective developers and maintainers of FFmpeg and related technologies.
