@@ -1,28 +1,83 @@
-# How to install ffmpeg (ignore if already installed) 
+# 🎥 Video Audio Tool – Quick Start Guide
 
-1. Open PowerShell as administrator (right click then choose "Run as Administrator")
-2. paste this: <winget install Gyan.FFmpeg>
-3. Restart PowerShell (might not be necessary)
+A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress videos, extract audio, and more – all from the comfort of your terminal!
 
-Verify installation by typing: ffmpeg -version
+---
+
+## ⚙️ Installation – `ffmpeg` (Skip if Already Installed)
+
+1. **Open PowerShell as Administrator**  
+   Right-click PowerShell and select **"Run as Administrator"**
+
+2. **Install `ffmpeg` via Winget**  
+   Paste the following command into PowerShell:
+   ```powershell
+   winget install Gyan.FFmpeg
+   ```
+
+3. **Restart PowerShell** (optional)
+
+4. **Verify Installation**  
+   Run this command to check if ffmpeg is correctly installed:
+   ```powershell
+   ffmpeg -version
+   ```
+
+💡 **Troubleshooting**: If you encounter any issues, copy the error message paste it in ChatGPT and ask for troubleshooting steps.
+
+---
+
+## ▶️ Usage Instructions
+
+### 1. Prepare Your Folder
+- Make sure the script (`Video-Audio-Tool.ps1`) is in the same folder as at least one `.mp4` file
+- ⚠️ **Important**: The script will not run if no `.mp4` files are present
+
+### 2. Open PowerShell and Navigate to the Script's Directory
+- PowerShell is required — other terminals won't work as expected
+- Use `cd` command to navigate to your script folder:
+  
+  ```powershell
+  cd "C:\path\to\your\script\folder"
+  ```
+
+### 3. Run the Script
+ You can run it in one of two ways:
+
+ **Option A: Command Line**
+ ```powershell
+.\Video-Audio-Tool.ps1
+```
+ **OR**
 
 
-Should any error occur, paste it into GPT with your prompt and try to reason your way from there!
+   **Option B: Right-Click Method (Easier)**
+   - Right-click the script file
+   - Select "Run with PowerShell"
 
-------------------------------------------------------------------------------------------------------
+---
 
+## 🔧 Features
 
-# How to use:
+- Process multiple `.mp4` files in batch
+- Video compression and optimization
+- Audio extraction from video files
+- Easy-to-use PowerShell interface
 
-Make sure there is at least 1 .mp4 file in the same directory of the script, if there are no files, it won't work
+---
 
-Open PowerShell and navigate to this folder (POWERSHELL IS A MUST).
- 
-Run the script: .\Video-Audio-Tool.ps1
+## 📋 Requirements
 
-OR
+- Windows with PowerShell
+- FFmpeg installed
+- At least one `.mp4` file in the script directory
 
-Right click the script, and then click "Run With PowerShell"
+---
 
+## 🆘 Support
 
-------------------------------------------------------------------------------------------------------
+If you encounter issues:
+1. Check that FFmpeg is properly installed (`ffmpeg -version`)
+2. Ensure you have `.mp4` files in the same directory as the script
+3. Run PowerShell as Administrator if you get permission errors
+4. Copy any error messages for troubleshooting
