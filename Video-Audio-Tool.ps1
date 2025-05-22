@@ -121,9 +121,11 @@ function Show-FilmStripBorder {
         
         # Simple animation that doesn't use cursor positioning
         for ($i = 0; $i -lt 5; $i++) {
+            # Write each Processing... line on a new line
             Write-Host "Processing..." -ForegroundColor Cyan
             Start-Sleep -Milliseconds 200
-            Write-Host "`r           " -NoNewline
+            # Remove the overwriting line
+            # Write-Host "`r           " -NoNewline
             Start-Sleep -Milliseconds 200
         }
     }
