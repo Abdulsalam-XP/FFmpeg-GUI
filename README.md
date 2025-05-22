@@ -1,7 +1,7 @@
 # How to install ffmpeg (ignore if already installed) 
 
 1. Open PowerShell as administrator (right click then choose "Run as Administrator")
-2. paste this: winget install Gyan.FFmpeg
+2. paste this: <winget install Gyan.FFmpeg>
 3. Restart PowerShell (might not be necessary)
 
 Verify installation by typing: ffmpeg -version
