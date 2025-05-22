@@ -193,9 +193,29 @@ function Show-ProgressBar {
     $completedWidth = [math]::Floor($progressBarWidth * $PercentComplete / 100)
     $remainingWidth = $progressBarWidth - $completedWidth
     
-    $progressBar = "[" + ("#" * $completedWidth) + ("-" * $remainingWidth) + "]"
+    Write-Host "`r[" -NoNewline
     
-    Write-Host "`r$progressBar $PercentComplete% Complete: $Status                     " -NoNewline -ForegroundColor Green
+    # Gradient effect - Red to Yellow to Green
+    for ($i = 0; $i -lt $completedWidth; $i++) {
+        # Calculate color based on position in the progress bar
+        if ($i -lt ($progressBarWidth * 0.33)) {
+            # First third - Red
+            Write-Host "#" -NoNewline -ForegroundColor Red
+        } 
+        elseif ($i -lt ($progressBarWidth * 0.66)) {
+            # Middle third - Yellow
+            Write-Host "#" -NoNewline -ForegroundColor Yellow
+        } 
+        else {
+            # Last third - Green
+            Write-Host "#" -NoNewline -ForegroundColor Green
+        }
+    }
+    
+    # Remaining progress bar (empty part)
+    Write-Host ("-" * $remainingWidth) -NoNewline -ForegroundColor DarkGray
+    
+    Write-Host "] $PercentComplete% Complete: $Status                     " -NoNewline -ForegroundColor White
 }
 
 function Show-CompletionAnimation {
@@ -208,6 +228,7 @@ function Show-CompletionAnimation {
         Write-Host "`r$frame Processing... " -NoNewline -ForegroundColor $color
         Start-Sleep -Milliseconds 100
     }
+    
     Write-Host "`r* Completed!               " -ForegroundColor Green
 }
 
