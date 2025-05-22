@@ -10,9 +10,6 @@
 # Video Processing Script - Created on $(Get-Date -Format "yyyy-MM-dd")
 # =============================================================================
 
-# Start the timer
-$scriptStartTime = Get-Date
-
 # Configure console colors for better visual experience
 $host.UI.RawUI.BackgroundColor = "Black"
 $host.UI.RawUI.ForegroundColor = "Cyan"
@@ -154,6 +151,9 @@ $outputFile = "$baseName-final.mp4"
 $compressedOutput = "$baseName-compressed.mp4"
 
 Write-Host "`n Starting conversion process for $inputVideo`n" -ForegroundColor Cyan
+
+# START THE TIMER HERE - right before processing begins
+$scriptStartTime = Get-Date
 
 # Display a decorative separator
 Write-Host "================================================================" -ForegroundColor DarkCyan
