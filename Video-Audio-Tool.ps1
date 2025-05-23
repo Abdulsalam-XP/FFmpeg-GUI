@@ -371,27 +371,48 @@ if ($compressEarly) {
     Write-Host "   * Space Saved: $savingsPercent%" -ForegroundColor Green
 } 
 else {
-    # Step 1: Extract audio and convert to MP3
-    Write-Host "`n [1/3] Extracting and converting audio to MP3..." -ForegroundColor Yellow
+    # Step 1: Extract first audio track (microphone)
+    Write-Host "`n [1/4] Extracting microphone audio (first audio track)..." -ForegroundColor Yellow
     
     # Show animated icon for audio extraction
-    Show-AnimatedIcon -iconType "audio" -message "Preparing audio extraction..." -duration 5
+    Show-AnimatedIcon -iconType "audio" -message "Extracting microphone audio..." -duration 5
     
     # Show a film strip border with message
-    Show-FilmStripBorder -message "EXTRACTING AUDIO" -frameCount 20
+    Show-FilmStripBorder -message "EXTRACTING MIC AUDIO" -frameCount 20
     
     for ($i = 1; $i -le 100; $i += 10) {
-        Show-ProgressBar -PercentComplete $i -Status "Extracting audio"
+        Show-ProgressBar -PercentComplete $i -Status "Extracting mic audio"
         Start-Sleep -Milliseconds 50
     }
     
-    & $ffmpeg -i $inputVideo -vn -acodec libmp3lame -q:a 2 $audioFile
+    $audioFile1 = "$baseName-audio1.mp3"
+    & $ffmpeg -i $inputVideo -map 0:a:0 -acodec libmp3lame -q:a 2 $audioFile1
     
     Write-Host "`n"
     Show-CompletionAnimation
     
-    # Step 2: Extract video only (remove audio)
-    Write-Host "`n [2/3] Extracting video only (no audio)..." -ForegroundColor Yellow
+    # Step 2: Extract second audio track (video audio)
+    Write-Host "`n [2/4] Extracting video audio (second audio track)..." -ForegroundColor Yellow
+    
+    # Show animated icon for audio extraction
+    Show-AnimatedIcon -iconType "audio" -message "Extracting video audio..." -duration 5
+    
+    # Show a film strip border with message
+    Show-FilmStripBorder -message "EXTRACTING VIDEO AUDIO" -frameCount 20
+    
+    for ($i = 1; $i -le 100; $i += 10) {
+        Show-ProgressBar -PercentComplete $i -Status "Extracting video audio"
+        Start-Sleep -Milliseconds 50
+    }
+    
+    $audioFile2 = "$baseName-audio2.mp3"
+    & $ffmpeg -i $inputVideo -map 0:a:1 -acodec libmp3lame -q:a 2 $audioFile2
+    
+    Write-Host "`n"
+    Show-CompletionAnimation
+    
+    # Step 3: Extract video only (remove all audio)
+    Write-Host "`n [3/4] Extracting video only (no audio)..." -ForegroundColor Yellow
     
     # Show animated icon for video extraction
     Show-AnimatedIcon -iconType "video" -message "Preparing video extraction..." -duration 5
@@ -409,26 +430,33 @@ else {
     Write-Host "`n"
     Show-CompletionAnimation
     
-    # Step 3: Merging video with new MP3 audio
-    Write-Host "`n [3/3] Merging video and MP3 audio into final file..." -ForegroundColor Yellow
+    # Step 4: Merging video with mixed audio tracks
+    Write-Host "`n [4/4] Mixing audio tracks and merging with video..." -ForegroundColor Yellow
     
-    # Show animated icons for both video and audio
-    Show-AnimatedIcon -iconType "video" -message "Preparing to merge streams..." -duration 3
-    Show-AnimatedIcon -iconType "audio" -message "Preparing to merge streams..." -duration 3
+    # Show animated icons for mixing
+    Show-AnimatedIcon -iconType "audio" -message "Mixing audio tracks..." -duration 3
+    Show-AnimatedIcon -iconType "video" -message "Preparing final merge..." -duration 3
     
     # Show a film strip border with message
-    Show-FilmStripBorder -message "MERGING STREAMS" -frameCount 20
+    Show-FilmStripBorder -message "MIXING AND MERGING" -frameCount 20
     
     for ($i = 1; $i -le 100; $i += 5) {
-        Show-ProgressBar -PercentComplete $i -Status "Merging streams"
+        Show-ProgressBar -PercentComplete $i -Status "Creating final video"
         Start-Sleep -Milliseconds 50
     }
     
-    & $ffmpeg -i $videoOnlyFile -i $audioFile -c:v copy -c:a copy $outputFile
+    # Mix both audio tracks and merge with video in one command
+    & $ffmpeg -i $videoOnlyFile -i $audioFile1 -i $audioFile2 -filter_complex "[1:a][2:a]amix=inputs=2:duration=longest[a]" -map 0:v:0 -map "[a]" -c:v copy $outputFile
     
     Write-Host "`n"
     Show-CompletionAnimation
     Write-Host "Conversion complete! Output file: $outputFile`n" -ForegroundColor Green
+    
+    # Clean up temporary audio files
+    Write-Host "Cleaning up temporary files..." -ForegroundColor Cyan
+    if (Test-Path $audioFile1) { Remove-Item $audioFile1 }
+    if (Test-Path $audioFile2) { Remove-Item $audioFile2 }
+    Write-Host "Temporary audio files removed." -ForegroundColor Green
     
     # Final compression prompt (only if early compression not chosen)
     Write-Host "+----------------------------------------------------------+" -ForegroundColor Yellow
@@ -438,7 +466,7 @@ else {
     $compressChoice = Read-Host "   Enter yes/no"
     
     if ($compressChoice -eq "yes") {
-        Write-Host "`n [4/4] Compressing final video using libx264..." -ForegroundColor Yellow
+        Write-Host "`n [5/5] Compressing final video using libx264..." -ForegroundColor Yellow
         
         # Show animated icon for compression
         Show-AnimatedIcon -iconType "compress" -message "Preparing compression..." -duration 5
@@ -466,6 +494,15 @@ else {
         Write-Host "   * Original Size: $([math]::Round($originalSize, 2)) MB" -ForegroundColor White
         Write-Host "   * Compressed Size: $([math]::Round($compressedSize, 2)) MB" -ForegroundColor White
         Write-Host "   * Space Saved: $savingsPercent%" -ForegroundColor Green
+        
+        # Clean up intermediate video file if compression was done
+        if (Test-Path $videoOnlyFile) { Remove-Item $videoOnlyFile }
+        Write-Host "Cleaned up temporary video file." -ForegroundColor Cyan
+    }
+    else {
+        # Clean up video file if compression wasn't chosen
+        if (Test-Path $videoOnlyFile) { Remove-Item $videoOnlyFile }
+        Write-Host "Cleaned up temporary video file." -ForegroundColor Cyan
     }
 }
 
