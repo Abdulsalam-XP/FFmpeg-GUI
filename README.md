@@ -41,15 +41,6 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 
 ---
 
-## 📋 Requirements
-
-- Windows with PowerShell
-- FFmpeg installed
-- At least one `.mp4` file in the script directory
-- Either enable all script execution on your machine or make an exception for this specific script using the method above
-
----
-
 ## 🆘 Support
 
 If you encounter issues:
