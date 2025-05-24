@@ -49,12 +49,12 @@ If you encounter issues:
 1. Check that FFmpeg is properly installed (`ffmpeg -version`)
 2. Ensure you have `.mp4` files in the same directory as the script
 3. Run PowerShell as Administrator if you get permission errors
-4. Copy any error messages for troubleshooting
-5. If for whatever reason your script is executing for one second then closing, open powershell normally, navigate to your folder and execute the script to fetch the error message by typing:
+4. If for whatever reason your script is executing for one second then closing, open powershell normally, navigate to your folder and execute the script to fetch the error message by typing:
    
    ```
    ./Video-Audio-Tool
    ```
+   You can try showing to any AI model for any further assistance 
    
 
 ---
