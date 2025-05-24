@@ -68,6 +68,7 @@ You can run it in one of two ways:
 - Windows with PowerShell
 - FFmpeg installed
 - At least one `.mp4` file in the script directory
+- Either enable all script execution on your machine or make an exception for this specific script using the method above
 
 ---
 
