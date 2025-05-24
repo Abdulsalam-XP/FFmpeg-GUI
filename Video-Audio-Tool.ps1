@@ -1,3 +1,4 @@
+# Function Definitions
 function Show-AsciiBanner {
     $bannerLines = @(
         "########  ########  ##      ## #######  ########  ######        ##      ##  ######   ######  #########   ########  ",
@@ -9,34 +10,28 @@ function Show-AsciiBanner {
         "##        ##        ##      ## ##       ########  ######        ##      ## ##    ##  ######  #########   ######## "
     )
 
-    # Set console colors and clear screen
     $host.UI.RawUI.BackgroundColor = "Black"
     $host.UI.RawUI.ForegroundColor = "Cyan"
     Clear-Host
 
-    Clear-Host
     for ($i = 0; $i -lt $bannerLines.Length; $i++) {
         $line = $bannerLines[$i]
         
-        # Display FFMPEG part in green (was purple)
         for ($j = 0; $j -lt 60 -and $j -lt $line.Length; $j++) {
             Write-Host -NoNewline ($line[$j]) -ForegroundColor "Blue"
-            Start-Sleep -Milliseconds 0.5  # Faster typing effect
+            Start-Sleep -Milliseconds 0.5
         }
         
-        # Display MAGIC part in yellow
         for ($j = 60; $j -lt $line.Length; $j++) {
             Write-Host -NoNewline ($line[$j]) -ForegroundColor "Yellow"
-            Start-Sleep -Milliseconds 0.5  # Faster typing effect
+            Start-Sleep -Milliseconds 0.5
         }
         
-        Write-Host ""  # New line after each banner line
+        Write-Host ""
     }
 }
 
-
 function Show-RotatingFFmpegLogo {
-    # Stylized JOYBOY logo using only '#'
     $frames = @(
         @(
             "  #####   #######  ##   ##  #####   #######  ##   ##",
@@ -61,34 +56,25 @@ function Show-RotatingFFmpegLogo {
         )
     )
 
-    # Color cycle for dynamic animation effect - Make sure Purple/Magenta is last
     $colors = @("Yellow", "Cyan", "Green", "Red", "Blue", "Magenta")
-
-    # Save cursor position to reset each frame at same spot
     $originalCursorPosition = $host.UI.RawUI.CursorPosition
-
-    # Calculate center padding to center the logo
     $consoleWidth = $host.UI.RawUI.WindowSize.Width
-    $logoWidth = 54  # Width of the JOYBOY logo
+    $logoWidth = 54
     $padding = [Math]::Max(0, [Math]::Floor(($consoleWidth - $logoWidth) / 2))
     $paddingSpaces = " " * $padding
 
     for ($i = 0; $i -lt 12; $i++) {
         $frameIndex = $i % $frames.Count
-        # Match color to frame transition - one color per frame
         $colorIndex = $frameIndex % $colors.Count
         $frame = $frames[$frameIndex]
         $color = $colors[$colorIndex]
 
-        # Make the last frame purple/magenta regardless of the cycle
         if ($i -eq 11) {
             $color = "Magenta"
         }
 
-        # Move cursor to start position
         $host.UI.RawUI.CursorPosition = $originalCursorPosition
 
-        # Display the ASCII frame in the specified color
         foreach ($line in $frame) {
             Write-Host "$paddingSpaces$line" -ForegroundColor $color
         }
@@ -99,6 +85,65 @@ function Show-RotatingFFmpegLogo {
     Write-Host ""
 }
 
+function Show-AnimatedIcon {
+    param (
+        [string]$iconType,
+        [string]$message,
+        [double]$duration = 0.8
+    )
+    
+    try {
+        $spinnerFrames = @("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+        $iterations = [math]::Ceiling($duration * 20)
+        
+        for ($i = 0; $i -lt $iterations; $i++) {
+            $frame = $spinnerFrames[$i % $spinnerFrames.Length]
+            Write-Host "`r$frame $message" -NoNewline -ForegroundColor Cyan
+            Start-Sleep -Milliseconds 50
+        }
+        Write-Host "`r" -NoNewline
+    }
+    catch {
+        Write-Host "$message" -ForegroundColor Cyan
+    }
+}
+
+function Show-Banner {
+    Write-Host ""
+    Write-Host "+-----------------------------------------------------------------+" -ForegroundColor Magenta
+    Write-Host "|                                                                 |" -ForegroundColor Magenta
+    Write-Host "|                ADVANCED VIDEO PROCESSING TOOL                   |" -ForegroundColor Yellow
+    Write-Host "|                                                                 |" -ForegroundColor Magenta
+    Write-Host "+-----------------------------------------------------------------+" -ForegroundColor Magenta
+    Write-Host ""
+}
+
+function Show-Menu {
+    Write-Host "+----------------------------------------------------------------+" -ForegroundColor Blue
+    Write-Host "|                       SELECT AN OPTION                         |" -ForegroundColor Yellow
+    Write-Host "+----------------------------------------------------------------+" -ForegroundColor Blue
+    Write-Host "|                                                                |" -ForegroundColor Blue
+    Write-Host "|  [1] Analyze Video & Compress                                  |" -ForegroundColor White
+    Write-Host "|  [2] Extract & Merge Audio Streams                             |" -ForegroundColor White
+    Write-Host "|  [B] Go Back                                                   |" -ForegroundColor White
+    Write-Host "|                                                                |" -ForegroundColor Blue
+    Write-Host "+----------------------------------------------------------------+" -ForegroundColor Blue
+}
+
+function Write-AnimatedLine {
+    param (
+        [string]$text,
+        [string]$color = "White",
+        [int]$delayMs = 3
+    )
+    
+    Write-Host -NoNewline "  "
+    foreach ($char in $text.ToCharArray()) {
+        Write-Host -NoNewline $char -ForegroundColor $color
+        Start-Sleep -Milliseconds $delayMs
+    }
+    Write-Host ""
+}
 
 function Show-FilmStripBorder {
     param (
@@ -133,54 +178,6 @@ function Show-FilmStripBorder {
         # Fallback if any errors occur
         Write-Host "`n$message`n" -ForegroundColor Yellow
     }
-}
-
-function Show-AnimatedIcon {
-    param (
-        [string]$iconType,
-        [string]$message,
-        [int]$duration = 10
-    )
-    
-    try {
-        # Icon frames using ASCII characters
-        $frames = switch ($iconType) {
-            "video" { @("[V]", "(V)", "<V>") }
-            "audio" { @("[A]", "(A)", "<A>") }
-            "compress" { @("[C]", "(C)", "<C>") }
-            default { @("[*]", "(*)", "<*>") }
-        }
-        
-        # Simple animation that doesn't use cursor positioning
-        foreach ($frame in $frames) {
-            Write-Host "$frame $message" -ForegroundColor Yellow
-            Start-Sleep -Milliseconds 200
-        }
-    }
-    catch {
-        # Fallback if any errors occur
-        Write-Host "$message" -ForegroundColor Yellow
-    }
-}
-
-# Run the animated banner
-Show-AsciiBanner
-
-# Add space between banners
-Write-Host ""
-Write-Host ""
-
-# Show the rotating FFmpeg logo
-Show-RotatingFFmpegLogo
-
-function Show-Banner {
-    Write-Host ""
-    Write-Host "+-----------------------------------------------------------------+" -ForegroundColor Magenta
-    Write-Host "|                                                                 |" -ForegroundColor Magenta
-    Write-Host "|                ADVANCED VIDEO PROCESSING TOOL                   |" -ForegroundColor Yellow
-    Write-Host "|                                                                 |" -ForegroundColor Magenta
-    Write-Host "+-----------------------------------------------------------------+" -ForegroundColor Magenta
-    Write-Host ""
 }
 
 function Show-ProgressBar {
@@ -232,295 +229,490 @@ function Show-CompletionAnimation {
     Write-Host "`r* Completed!               " -ForegroundColor Green
 }
 
-function Show-Menu {
-    Write-Host "+----------------------------------------------------------------+" -ForegroundColor Blue
-    Write-Host "|                       SELECT AN OPTION                         |" -ForegroundColor Yellow
-    Write-Host "+----------------------------------------------------------------+" -ForegroundColor Blue
-    Write-Host "|                                                                |" -ForegroundColor Blue
-    Write-Host "|  [1] Compress Video (Single Operation)                         |" -ForegroundColor White
-    Write-Host "|  [2] Extract & Merge Audio/Video Streams                       |" -ForegroundColor White
-    Write-Host "|                                                                |" -ForegroundColor Blue
-    Write-Host "+----------------------------------------------------------------+" -ForegroundColor Blue
+function Get-VideoProperties {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$inputFile
+    )
+    
+    try {
+        # Check if file exists
+        if (-not (Test-Path $inputFile)) {
+            throw "Input file does not exist: $inputFile"
+        }
+
+        # Get file size in GB
+        $fileSize = (Get-Item $inputFile).Length / 1GB
+
+        # Use ffprobe to get video properties
+        $videoInfo = & ffprobe -v quiet -print_format json -show_format -show_streams $inputFile 2>&1 | ConvertFrom-Json
+
+        # Find video stream
+        $videoStream = $videoInfo.streams | Where-Object { $_.'codec_type' -eq 'video' } | Select-Object -First 1
+
+        if (-not $videoStream) {
+            throw "No video stream found in file"
+        }
+
+        # Extract properties
+        $properties = @{
+            Resolution = "$($videoStream.width)x$($videoStream.height)"
+            Codec = $videoStream.codec_name
+            Bitrate = if ($videoStream.bit_rate) { [math]::Round($videoStream.bit_rate / 1000) } else { "N/A" }
+            Duration = [timespan]::FromSeconds($videoInfo.format.duration)
+            FrameRate = if ($videoStream.r_frame_rate) { 
+                $fps = $videoStream.r_frame_rate.Split('/')
+                [math]::Round(([decimal]$fps[0] / [decimal]$fps[1]), 2)
+            } else { "N/A" }
+            FileSize = [math]::Round($fileSize, 2)
+        }
+
+        return $properties
+    }
+    catch {
+        Write-Host "Error analyzing video: $_" -ForegroundColor Red
+        return $null
+    }
+}
+
+function Get-SystemSpecs {
+    try {
+        $cpuInfo = Get-WmiObject Win32_Processor | Select-Object -First 1
+        $gpuInfo = Get-WmiObject Win32_VideoController | Select-Object -First 1
+        $ramInfo = Get-WmiObject Win32_ComputerSystem
+
+        # Safely get GPU memory, defaulting to "Unknown" if not available
+        $gpuMemory = "Unknown"
+        if ($gpuInfo.AdapterRAM) {
+            try {
+                $gpuMemory = [math]::Round([decimal]$gpuInfo.AdapterRAM/1GB, 2)
+            } catch {
+                $gpuMemory = "Unknown"
+            }
+        }
+
+        return @{
+            CPU = @{
+                Name = if ($cpuInfo.Name) { $cpuInfo.Name } else { "Unknown" }
+                Cores = if ($cpuInfo.NumberOfCores) { $cpuInfo.NumberOfCores } else { 4 }  # Default to 4 cores if unknown
+                Speed = if ($cpuInfo.MaxClockSpeed) { $cpuInfo.MaxClockSpeed } else { 2000 }  # Default to 2GHz if unknown
+            }
+            GPU = @{
+                Name = if ($gpuInfo.Name) { $gpuInfo.Name } else { "Unknown" }
+                Memory = $gpuMemory
+            }
+            RAM = @{
+                Total = if ($ramInfo.TotalPhysicalMemory) { 
+                    [math]::Round($ramInfo.TotalPhysicalMemory/1GB, 2)
+                } else { 
+                    8  # Default to 8GB if unknown
+                }
+            }
+        }
+    }
+    catch {
+        Write-Host "Error getting system specifications: $_" -ForegroundColor Red
+        # Return default values if we can't get system specs
+        return @{
+            CPU = @{
+                Name = "Unknown CPU"
+                Cores = 4  # Conservative default
+                Speed = 2000  # Conservative default (2GHz)
+            }
+            GPU = @{
+                Name = "Unknown GPU"
+                Memory = "Unknown"
+            }
+            RAM = @{
+                Total = 8  # Conservative default (8GB)
+            }
+        }
+    }
+}
+
+function Get-CompressionSuggestions {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$inputFile
+    )
+    
+    try {
+        # Get video properties
+        $videoProps = Get-VideoProperties $inputFile
+        if (-not $videoProps) { throw "Failed to analyze video" }
+
+        # Get system specifications
+        $systemSpecs = Get-SystemSpecs
+        if (-not $systemSpecs) { throw "Failed to get system specifications" }
+
+        # Define compression presets
+        $presets = @{
+            "High Quality" = @{
+                Codec = "libx264"
+                CRF = "18"
+                Preset = "slow"
+            }
+            "Balanced" = @{
+                Codec = "libx264"
+                CRF = "23"
+                Preset = "slow"
+            }
+            "Small Size" = @{
+                Codec = "libx264"
+                CRF = "28"
+                Preset = "fast"
+            }
+        }
+
+        # Display results with animation
+        Write-Host "`nVideo Analysis" -ForegroundColor Cyan
+        Write-Host "-------------" -ForegroundColor Cyan
+        Start-Sleep -Milliseconds 25
+
+        # Video Properties
+        Write-AnimatedLine "Resolution: $($videoProps.Resolution)" "White" 2
+        Write-AnimatedLine "Bitrate: $($videoProps.Bitrate) kbps" "White" 2
+        Write-AnimatedLine "Duration: $($videoProps.Duration)" "White" 2
+        Write-AnimatedLine "Size: $($videoProps.FileSize) GB" "White" 2
+        Start-Sleep -Milliseconds 25
+
+        Write-Host "`nCompression Options" -ForegroundColor Yellow
+        Write-Host "-----------------" -ForegroundColor Yellow
+        Start-Sleep -Milliseconds 25
+
+        Write-Host "`n[1] High Quality" -ForegroundColor Green
+        Write-AnimatedLine "- CRF: $($presets['High Quality'].CRF) (Lower = Better)" "Gray" 2
+        Write-AnimatedLine "- Preset: $($presets['High Quality'].Preset)" "Gray" 2
+        Start-Sleep -Milliseconds 15
+
+        Write-Host "`n[2] Balanced (Recommended for most users)" -ForegroundColor Green
+        Write-AnimatedLine "- CRF: $($presets['Balanced'].CRF) (Lower = Better)" "Gray" 2
+        Write-AnimatedLine "- Preset: $($presets['Balanced'].Preset)" "Gray" 2
+        Start-Sleep -Milliseconds 15
+
+        Write-Host "`n[3] Small Size" -ForegroundColor Green
+        Write-AnimatedLine "- CRF: $($presets['Small Size'].CRF) (Lower = Better)" "Gray" 2
+        Write-AnimatedLine "- Preset: $($presets['Small Size'].Preset)" "Gray" 2
+        Start-Sleep -Milliseconds 15
+
+        Write-Host "`n[B] Go Back" -ForegroundColor White
+
+    }
+    catch {
+        Write-Host "Error generating compression suggestions: $_" -ForegroundColor Red
+    }
+}
+
+function Compress-Video {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$inputFile,
+        [Parameter(Mandatory=$true)]
+        [string]$preset
+    )
+    
+    try {
+        # Get video properties for the input file
+        $videoProps = Get-VideoProperties $inputFile
+        if (-not $videoProps) { throw "Failed to analyze video" }
+
+        # Define compression presets
+        $presets = @{
+            "High Quality" = @{
+                Codec = "libx264"
+                CRF = "18"
+                Preset = "slow"
+            }
+            "Balanced" = @{
+                Codec = "libx264"
+                CRF = "23"
+                Preset = "slow"  # Changed from medium to slow
+                MapAll = $true   # Added flag to use -map 0
+                CopyAudio = $true # Added flag to use -c:a copy
+            }
+            "Small Size" = @{
+                Codec = "libx264"
+                CRF = "28"
+                Preset = "fast"
+            }
+        }
+
+        if (-not $presets.ContainsKey($preset)) {
+            throw "Invalid preset selected: $preset"
+        }
+
+        $selectedPreset = $presets[$preset]
+        
+        # Create output filename
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFile)
+        $outputFile = "$baseName-$($preset.ToLower().Replace(' ', '-')).mp4"
+
+        Write-Host "`nStarting video compression with $preset preset" -ForegroundColor Cyan
+        Write-Host "-------------------------------------------" -ForegroundColor Cyan
+        
+        # Show compression settings
+        Write-Host "`nCompression Settings:" -ForegroundColor Yellow
+        Write-Host "  - Codec: H.264 (Standard Compatible)"
+        Write-Host "  - CRF Value: $($selectedPreset.CRF) (Lower = Better Quality)"
+        Write-Host "  - Preset: $($selectedPreset.Preset)`n"
+
+        # Show progress animation
+        Show-FilmStripBorder -message "COMPRESSING VIDEO" -frameCount 30
+
+        # Build the ffmpeg command based on preset settings
+        $ffmpegArgs = @(
+            "-i", $inputFile
+        )
+        
+        # Add -map 0 if specified in preset
+        if ($selectedPreset.MapAll) {
+            $ffmpegArgs += "-map", "0"
+        }
+        
+        $ffmpegArgs += @(
+            "-c:v", $selectedPreset.Codec,
+            "-crf", $selectedPreset.CRF,
+            "-preset", $selectedPreset.Preset
+        )
+        
+        # Handle audio codec based on preset
+        if ($selectedPreset.CopyAudio) {
+            $ffmpegArgs += "-c:a", "copy"
+        } else {
+            # Default audio settings for other presets
+            $ffmpegArgs += @(
+                "-c:a", "aac",
+                "-b:a", "128k"
+            )
+        }
+        
+        $ffmpegArgs += $outputFile
+        
+        # Run ffmpeg with constructed arguments
+        & $ffmpeg $ffmpegArgs
+
+        # Get file sizes and calculate savings
+        $originalSize = (Get-Item $inputFile).Length / 1MB
+        $compressedSize = (Get-Item $outputFile).Length / 1MB
+        $savingsPercent = [math]::Round(100 - ($compressedSize / $originalSize * 100), 1)
+
+        # Show completion animation
+        Show-CompletionAnimation
+
+        # Display results
+        Write-Host "`nCompression Results:" -ForegroundColor Green
+        Write-Host "-------------------" -ForegroundColor Green
+        Write-Host "Original Size: $([math]::Round($originalSize, 2)) MB"
+        Write-Host "Compressed Size: $([math]::Round($compressedSize, 2)) MB"
+        Write-Host "Space Saved: $savingsPercent%"
+        Write-Host "`nOutput File: $outputFile"
+        Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
+        [void][System.Console]::ReadKey($true)
+        exit
+    }
+    catch {
+        Write-Host "Error during compression: $_" -ForegroundColor Red
+        Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
+        [void][System.Console]::ReadKey($true)
+        exit 1
+    }
+}
+
+function Merge-AudioStreams {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$inputVideo
+    )
+    
+    try {
+        # Get video info to check available audio streams
+        $videoInfo = & ffprobe -v quiet -print_format json -show_streams -select_streams a $inputVideo 2>&1 | ConvertFrom-Json
+        $audioStreams = $videoInfo.streams
+        
+        if ($audioStreams.Count -lt 2) {
+            Write-Host "`nError: This video has less than 2 audio streams to merge." -ForegroundColor Red
+            Write-Host "Number of audio streams found: $($audioStreams.Count)" -ForegroundColor Yellow
+            return $false
+        }
+
+        # Display info about found streams
+        Write-Host "`nFound $($audioStreams.Count) audio streams to merge:" -ForegroundColor Cyan
+        Write-Host "--------------------------------" -ForegroundColor Cyan
+        
+        for ($i = 0; $i -lt $audioStreams.Count; $i++) {
+            $stream = $audioStreams[$i]
+            $language = if ($stream.tags.language) { $stream.tags.language } else { "undefined" }
+            $title = if ($stream.tags.title) { $stream.tags.title } else { "No title" }
+            Write-Host "Stream #$i - Language: $language - Title: $title" -ForegroundColor White
+        }
+
+        # Create output filename
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputVideo)
+        $outputFile = "$baseName-merged-audio.mp4"
+
+        Write-Host "`nMerging all audio streams..." -ForegroundColor Cyan
+        Show-AnimatedIcon -iconType "audio" -message "Merging audio streams..." -duration 0.8
+
+        # Build the filter complex string for all streams
+        $filterComplex = ""
+        for ($i = 0; $i -lt $audioStreams.Count; $i++) {
+            $filterComplex += "[0:a:$i]"
+        }
+        $filterComplex += "amix=inputs=$($audioStreams.Count):duration=longest[aout]"
+
+        # Merge all audio streams using ffmpeg
+        & $ffmpeg -i $inputVideo `
+            -filter_complex "$filterComplex" `
+            -map 0:v:0 `
+            -map "[aout]" `
+            -c:v copy `
+            -c:a aac `
+            -b:a 256k `
+            $outputFile
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "`nAll audio streams successfully merged!" -ForegroundColor Green
+            Write-Host "Output file: $outputFile"
+            Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
+            [void][System.Console]::ReadKey($true)
+            exit
+        } else {
+            Write-Host "`nError occurred while merging audio streams." -ForegroundColor Red
+            Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
+            [void][System.Console]::ReadKey($true)
+            exit 1
+        }
+    }
+    catch {
+        Write-Host "Error during audio merge: $_" -ForegroundColor Red
+        Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
+        [void][System.Console]::ReadKey($true)
+        exit 1
+    }
 }
 
 # Set ffmpeg path (if ffmpeg is in PATH, just use "ffmpeg")
 $ffmpeg = "ffmpeg"
 
-# Display welcome banner
+# Main script execution
+Show-AsciiBanner
+Write-Host ""
+Write-Host ""
+Show-RotatingFFmpegLogo
 Show-Banner
 
-# ------------------------------
-# Replace manual file input with automatic listing and selection
-# ------------------------------
-
-# List .mp4 files and prompt user to select one
-$videoFiles = Get-ChildItem -Path . -Filter *.mp4 | Sort-Object Name
-
-if ($videoFiles.Count -eq 0) {
-    Write-Host "No .mp4 files found in the current directory!" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "Available .mp4 files:" -ForegroundColor Yellow
-" "
-
-for ($i = 0; $i -lt $videoFiles.Count; $i++) {
-    Write-Host "[$($i + 1)] $($videoFiles[$i].Name)"
-}
-" "
 do {
-    $selection = Read-Host "Enter the number of the video file to use"
+    # Get the current directory
+    $currentDir = Get-Location
+    $videoFiles = Get-ChildItem -Path $currentDir -Filter *.mp4 | Sort-Object Name
+
+    if ($videoFiles.Count -eq 0) {
+        Write-Host "No .mp4 files found in the current directory: $currentDir" -ForegroundColor Red
+        Write-Host "Please make sure you have .mp4 files in this directory and try again." -ForegroundColor Yellow
+        Write-Host "`nPress any key to exit..."
+        [void][System.Console]::ReadKey($true)
+        exit 1
+    }
+
+    Write-Host "Available .mp4 files in $currentDir :" -ForegroundColor Yellow
+    Write-Host ""
+
+    for ($i = 0; $i -lt $videoFiles.Count; $i++) {
+        $size = [math]::Round($videoFiles[$i].Length / 1MB, 2)
+        Write-Host "[$($i + 1)] $($videoFiles[$i].Name) ($size MB)"
+    }
+
+    Write-Host "`n[B] Exit Program" -ForegroundColor White
+    Write-Host ""
+    
+    $selection = Read-Host "Enter the number of the video file to use (or B to exit)"
+    
+    if ($selection -eq "B" -or $selection -eq "b") {
+        Write-Host "`nTerminating..." -ForegroundColor Yellow
+        Start-Sleep -Milliseconds 800
+        exit
+    }
+
     $valid = ($selection -as [int]) -and ($selection -ge 1) -and ($selection -le $videoFiles.Count)
     if (-not $valid) {
         Write-Host "Invalid selection. Please enter a number between 1 and $($videoFiles.Count)." -ForegroundColor Red
+        continue
     }
-} while (-not $valid)
 
-""
-$inputVideo = $videoFiles[$selection - 1].FullName
-Write-Host "`nYou selected: $($videoFiles[$selection - 1].Name)" -ForegroundColor Green
+    Write-Host ""
+    $selectedFile = $videoFiles[$selection - 1]
+    $inputVideo = $selectedFile.FullName
+    Write-Host "You selected: $($selectedFile.Name)" -ForegroundColor Green
 
-# ------------------------------
-# End of new input selection code
-# ------------------------------
+    Write-Host ""
+    Write-Host "File Information:" -ForegroundColor Green
+    Write-Host "   * Name: $($selectedFile.Name)" -ForegroundColor White
+    Write-Host "   * Size: $([math]::Round($selectedFile.Length / 1MB, 2)) MB" -ForegroundColor White
+    Write-Host "   * Created: $($selectedFile.CreationTime)" -ForegroundColor White
+    Write-Host "   * Full Path: $inputVideo" -ForegroundColor White
+    Write-Host ""
 
-# Get file info
-$fileInfo = Get-Item $inputVideo
-Write-Host ""
-Write-Host "File Information:" -ForegroundColor Green
-Write-Host "   * Name: $($fileInfo.Name)" -ForegroundColor White
-Write-Host "   * Size: $([math]::Round($fileInfo.Length / 1MB, 2)) MB" -ForegroundColor White
-Write-Host "   * Created: $($fileInfo.CreationTime)" -ForegroundColor White
-Write-Host ""
+    $processingComplete = $false
+    while (-not $processingComplete) {
+        Show-Menu
+        $choice = Read-Host "`nEnter your choice (1-2, or B to go back to file selection)"
 
-# Display menu and get choice
-Show-Menu
-Write-Host ""
-
-# Valid choice loop with improved visuals
-do {
-    $choice = Read-Host "   Enter your choice (1 or 2)"
-    if ($choice -ne "1" -and $choice -ne "2") {
-        Write-Host "Invalid selection. Please enter 1 or 2." -ForegroundColor Red
-    }
-} while ($choice -ne "1" -and $choice -ne "2")
-
-# Set option flags
-$compressEarly = $false
-$keepSeparate = $false
-
-switch ($choice) {
-    "1" { 
-        $compressEarly = $true 
-        Write-Host "`n You selected: Compress Video" -ForegroundColor Green
-    }
-    "2" { 
-        $keepSeparate = $true 
-        Write-Host "`n You selected: Extract & Merge Audio/Video" -ForegroundColor Green
-    }
-}
-
-# Get base name without extension
-$baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputVideo)
-
-# Output file names
-$audioFile = "$baseName-audio.mp3"
-$videoOnlyFile = "$baseName-video.mp4"
-$outputFile = "$baseName-final.mp4"
-$compressedOutput = "$baseName-compressed.mp4"
-
-Write-Host "`n Starting conversion process for $inputVideo`n" -ForegroundColor Cyan
-
-# START THE TIMER HERE - right before processing begins
-$scriptStartTime = Get-Date
-
-# Display a decorative separator
-Write-Host "================================================================" -ForegroundColor DarkCyan
-
-if ($compressEarly) {
-    # Compress directly from input video - skip audio/video extraction & merging
-    Write-Host "`n [1/1] Compressing video using libx264 (preserving quality)..." -ForegroundColor Yellow
-    
-    # Show animated icon for compression
-    Show-AnimatedIcon -iconType "compress" -message "Preparing compression..." -duration 5
-    
-    # Show a film strip border with message
-    Show-FilmStripBorder -message "COMPRESSING VIDEO" -frameCount 30
-    
-    # Show a fake progress bar - actual compression doesn't report progress
-    for ($i = 1; $i -le 100; $i += 5) {
-        Show-ProgressBar -PercentComplete $i -Status "Applying compression"
-        Start-Sleep -Milliseconds 50
-    }
-    
-    # Run the actual command
-    & $ffmpeg -i $inputVideo -map 0 -c:v libx264 -crf 23 -preset slow -c:a copy $compressedOutput
-    
-    Write-Host "`n"
-    Show-CompletionAnimation
-    Write-Host "Compression complete! Compressed file: $compressedOutput`n" -ForegroundColor Green
-    
-    # Show file size comparison
-    $originalSize = (Get-Item $inputVideo).Length / 1MB
-    $compressedSize = (Get-Item $compressedOutput).Length / 1MB
-    $savingsPercent = [math]::Round(100 - ($compressedSize / $originalSize * 100), 1)
-    
-    Write-Host "Results:" -ForegroundColor Cyan
-    Write-Host "   * Original Size: $([math]::Round($originalSize, 2)) MB" -ForegroundColor White
-    Write-Host "   * Compressed Size: $([math]::Round($compressedSize, 2)) MB" -ForegroundColor White
-    Write-Host "   * Space Saved: $savingsPercent%" -ForegroundColor Green
-} 
-else {
-    # Step 1: Extract first audio track (microphone)
-    Write-Host "`n [1/4] Extracting microphone audio (first audio track)..." -ForegroundColor Yellow
-    
-    # Show animated icon for audio extraction
-    Show-AnimatedIcon -iconType "audio" -message "Extracting microphone audio..." -duration 5
-    
-    # Show a film strip border with message
-    Show-FilmStripBorder -message "EXTRACTING MIC AUDIO" -frameCount 20
-    
-    for ($i = 1; $i -le 100; $i += 10) {
-        Show-ProgressBar -PercentComplete $i -Status "Extracting mic audio"
-        Start-Sleep -Milliseconds 50
-    }
-    
-    $audioFile1 = "$baseName-audio1.mp3"
-    & $ffmpeg -i $inputVideo -map 0:a:0 -acodec libmp3lame -q:a 2 $audioFile1
-    
-    Write-Host "`n"
-    Show-CompletionAnimation
-    
-    # Step 2: Extract second audio track (video audio)
-    Write-Host "`n [2/4] Extracting video audio (second audio track)..." -ForegroundColor Yellow
-    
-    # Show animated icon for audio extraction
-    Show-AnimatedIcon -iconType "audio" -message "Extracting video audio..." -duration 5
-    
-    # Show a film strip border with message
-    Show-FilmStripBorder -message "EXTRACTING VIDEO AUDIO" -frameCount 20
-    
-    for ($i = 1; $i -le 100; $i += 10) {
-        Show-ProgressBar -PercentComplete $i -Status "Extracting video audio"
-        Start-Sleep -Milliseconds 50
-    }
-    
-    $audioFile2 = "$baseName-audio2.mp3"
-    & $ffmpeg -i $inputVideo -map 0:a:1 -acodec libmp3lame -q:a 2 $audioFile2
-    
-    Write-Host "`n"
-    Show-CompletionAnimation
-    
-    # Step 3: Extract video only (remove all audio)
-    Write-Host "`n [3/4] Extracting video only (no audio)..." -ForegroundColor Yellow
-    
-    # Show animated icon for video extraction
-    Show-AnimatedIcon -iconType "video" -message "Preparing video extraction..." -duration 5
-    
-    # Show a film strip border with message
-    Show-FilmStripBorder -message "EXTRACTING VIDEO" -frameCount 20
-    
-    for ($i = 1; $i -le 100; $i += 10) {
-        Show-ProgressBar -PercentComplete $i -Status "Extracting video"
-        Start-Sleep -Milliseconds 50
-    }
-    
-    & $ffmpeg -i $inputVideo -an -c:v copy $videoOnlyFile
-    
-    Write-Host "`n"
-    Show-CompletionAnimation
-    
-    # Step 4: Merging video with mixed audio tracks
-    Write-Host "`n [4/4] Mixing audio tracks and merging with video..." -ForegroundColor Yellow
-    
-    # Show animated icons for mixing
-    Show-AnimatedIcon -iconType "audio" -message "Mixing audio tracks..." -duration 3
-    Show-AnimatedIcon -iconType "video" -message "Preparing final merge..." -duration 3
-    
-    # Show a film strip border with message
-    Show-FilmStripBorder -message "MIXING AND MERGING" -frameCount 20
-    
-    for ($i = 1; $i -le 100; $i += 5) {
-        Show-ProgressBar -PercentComplete $i -Status "Creating final video"
-        Start-Sleep -Milliseconds 50
-    }
-    
-    # Mix both audio tracks and merge with video in one command
-    & $ffmpeg -i $videoOnlyFile -i $audioFile1 -i $audioFile2 -filter_complex "[1:a][2:a]amix=inputs=2:duration=longest[a]" -map 0:v:0 -map "[a]" -c:v copy $outputFile
-    
-    Write-Host "`n"
-    Show-CompletionAnimation
-    Write-Host "Conversion complete! Output file: $outputFile`n" -ForegroundColor Green
-    
-    # Clean up temporary audio files
-    Write-Host "Cleaning up temporary files..." -ForegroundColor Cyan
-    if (Test-Path $audioFile1) { Remove-Item $audioFile1 }
-    if (Test-Path $audioFile2) { Remove-Item $audioFile2 }
-    Write-Host "Temporary audio files removed." -ForegroundColor Green
-    
-    # Final compression prompt (only if early compression not chosen)
-    Write-Host "+----------------------------------------------------------+" -ForegroundColor Yellow
-    Write-Host "|  Would you like to compress the final video to reduce    |" -ForegroundColor Yellow
-    Write-Host "|  file size? (yes/no)                                     |" -ForegroundColor Yellow
-    Write-Host "+----------------------------------------------------------+" -ForegroundColor Yellow
-    $compressChoice = Read-Host "   Enter yes/no"
-    
-    if ($compressChoice -eq "yes") {
-        Write-Host "`n [5/5] Compressing final video using libx264..." -ForegroundColor Yellow
-        
-        # Show animated icon for compression
-        Show-AnimatedIcon -iconType "compress" -message "Preparing compression..." -duration 5
-        
-        # Show a film strip border with message
-        Show-FilmStripBorder -message "COMPRESSING VIDEO" -frameCount 30
-        
-        for ($i = 1; $i -le 100; $i += 3) {
-            Show-ProgressBar -PercentComplete $i -Status "Applying compression"
-            Start-Sleep -Milliseconds 50
+        switch ($choice.ToUpper()) {
+            "1" {
+                Write-Host ""
+                Show-AnimatedIcon -iconType "compress" -message "Analyzing..." -duration 0.8
+                Write-Host ""
+                
+                if (Test-Path $inputVideo) {
+                    Get-CompressionSuggestions -inputFile $inputVideo
+                    
+                    $compressionChoice = Read-Host "`nSelect compression option (1-3, or B to go back)"
+                    
+                    $preset = switch ($compressionChoice.ToUpper()) {
+                        "1" { "High Quality" }
+                        "2" { "Balanced" }
+                        "3" { "Small Size" }
+                        "B" { 
+                            Write-Host "`nReturning to menu..." -ForegroundColor Yellow
+                            $null 
+                        }
+                        default { 
+                            Write-Host "`nInvalid choice. Returning to menu..." -ForegroundColor Red
+                            Start-Sleep -Seconds 1
+                            $null 
+                        }
+                    }
+                    
+                    if ($preset) {
+                        Compress-Video -inputFile $inputVideo -preset $preset
+                        $processingComplete = $true
+                    }
+                } else {
+                    Write-Host "Error: Selected video file no longer exists: $inputVideo" -ForegroundColor Red
+                    $processingComplete = $true
+                }
+            }
+            "2" {
+                Write-Host "`nAudio Stream Merger" -ForegroundColor Cyan
+                Write-Host "----------------" -ForegroundColor Cyan
+                Write-Host "This will automatically merge all audio streams from the video into a single mixed audio track."
+                Write-Host "The video quality will not be affected as it will be copied without re-encoding."
+                
+                if (Test-Path $inputVideo) {
+                    Merge-AudioStreams -inputVideo $inputVideo
+                    $processingComplete = $true
+                } else {
+                    Write-Host "Error: Selected video file no longer exists: $inputVideo" -ForegroundColor Red
+                    $processingComplete = $true
+                }
+            }
+            "B" {
+                $processingComplete = $true
+            }
+            default {
+                Write-Host "Invalid choice. Please try again." -ForegroundColor Red
+                Start-Sleep -Seconds 1
+            }
         }
-        
-        & $ffmpeg -i $outputFile -vcodec libx264 -crf 23 -preset slow -acodec copy $compressedOutput
-        
-        Write-Host "`n"
-        Show-CompletionAnimation
-        Write-Host "Compression complete! Compressed file: $compressedOutput`n" -ForegroundColor Green
-        
-        # Show file size comparison
-        $originalSize = (Get-Item $outputFile).Length / 1MB
-        $compressedSize = (Get-Item $compressedOutput).Length / 1MB
-        $savingsPercent = [math]::Round(100 - ($compressedSize / $originalSize * 100), 1)
-        
-        Write-Host "Results:" -ForegroundColor Cyan
-        Write-Host "   * Original Size: $([math]::Round($originalSize, 2)) MB" -ForegroundColor White
-        Write-Host "   * Compressed Size: $([math]::Round($compressedSize, 2)) MB" -ForegroundColor White
-        Write-Host "   * Space Saved: $savingsPercent%" -ForegroundColor Green
-        
-        # Clean up intermediate video file if compression was done
-        if (Test-Path $videoOnlyFile) { Remove-Item $videoOnlyFile }
-        Write-Host "Cleaned up temporary video file." -ForegroundColor Cyan
     }
-    else {
-        # Clean up video file if compression wasn't chosen
-        if (Test-Path $videoOnlyFile) { Remove-Item $videoOnlyFile }
-        Write-Host "Cleaned up temporary video file." -ForegroundColor Cyan
-    }
-}
-
-# End timer and show total time elapsed
-$scriptEndTime = Get-Date
-$elapsed = $scriptEndTime - $scriptStartTime
-Write-Host ""
-Write-Host "Total processing time: $($elapsed.Hours)h $($elapsed.Minutes)m $($elapsed.Seconds)s" -ForegroundColor Cyan
-
-# Display framed completion message
-Write-Host ""
-Write-Host "+----------------------------------------------------------------+" -ForegroundColor Green
-Write-Host "|                                                                |" -ForegroundColor Green
-Write-Host "|               PROCESS COMPLETED SUCCESSFULLY!                  |" -ForegroundColor White
-Write-Host "|                                                                |" -ForegroundColor Green
-Write-Host "+----------------------------------------------------------------+" -ForegroundColor Green
-
-
-
-Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
-[void][System.Console]::ReadKey($true)
+} while ($true)
