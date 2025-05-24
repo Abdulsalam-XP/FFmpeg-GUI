@@ -29,30 +29,10 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 
 ## ▶️ Usage Instructions
 
-### 1. Prepare Your Folder
-- Make sure the script (`Video-Audio-Tool.ps1`) is in the same folder as at least one `.mp4` file
+- ⚠️ **Important**: Make sure that there is atleast one video present in the directory of your folder
+
+
 - ⚠️ **Important**: The script will not run if no `.mp4` files are present
-
-### 2. Open PowerShell and Navigate to the Script's Directory
-- PowerShell is required — other terminals won't work as expected
-- Use `cd` command to navigate to your script folder:
-  ```powershell
-  cd "C:\path\to\your\script\folder"
-  ```
-
-### 3. Run the Script
-You can run it in one of two ways:
-
-**Option A: Command Line**
-```powershell
-.\Video-Audio-Tool.ps1
-```
-
-**Option B: Right-Click Method**
-- Right-click the script file
-- Select "Run with PowerShell"
-
----
 
 ## 🔧 Features
 
