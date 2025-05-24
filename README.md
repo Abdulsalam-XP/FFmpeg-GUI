@@ -23,8 +23,6 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
    ffmpeg -version
    ```
 
-💡 **Troubleshooting**: If you encounter any issues, copy the error message and search for solutions online or ask for help in relevant forums.
-
 ---
 
 ## ▶️ Usage Instructions
