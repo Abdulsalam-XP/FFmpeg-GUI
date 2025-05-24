@@ -54,7 +54,7 @@ If you encounter issues:
    ```
    ./Video-Audio-Tool
    ```
-   You can try showing to any AI model for any further assistance 
+   You can try showing the message to any AI model for any further assistance 
    
 
 ---
