@@ -32,6 +32,8 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 
 - ⚠️ **Important**: The script will not run if no `.mp4` files are present
 
+---
+
 ## 🔧 Features
 
 - Process multiple `.mp4` files in batch
