@@ -56,7 +56,7 @@ function Show-RotatingFFmpegLogo {
         )
     )
 
-    $colors = @("Yellow", "Cyan", "Green", "Red", "Blue", "Magenta")
+    $colors = @("Yellow", "Blue", "Cyan", "Magenta")
     $originalCursorPosition = $host.UI.RawUI.CursorPosition
     $consoleWidth = $host.UI.RawUI.WindowSize.Width
     $logoWidth = 54
@@ -532,7 +532,6 @@ function Merge-AudioStreams {
         if ($audioStreams.Count -lt 2) {
             Write-Host "`nError: This video has less than 2 audio streams to merge." -ForegroundColor Red
             Write-Host "Number of audio streams found: $($audioStreams.Count)" -ForegroundColor Yellow
-            return $false
         }
 
         # Display info about found streams
@@ -625,7 +624,8 @@ do {
     Write-Host "`n[B] Exit Program" -ForegroundColor White
     Write-Host ""
     
-    $selection = Read-Host "Enter the number of the video file to use (or B to exit)"
+    Write-Host "Enter the number of the video file to use (or B to exit): " -ForegroundColor Yellow -NoNewline
+    $selection = Read-Host
     
     if ($selection -eq "B" -or $selection -eq "b") {
         Write-Host "`nTerminating..." -ForegroundColor Yellow
@@ -642,10 +642,10 @@ do {
     Write-Host ""
     $selectedFile = $videoFiles[$selection - 1]
     $inputVideo = $selectedFile.FullName
-    Write-Host "You selected: $($selectedFile.Name)" -ForegroundColor Green
+    Write-Host "You selected: $($selectedFile.Name)" -ForegroundColor Cyan
 
     Write-Host ""
-    Write-Host "File Information:" -ForegroundColor Green
+    Write-Host "File Information:" -ForegroundColor Cyan
     Write-Host "   * Name: $($selectedFile.Name)" -ForegroundColor White
     Write-Host "   * Size: $([math]::Round($selectedFile.Length / 1MB, 2)) MB" -ForegroundColor White
     Write-Host "   * Created: $($selectedFile.CreationTime)" -ForegroundColor White
@@ -655,7 +655,8 @@ do {
     $processingComplete = $false
     while (-not $processingComplete) {
         Show-Menu
-        $choice = Read-Host "`nEnter your choice (1-2, or B to go back to file selection)"
+        Write-Host "`nEnter your choice (1-2, or B to go back to file selection): " -ForegroundColor Yellow -NoNewline
+        $choice = Read-Host
 
         switch ($choice.ToUpper()) {
             "1" {
@@ -666,7 +667,8 @@ do {
                 if (Test-Path $inputVideo) {
                     Get-CompressionSuggestions -inputFile $inputVideo
                     
-                    $compressionChoice = Read-Host "`nSelect compression option (1-3, or B to go back)"
+                    Write-Host "`nSelect compression option (1-3, or B to go back): " -ForegroundColor Yellow -NoNewline
+                    $compressionChoice = Read-Host
                     
                     $preset = switch ($compressionChoice.ToUpper()) {
                         "1" { "High Quality" }
