@@ -4,23 +4,27 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 
 ---
 
-## ⚙️ Installation – `ffmpeg` (Skip if Already Installed)
+## ⚙️ Installation – `ffmpeg & Yt-dlp` (Skip if Already Installed)
 
 1. **Open PowerShell as Administrator**  
    Right-click PowerShell and select **"Run as Administrator"**
 
-2. **Install `ffmpeg` via Winget**  
+2. **Install `ffmpeg & yt-dlp` via Winget**  
    Paste the following command into PowerShell:
    ```powershell
    winget install Gyan.FFmpeg
    ```
 
-3. **Restart PowerShell** (optional)
+3. **Restart PowerShell**
 
 4. **Verify Installation**  
    Run this command to check if ffmpeg is correctly installed:
    ```powershell
    ffmpeg -version
+   ```
+   Run this command to check if Yt-dlp is correctly installed:
+   ```powershell
+   yt-dlp -version
    ```
 
 ---
