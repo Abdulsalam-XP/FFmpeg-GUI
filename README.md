@@ -12,7 +12,7 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 2. **Install `ffmpeg & yt-dlp` via Winget**  
    Paste the following command into PowerShell:
    ```powershell
-   winget install Gyan.FFmpeg
+   winget install yt-dlp
    ```
 
 3. **Restart PowerShell**
@@ -42,8 +42,8 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 
 - Process multiple `.mp4` files in batch
 - Video compression and optimization
-- Audio extraction from video files
-- Easy-to-use PowerShell interface
+- Merging multiple audio inputs into a single source
+- Youtube to MP4/MP3 conversion and download 
 
 ---
 
