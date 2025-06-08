@@ -1,5 +1,5 @@
 # Script Version
-$scriptVersion = "1.0.2"
+$scriptVersion = "1.0.3"
 $repoOwner = "Abdulsalam-XP"
 $repoName = "FFmpeg-GUI"
 $scriptName = "Video-Audio-Tool.ps1"
