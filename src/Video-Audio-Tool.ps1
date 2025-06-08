@@ -100,7 +100,7 @@ Show-RotatingFFmpegLogo
 
 do {
     Show-Banner
-    Write-Host "`nEnter your choice (1-4, or B to exit): " -ForegroundColor Yellow -NoNewline
+    Write-Host "`nEnter your choice1231313 (1-4, or B to exit): " -ForegroundColor Yellow -NoNewline
     $choice = Read-Host
 
     switch ($choice.ToUpper()) {
