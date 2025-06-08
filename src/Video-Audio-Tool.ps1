@@ -1,98 +1,21 @@
 # Script Version
-$scriptVersion = "1.0.3"
+$scriptVersion = "1.0.2"
 $repoOwner = "Abdulsalam-XP"
 $repoName = "FFmpeg-GUI"
-$scriptName = "Video-Audio-Tool.ps1"
+$scriptName = "src/Video-Audio-Tool.ps1"
+$branch = "main"
 
 # Import modules
 $modulePath = Join-Path $PSScriptRoot "modules"
-Import-Module (Join-Path $modulePath "UI.psm1")
-Import-Module (Join-Path $modulePath "VideoProcessing.psm1")
-Import-Module (Join-Path $modulePath "AudioProcessing.psm1")
-Import-Module (Join-Path $modulePath "YouTubeDownload.psm1")
-
-function Check-ForUpdates {
-    try {
-        $apiUrl = "https://api.github.com/repos/$repoOwner/$repoName/contents/$scriptName"
-        $response = Invoke-RestMethod -Uri $apiUrl -Headers @{
-            "Accept" = "application/vnd.github.v3.raw"
-        }
-
-        if ($response -match '# Script Version\s*\$scriptVersion = "([\d\.]+)"') {
-            $latestVersion = $matches[1]
-            
-            if ([version]$latestVersion -gt [version]$scriptVersion) {
-                $commitsUrl = "https://api.github.com/repos/$repoOwner/$repoName/commits?path=$scriptName"
-                $commits = Invoke-RestMethod -Uri $commitsUrl -Headers @{
-                    "Accept" = "application/vnd.github.v3+json"
-                }
-
-                Add-Type -AssemblyName System.Windows.Forms
-                $form = New-Object System.Windows.Forms.Form
-                $form.Text = "Update Available!"
-                $form.Size = New-Object System.Drawing.Size(600,400)
-                $form.StartPosition = "CenterScreen"
-                $form.BackColor = [System.Drawing.Color]::White
-
-                $textBox = New-Object System.Windows.Forms.RichTextBox
-                $textBox.Location = New-Object System.Drawing.Point(10,10)
-                $textBox.Size = New-Object System.Drawing.Size(560,300)
-                $textBox.ReadOnly = $true
-                $textBox.BackColor = [System.Drawing.Color]::White
-                $textBox.Font = New-Object System.Drawing.Font("Consolas", 10)
-
-                $textBox.AppendText("New version $latestVersion is available!`n")
-                $textBox.AppendText("Current version: $scriptVersion`n`n")
-                $textBox.AppendText("Recent Changes:`n")
-                $textBox.AppendText("----------------`n")
-
-                foreach ($commit in $commits) {
-                    $textBox.AppendText("• $($commit.commit.message)`n")
-                }
-
-                $updateButton = New-Object System.Windows.Forms.Button
-                $updateButton.Location = New-Object System.Drawing.Point(400,320)
-                $updateButton.Size = New-Object System.Drawing.Size(80,30)
-                $updateButton.Text = "Update"
-                $updateButton.DialogResult = [System.Windows.Forms.DialogResult]::Yes
-
-                $cancelButton = New-Object System.Windows.Forms.Button
-                $cancelButton.Location = New-Object System.Drawing.Point(490,320)
-                $cancelButton.Size = New-Object System.Drawing.Size(80,30)
-                $cancelButton.Text = "Cancel"
-                $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::No
-
-                $form.Controls.Add($textBox)
-                $form.Controls.Add($updateButton)
-                $form.Controls.Add($cancelButton)
-
-                $result = $form.ShowDialog()
-
-                if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-                    Write-Host "`nDownloading update..." -ForegroundColor Cyan
-                    
-                    $response | Out-File -FilePath $PSCommandPath -Force
-                    
-                    Write-Host "Update successful! The script will now restart.`n" -ForegroundColor Green
-                    Start-Sleep -Seconds 2
-                    
-                    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-                    Stop-Process $PID
-                }
-            }
-        }
-    }
-    catch {
-        Write-Host "Unable to check for updates. Continuing with current version..." -ForegroundColor Yellow
-        Start-Sleep -Seconds 2
-    }
-}
+Import-Module "$PSScriptRoot/modules/UI.psm1" -Force
+Import-Module "$PSScriptRoot/modules/VideoProcessing.psm1" -Force
+Import-Module "$PSScriptRoot/modules/AudioProcessing.psm1" -Force
+Import-Module "$PSScriptRoot/modules/YouTubeDownload.psm1" -Force
 
 # Set ffmpeg path
 $ffmpeg = "ffmpeg"
 
 # Main script execution
-Check-ForUpdates
 Show-AsciiBanner
 Write-Host ""
 Write-Host ""
@@ -100,7 +23,7 @@ Show-RotatingFFmpegLogo
 
 do {
     Show-Banner
-    Write-Host "`nEnter your choice1231313 (1-4, or B to exit): " -ForegroundColor Yellow -NoNewline
+    Write-Host "`nEnter your choice (1-4, or B to exit): " -ForegroundColor Yellow -NoNewline
     $choice = Read-Host
 
     switch ($choice.ToUpper()) {
@@ -253,3 +176,16 @@ do {
         }
     }
 } while ($true) 
+
+function Check-ForUpdates {
+    try {
+        $apiUrl = "https://api.github.com/repos/$repoOwner/$repoName/contents/$scriptName?ref=$branch"
+        $response = Invoke-RestMethod -Uri $apiUrl -Headers @{
+            "Accept" = "application/vnd.github.v3.raw"
+        }
+
+        // ... existing code ...
+    } catch {
+        // ... existing code ...
+    }
+} 
