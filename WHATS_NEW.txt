@@ -1,7 +1,6 @@
 What's New in This Update:
 
-• Example: Added new video compression presets
-• Example: Improved update check reliability
-• Example: Fixed bug with audio stream merging
-
-(Replace these lines with your actual update notes for each release.) 
+• Fixed YT download bug where it could not fetch proper results
+• Fixed bug in YT to MP4 download where it would freeze the console if a video in a playlist was chosen
+• Optimized major algorithms to compress videos even faster
+• General Bug Fixes
