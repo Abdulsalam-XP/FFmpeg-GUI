@@ -106,22 +106,16 @@ function Merge-AudioStreams {
             Write-Host "Output file: $outputFile"
             Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
             [void][System.Console]::ReadKey($true)
-            Stop-Process -Name "cmd" -Force
-            Stop-Process -Name "powershell" -Force
         } else {
             Write-Host "`nError occurred while merging audio streams." -ForegroundColor Red
             Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
             [void][System.Console]::ReadKey($true)
-            Stop-Process -Name "cmd" -Force
-            Stop-Process -Name "powershell" -Force
         }
     }
     catch {
         Write-Host "Error during audio merge: $_" -ForegroundColor Red
         Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
         [void][System.Console]::ReadKey($true)
-        Stop-Process -Name "cmd" -Force
-        Stop-Process -Name "powershell" -Force
     }
 }
 
