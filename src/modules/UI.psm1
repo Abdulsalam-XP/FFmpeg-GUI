@@ -163,7 +163,6 @@ function Show-FilmStripBorder {
         for ($i = 0; $i -lt 5; $i++) {
             Write-Host "Processing..." -ForegroundColor Cyan
             Start-Sleep -Milliseconds 200
-            Start-Sleep -Milliseconds 200
         }
     }
     catch {
@@ -379,7 +378,6 @@ function Show-FilmStripBorder {
         
         for ($i = 0; $i -lt 5; $i++) {
             Write-Host "Processing..." -ForegroundColor Cyan
-            Start-Sleep -Milliseconds 200
             Start-Sleep -Milliseconds 200
         }
     }

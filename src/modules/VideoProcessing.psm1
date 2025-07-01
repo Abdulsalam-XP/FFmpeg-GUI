@@ -1,24 +1,25 @@
+Import-Module "$PSScriptRoot/UI.psm1"
 # Module-level preset definitions (remove duplication)
 $script:CompressionPresets = @{
     "High Quality" = @{
-        Codec = "libx264"
-        CRF = "18"
-        Preset = "slow"
-        MapAll = $true
+        Codec     = "libx264"
+        CRF       = "18"
+        Preset    = "slow"
+        MapAll    = $true
         CopyAudio = $true
     }
-    "Balanced" = @{
-        Codec = "libx264"
-        CRF = "23"
-        Preset = "slow"
-        MapAll = $true
+    "Balanced"     = @{
+        Codec     = "libx264"
+        CRF       = "23"
+        Preset    = "slow"
+        MapAll    = $true
         CopyAudio = $true
     }
-    "Small Size" = @{
-        Codec = "libx264"
-        CRF = "28"
-        Preset = "fast"
-        MapAll = $true
+    "Small Size"   = @{
+        Codec     = "libx264"
+        CRF       = "28"
+        Preset    = "fast"
+        MapAll    = $true
         CopyAudio = $true
     }
 }
@@ -41,8 +42,7 @@ function Write-ErrorDetails {
 function Exit-Application {
     Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
     [void][System.Console]::ReadKey($true)
-    Stop-Process -Name "cmd" -Force
-    Stop-Process -Name "powershell" -Force
+    exit 
 }
 
 # Common section header formatter
@@ -58,7 +58,7 @@ function Write-SectionHeader {
 
 function Get-VideoProperties {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$inputFile
     )
     
@@ -93,14 +93,18 @@ function Get-VideoProperties {
 
         $properties = @{
             Resolution = "$($videoStream.width)x$($videoStream.height)"
-            Codec = $videoStream.codec_name
-            Bitrate = if ($videoStream.bit_rate) { [math]::Round($videoStream.bit_rate / 1000) } else { "N/A" }
-            Duration = [timespan]::FromSeconds($videoInfo.format.duration)
-            FrameRate = if ($videoStream.r_frame_rate) { 
+            Codec      = $videoStream.codec_name
+            Bitrate    = if ($videoStream.bit_rate) { [math]::Round($videoStream.bit_rate / 1000) } else { "N/A" }
+            Duration   = [timespan]::FromSeconds($videoInfo.format.duration)
+            FrameRate  = if ($videoStream.r_frame_rate) { 
                 $fps = $videoStream.r_frame_rate.Split('/')
-                [math]::Round(([decimal]$fps[0] / [decimal]$fps[1]), 2)
-            } else { "N/A" }
-            FileSize = [math]::Round((Get-Item -LiteralPath $inputFile).Length / 1GB, 2)
+                if ($fps.Count -eq 2 -and [decimal]$fps[1] -ne 0) {
+                    [math]::Round(([decimal]$fps[0] / [decimal]$fps[1]), 2)
+                }
+                else { "N/A" }
+            }
+            else { "N/A" }
+            FileSize   = [math]::Round((Get-Item -LiteralPath $inputFile).Length / 1GB, 2)
         }
 
         return $properties
@@ -113,33 +117,34 @@ function Get-VideoProperties {
 
 function Get-SystemSpecs {
     try {
-        $cpuInfo = Get-WmiObject Win32_Processor | Select-Object -First 1
-        $gpuInfo = Get-WmiObject Win32_VideoController | Select-Object -First 1
-        $ramInfo = Get-WmiObject Win32_ComputerSystem
-
+        $cpuInfo = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $gpuInfo = Get-CimInstance Win32_VideoController | Select-Object -First 1
+        $ramInfo = Get-CimInstance Win32_ComputerSystem
         $gpuMemory = "Unknown"
         if ($gpuInfo.AdapterRAM) {
             try {
-                $gpuMemory = [math]::Round([decimal]$gpuInfo.AdapterRAM/1GB, 2)
-            } catch {
+                $gpuMemory = [math]::Round([decimal]$gpuInfo.AdapterRAM / 1GB, 2)
+            }
+            catch {
                 $gpuMemory = "Unknown"
             }
         }
 
         return @{
             CPU = @{
-                Name = if ($cpuInfo.Name) { $cpuInfo.Name } else { "Unknown" }
+                Name  = if ($cpuInfo.Name) { $cpuInfo.Name } else { "Unknown" }
                 Cores = if ($cpuInfo.NumberOfCores) { $cpuInfo.NumberOfCores } else { 4 }
                 Speed = if ($cpuInfo.MaxClockSpeed) { $cpuInfo.MaxClockSpeed } else { 2000 }
             }
             GPU = @{
-                Name = if ($gpuInfo.Name) { $gpuInfo.Name } else { "Unknown" }
+                Name   = if ($gpuInfo.Name) { $gpuInfo.Name } else { "Unknown" }
                 Memory = $gpuMemory
             }
             RAM = @{
                 Total = if ($ramInfo.TotalPhysicalMemory) { 
-                    [math]::Round($ramInfo.TotalPhysicalMemory/1GB, 2)
-                } else { 
+                    [math]::Round($ramInfo.TotalPhysicalMemory / 1GB, 2)
+                }
+                else { 
                     8
                 }
             }
@@ -149,12 +154,12 @@ function Get-SystemSpecs {
         Write-Host "Error getting system specifications: $_" -ForegroundColor Red
         return @{
             CPU = @{
-                Name = "Unknown CPU"
+                Name  = "Unknown CPU"
                 Cores = 4
                 Speed = 2000
             }
             GPU = @{
-                Name = "Unknown GPU"
+                Name   = "Unknown GPU"
                 Memory = "Unknown"
             }
             RAM = @{
@@ -195,7 +200,7 @@ function Show-PresetDetails {
 
 function Get-CompressionSuggestions {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$inputFile
     )
     
@@ -241,9 +246,9 @@ function Get-CompressionSuggestions {
 
 function Compress-Video {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$inputFile,
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$preset
     )
     
@@ -286,7 +291,8 @@ function Compress-Video {
         
         if ($selectedPreset.CopyAudio) {
             $ffmpegArgs += "-c:a", "copy"
-        } else {
+        }
+        else {
             $ffmpegArgs += @(
                 "-c:a", "aac",
                 "-b:a", "128k"
