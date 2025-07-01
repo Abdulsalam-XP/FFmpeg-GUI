@@ -1,0 +1,7 @@
+What's New in This Update:
+
+• Example: Added new video compression presets
+• Example: Improved update check reliability
+• Example: Fixed bug with audio stream merging
+
+(Replace these lines with your actual update notes for each release.) 
