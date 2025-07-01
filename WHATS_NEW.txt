@@ -1,0 +1,6 @@
+What's New in This Update:
+
+• Fixed YT download bug where it could not fetch proper results
+• Fixed bug in YT to MP4 download where it would freeze the console if a video in a playlist was chosen
+• Optimized major algorithms to compress videos even faster
+• General Bug Fixes
