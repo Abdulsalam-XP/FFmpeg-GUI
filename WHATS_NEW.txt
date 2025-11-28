@@ -1,6 +1,8 @@
 What's New in This Update:
 
-• Fixed YT download bug where it could not fetch proper results
-• Fixed bug in YT to MP4 download where it would freeze the console if a video in a playlist was chosen
-• Optimized major algorithms to compress videos even faster
-• General Bug Fixes
+• Added Nvidia Encoding for Nvidia GPUs support
+• Optimized module import process for better reliability
+• Improved accuracy of the update checker mechanism
+• Code cleanup and internal performance optimizations
+• Added timer for compression to check how long a compression would take
+• General bug fixes and compliance updates
