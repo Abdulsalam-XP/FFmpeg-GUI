@@ -143,62 +143,6 @@ function Write-AnimatedLine {
     Write-Host ""
 }
 
-function Show-FilmStripBorder {
-    param (
-        [string]$message,
-        [int]$frameCount = 20,
-        [int]$width = 60
-    )
-    
-    try {
-        $topBorder = "+" + ("=O=" * [math]::Floor($width/3)) + "+"
-        $bottomBorder = "+" + ("=O=" * [math]::Floor($width/3)) + "+"
-        
-        Write-Host $topBorder -ForegroundColor Cyan
-        Write-Host "|" -NoNewline -ForegroundColor Cyan
-        Write-Host (" " * ([math]::Floor(($width - $message.Length) / 2)) + $message + (" " * [math]::Ceiling(($width - $message.Length) / 2))) -NoNewline -ForegroundColor Yellow
-        Write-Host "|" -ForegroundColor Cyan
-        Write-Host $bottomBorder -ForegroundColor Cyan
-        
-        for ($i = 0; $i -lt 5; $i++) {
-            Write-Host "Processing..." -ForegroundColor Cyan
-            Start-Sleep -Milliseconds 200
-        }
-    }
-    catch {
-        Write-Host "`n$message`n" -ForegroundColor Yellow
-    }
-}
-
-function Show-ProgressBar {
-    param (
-        [int]$PercentComplete,
-        [string]$Status
-    )
-    
-    $progressBarWidth = 50
-    $completedWidth = [math]::Floor($progressBarWidth * $PercentComplete / 100)
-    $remainingWidth = $progressBarWidth - $completedWidth
-    
-    Write-Host "`r[" -NoNewline
-    
-    for ($i = 0; $i -lt $completedWidth; $i++) {
-        if ($i -lt ($progressBarWidth * 0.33)) {
-            Write-Host "#" -NoNewline -ForegroundColor Red
-        } 
-        elseif ($i -lt ($progressBarWidth * 0.66)) {
-            Write-Host "#" -NoNewline -ForegroundColor Yellow
-        } 
-        else {
-            Write-Host "#" -NoNewline -ForegroundColor Green
-        }
-    }
-    
-    Write-Host ("-" * $remainingWidth) -NoNewline -ForegroundColor DarkGray
-    
-    Write-Host "] $PercentComplete% Complete: $Status                     " -NoNewline -ForegroundColor White
-}
-
 function Show-CompletionAnimation {
     $frames = "/", "-", "\", "|"
     $colors = "Yellow", "Green", "Cyan", "Magenta"
@@ -359,60 +303,44 @@ function Write-AnimatedLine {
     Write-Host ""
 }
 
-function Show-FilmStripBorder {
-    param (
-        [string]$message,
-        [int]$frameCount = 20,
-        [int]$width = 60
+function Update-ProgressBar {
+    param(
+        [string]$Activity,   
+        [double]$Percent,   
+        [string]$ETA = "--:--:--",
+        [string]$StatusInfo = "" 
     )
-    
-    try {
-        $topBorder = "+" + ("=O=" * [math]::Floor($width/3)) + "+"
-        $bottomBorder = "+" + ("=O=" * [math]::Floor($width/3)) + "+"
-        
-        Write-Host $topBorder -ForegroundColor Cyan
-        Write-Host "|" -NoNewline -ForegroundColor Cyan
-        Write-Host (" " * ([math]::Floor(($width - $message.Length) / 2)) + $message + (" " * [math]::Ceiling(($width - $message.Length) / 2))) -NoNewline -ForegroundColor Yellow
-        Write-Host "|" -ForegroundColor Cyan
-        Write-Host $bottomBorder -ForegroundColor Cyan
-        
-        for ($i = 0; $i -lt 5; $i++) {
-            Write-Host "Processing..." -ForegroundColor Cyan
-            Start-Sleep -Milliseconds 200
-        }
-    }
-    catch {
-        Write-Host "`n$message`n" -ForegroundColor Yellow
-    }
-}
 
-function Show-ProgressBar {
-    param (
-        [int]$PercentComplete,
-        [string]$Status
-    )
+    $width = 30
+    $filled = [math]::Round(($Percent / 100) * $width)
+    if ($filled -gt $width) { $filled = $width }
+    $empty = $width - $filled
     
-    $progressBarWidth = 50
-    $completedWidth = [math]::Floor($progressBarWidth * $PercentComplete / 100)
-    $remainingWidth = $progressBarWidth - $completedWidth
+    $charFilled = "=" 
+    $charEmpty  = "-" 
+
+    Write-Host "`r" -NoNewline
     
-    Write-Host "`r[" -NoNewline
+    Write-Host "$Activity " -NoNewline -ForegroundColor Yellow
     
-    for ($i = 0; $i -lt $completedWidth; $i++) {
-        if ($i -lt ($progressBarWidth * 0.33)) {
-            Write-Host "#" -NoNewline -ForegroundColor Red
-        } 
-        elseif ($i -lt ($progressBarWidth * 0.66)) {
-            Write-Host "#" -NoNewline -ForegroundColor Yellow
-        } 
-        else {
-            Write-Host "#" -NoNewline -ForegroundColor Green
-        }
+    Write-Host "[" -NoNewline -ForegroundColor White
+    
+    if ($filled -gt 0) { Write-Host ($charFilled * $filled) -NoNewline -ForegroundColor Green }
+    if ($empty -gt 0)  { Write-Host ($charEmpty * $empty) -NoNewline -ForegroundColor Gray }
+    
+    Write-Host "] " -NoNewline -ForegroundColor White
+    
+    $percentStr = "{0,5:N1}" -f $Percent
+    Write-Host "$percentStr%" -NoNewline -ForegroundColor Cyan
+    
+    Write-Host " | ETA: " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$ETA   " -NoNewline -ForegroundColor White
+    
+    if ($StatusInfo) {
+        Write-Host "| $StatusInfo" -NoNewline -ForegroundColor DarkGray
     }
     
-    Write-Host ("-" * $remainingWidth) -NoNewline -ForegroundColor DarkGray
-    
-    Write-Host "] $PercentComplete% Complete: $Status                     " -NoNewline -ForegroundColor White
+    Write-Host "    " -NoNewline
 }
 
 function Show-CompletionAnimation {
