@@ -207,20 +207,6 @@ function Get-SystemSpecs {
     }
 }
 
-function Get-SmartRecommendation {
-    param($systemSpecs, $videoProps)
-    
-    if ($systemSpecs.CPU.Cores -lt 4 -or $systemSpecs.RAM.Total -lt 8) {
-        return "Small Size (Fastest processing)"
-    }
-    elseif ($systemSpecs.CPU.Cores -ge 8 -and $systemSpecs.RAM.Total -ge 16) {
-        return "High Quality (Your system can handle it)"
-    }
-    else {
-        return "Balanced (Best for most users)"
-    }
-}
-
 function Show-PresetDetails {
     param([string]$PresetName, [int]$Number)
     
@@ -228,8 +214,8 @@ function Show-PresetDetails {
     $displayName = if ($PresetName -eq "Balanced") { "$PresetName (Recommended for most users)" } else { $PresetName }
     
     Write-Host "`n[$Number] $displayName" -ForegroundColor Green
-    Write-AnimatedLine "- CRF: $($preset.CRF) (Lower = Better)" "Gray" 2
-    Write-AnimatedLine "- Preset: $($preset.Preset)" "Gray" 2
+    Write-AnimatedLine "- CRF: $($preset.CRF) (Lower = Better)" "Gray" 1
+    Write-AnimatedLine "- Preset: $($preset.Preset)" "Gray" 1
     Start-Sleep -Milliseconds 15
 }
 
@@ -249,10 +235,10 @@ function Get-CompressionSuggestions {
         Write-SectionHeader "Video Analysis"
         Start-Sleep -Milliseconds 25
 
-        Write-AnimatedLine "Resolution: $($videoProps.Resolution)" "White" 2
-        Write-AnimatedLine "Bitrate: $($videoProps.Bitrate) kbps" "White" 2
-        Write-AnimatedLine "Duration: $($videoProps.Duration)" "White" 2
-        Write-AnimatedLine "Size: $($videoProps.FileSize) GB" "White" 2
+        Write-AnimatedLine "Resolution: $($videoProps.Resolution)" "White" 1
+        Write-AnimatedLine "Bitrate: $($videoProps.Bitrate) kbps" "White" 1
+        Write-AnimatedLine "Duration: $($videoProps.Duration)" "White" 1
+        Write-AnimatedLine "Size: $($videoProps.FileSize) GB" "White" 1
         Start-Sleep -Milliseconds 25
 
         Write-SectionHeader "Your System"
@@ -260,9 +246,6 @@ function Get-CompressionSuggestions {
         Write-Host "RAM: $($systemSpecs.RAM.Total) GB"
         Write-Host "GPU: $($systemSpecs.GPU.Name)"
         
-        $recommendation = Get-SmartRecommendation -systemSpecs $systemSpecs -videoProps $videoProps
-        Write-Host "`nRecommendation for your system: $recommendation" -ForegroundColor Yellow
-
         Write-SectionHeader "Compression Options" "Yellow"
         Start-Sleep -Milliseconds 25
 
@@ -356,7 +339,8 @@ function Compress-Video {
             Write-Host "Space Saved: $savingsPercent%"
             Write-Host "`nOutput File: $outputFile"
             
-            Exit-Application
+            Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
+            [void][System.Console]::ReadKey($true)
         } else {
             throw "FFmpeg failed to create the output file. Please check if the codec is supported on your system."
         }

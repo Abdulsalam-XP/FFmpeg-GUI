@@ -46,12 +46,12 @@ function Save-YouTubeMP3 {
             if ($line -match "(\d+)-(\d+|NA)-(\d+|NA)-(\d+|NA)") {
                 $downloaded = [double]$matches[1]
                 $totalExact = $matches[2]
-                $totalEst   = $matches[3]
-                $etaRaw     = $matches[4]
+                $totalEst = $matches[3]
+                $etaRaw = $matches[4]
 
                 $total = if ($totalExact -ne "NA") { [double]$totalExact } 
-                         elseif ($totalEst -ne "NA") { [double]$totalEst } 
-                         else { 0 }
+                elseif ($totalEst -ne "NA") { [double]$totalEst } 
+                else { 0 }
 
                 if ($total -gt 0) {
                     $percent = [math]::Round(($downloaded / $total) * 100, 1)
@@ -59,7 +59,8 @@ function Save-YouTubeMP3 {
                     if ($etaRaw -ne "NA") {
                         $eta = [timespan]::FromSeconds([int]$etaRaw)
                         $etaString = $eta.ToString("hh\:mm\:ss")
-                    } else {
+                    }
+                    else {
                         $etaString = "--:--:--"
                     }
 
@@ -74,7 +75,8 @@ function Save-YouTubeMP3 {
             Show-CompletionAnimation
             Write-Host "`nDownload completed successfully!" -ForegroundColor Green
             Write-Host "Files are saved in: $downloadPath" -ForegroundColor Cyan
-        } else {
+        }
+        else {
             Write-Host "`nDownload failed with exit code $($process.ExitCode)" -ForegroundColor Red
         }
     }
@@ -119,9 +121,9 @@ function Save-YouTubeMP4 {
         $formats = & yt-dlp -F $url $commonArgs.Split(' ') 2>&1 | Out-String
         
         $resolutions = @(
-            @{height = "4320"; name = "8K"; code = "2160p60"; formatString = "best[height<=4320][ext=mp4]/best[ext=mp4]/best" },
-            @{height = "2160"; name = "4K"; code = "2160p"; formatString = "best[height<=2160][ext=mp4]/best[ext=mp4]/best" },
-            @{height = "1440"; name = "2K"; code = "1440p"; formatString = "best[height<=1440][ext=mp4]/best[ext=mp4]/best" },
+            @{height = "4320"; name = "8K"; code = "2160p60"; formatString = "bestvideo[height<=4320]+bestaudio/best[height<=4320]" },
+            @{height = "2160"; name = "4K"; code = "2160p"; formatString = "bestvideo[height<=2160]+bestaudio/best[height<=2160]" },
+            @{height = "1440"; name = "2K"; code = "1440p"; formatString = "bestvideo[height<=1440]+bestaudio/best[height<=1440]" },
             @{height = "1080"; name = "Full HD"; code = "1080p"; formatString = "best[height<=1080][ext=mp4]/best[ext=mp4]/best" },
             @{height = "720"; name = "HD"; code = "720p"; formatString = "best[height<=720][ext=mp4]/best[ext=mp4]/best" },
             @{height = "480"; name = "SD"; code = "480p"; formatString = "best[height<=480][ext=mp4]/best[ext=mp4]/best" },
@@ -163,7 +165,7 @@ function Save-YouTubeMP4 {
             
             $progressTemplate = "%(progress.downloaded_bytes)s-%(progress.total_bytes)s-%(progress.total_bytes_estimate)s-%(progress.eta)s"
             
-            $pInfo.Arguments = "$url $commonArgs --newline --progress-template ""$progressTemplate"" -f $($selectedResolution.formatString) -o `"$outputTemplate`""
+            $pInfo.Arguments = "$url $commonArgs --newline --progress-template ""$progressTemplate"" -f $($selectedResolution.formatString) -o `"$outputTemplate`" --merge-output-format mp4 --postprocessor-args ""Merger: -c:v copy -c:a aac"""
             $pInfo.RedirectStandardOutput = $true
             $pInfo.UseShellExecute = $false
             $pInfo.CreateNoWindow = $true
@@ -183,12 +185,12 @@ function Save-YouTubeMP4 {
                 if ($line -match "(\d+)-(\d+|NA)-(\d+|NA)-(\d+|NA)") {
                     $downloaded = [double]$matches[1]
                     $totalExact = $matches[2]
-                    $totalEst   = $matches[3]
-                    $etaRaw     = $matches[4]
+                    $totalEst = $matches[3]
+                    $etaRaw = $matches[4]
                     
                     $total = if ($totalExact -ne "NA") { [double]$totalExact } 
-                             elseif ($totalEst -ne "NA") { [double]$totalEst } 
-                             else { 0 }
+                    elseif ($totalEst -ne "NA") { [double]$totalEst } 
+                    else { 0 }
                     
                     if ($total -gt 0) {
                         $percent = [math]::Round(($downloaded / $total) * 100, 1)
@@ -196,7 +198,8 @@ function Save-YouTubeMP4 {
                         if ($etaRaw -ne "NA") {
                             $eta = [timespan]::FromSeconds([int]$etaRaw)
                             $etaString = $eta.ToString("hh\:mm\:ss")
-                        } else {
+                        }
+                        else {
                             $etaString = "--:--:--"
                         }
                         

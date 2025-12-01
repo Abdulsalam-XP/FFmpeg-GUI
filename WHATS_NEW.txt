@@ -1,8 +1,7 @@
 What's New in This Update:
 
-• Added Nvidia Encoding for Nvidia GPUs support
-• Optimized module import process for better reliability
-• Improved accuracy of the update checker mechanism
-• Code cleanup and internal performance optimizations
-• Added timer for compression to check how long a compression would take
-• General bug fixes and compliance updates
+• Fixed issues with resolutions above 1080P not downloading properly from YT
+• Fixed an issue with 4k resolution not compressing properly
+• Added a trimmer mode for easy and fast trimming (will make it advanced in the future)
+• Added feature to disable/enable animations
+• Fixed a lot of bugs and inconsistencies 
