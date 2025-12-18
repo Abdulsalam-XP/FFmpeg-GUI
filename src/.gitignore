@@ -1,6 +1,7 @@
-.qodo
-MP3 Downloads
-MP4 Downloads
+"MP3 Downloads/"
+"MP4 Downloads/"
+
+assets/settings.json
+
 *.mp4
 *.mp3
-settings.json
