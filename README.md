@@ -12,7 +12,7 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 2. **Install `ffmpeg & yt-dlp` via Winget**  
    Paste the following command into PowerShell:
    ```powershell
-   winget install yt-dlp
+   winget install yt-dlp.yt-dlp
    ```
 
 3. **Restart PowerShell**
