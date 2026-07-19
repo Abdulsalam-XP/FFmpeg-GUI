@@ -20,12 +20,10 @@ function Show-AsciiBanner {
         
         for ($j = 0; $j -lt 60 -and $j -lt $line.Length; $j++) {
             Write-Host -NoNewline ($line[$j]) -ForegroundColor "Blue"
-            Start-Sleep -Milliseconds 0.5
         }
-        
+
         for ($j = 60; $j -lt $line.Length; $j++) {
             Write-Host -NoNewline ($line[$j]) -ForegroundColor "Yellow"
-            Start-Sleep -Milliseconds 0.5
         }
         
         Write-Host ""
@@ -219,4 +217,124 @@ function Show-CompletionAnimation {
     Write-Host "`r* Completed!               " -ForegroundColor Green
 }
 
-Export-ModuleMember -Function *
+function Wait-KeyPress {
+    param([string]$Message = "Press any key to return to the menu...")
+
+    Write-Host "`n$Message" -ForegroundColor Yellow
+    # ReadKey throws when console input is redirected (e.g. automation); fall back to Read-Host
+    try { [void][System.Console]::ReadKey($true) } catch { Read-Host | Out-Null }
+}
+
+function Select-VideoFile {
+    param([string]$Prompt = "Enter the number of the video file to use (or B to go back)")
+
+    $currentDir = Get-Location
+    $localFiles = @(Get-ChildItem -Path $currentDir -Filter *.mp4 | Sort-Object Name)
+
+    $downloadsPath = Join-Path $currentDir "MP4 Downloads"
+    $downloadFiles = @()
+    if (Test-Path -LiteralPath $downloadsPath) {
+        $downloadFiles = @(Get-ChildItem -Path $downloadsPath -Filter *.mp4 | Sort-Object Name)
+    }
+
+    $videoFiles = $localFiles + $downloadFiles
+
+    if ($videoFiles.Count -eq 0) {
+        Write-Host "`nNo .mp4 files found in:" -ForegroundColor Red
+        Write-Host "- $currentDir" -ForegroundColor Gray
+        if (Test-Path -LiteralPath $downloadsPath) { Write-Host "- $downloadsPath" -ForegroundColor Gray }
+        Write-Host "`nPlease make sure you have .mp4 files in these directories and try again." -ForegroundColor Yellow
+        Wait-KeyPress -Message "Press any key to continue..."
+        return $null
+    }
+
+    Write-Host "`nAvailable .mp4 files:" -ForegroundColor Yellow
+    Write-Host ""
+
+    for ($i = 0; $i -lt $localFiles.Count; $i++) {
+        $size = [math]::Round($localFiles[$i].Length / 1MB, 2)
+        Write-Host "[$($i + 1)] $($localFiles[$i].Name) ($size MB)"
+    }
+
+    if ($downloadFiles.Count -gt 0) {
+        Write-Host "`n==============" -ForegroundColor Cyan
+        Write-Host "MP4 Downloads Folder" -ForegroundColor Cyan
+        Write-Host "==============`n" -ForegroundColor Cyan
+
+        for ($j = 0; $j -lt $downloadFiles.Count; $j++) {
+            $size = [math]::Round($downloadFiles[$j].Length / 1MB, 2)
+            Write-Host "[$($localFiles.Count + $j + 1)] $($downloadFiles[$j].Name) ($size MB)"
+        }
+    }
+
+    Write-Host "`n[B] Go Back" -ForegroundColor White
+    Write-Host ""
+
+    Write-Host "$Prompt`: " -ForegroundColor Yellow -NoNewline
+    $selection = Read-Host
+
+    if ($selection -eq "B" -or $selection -eq "b") { return $null }
+
+    $selectionNumber = $selection -as [int]
+    if ($null -eq $selectionNumber -or $selectionNumber -lt 1 -or $selectionNumber -gt $videoFiles.Count) {
+        Write-Host "Invalid selection. Please enter a number between 1 and $($videoFiles.Count)." -ForegroundColor Red
+        Start-Sleep -Seconds 2
+        return $null
+    }
+
+    return $videoFiles[$selectionNumber - 1]
+}
+
+function Invoke-FFmpegProcess {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [string]$Activity = "Processing",
+        [string]$StatusInfo = "",
+        [double]$TotalSeconds = 0
+    )
+
+    $pInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pInfo.FileName = "ffmpeg"
+    $pInfo.Arguments = $ArgumentList -join " "
+    # Child processes inherit the process cwd, not PowerShell's Set-Location,
+    # so relative output paths would otherwise land in the wrong folder
+    $pInfo.WorkingDirectory = (Get-Location).Path
+    $pInfo.RedirectStandardError = $true
+    $pInfo.UseShellExecute = $false
+    $pInfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $pInfo
+
+    try { [Console]::CursorVisible = $false } catch {}
+    $startTime = Get-Date
+    $process.Start() | Out-Null
+
+    while (-not $process.HasExited) {
+        $line = $process.StandardError.ReadLine()
+
+        if ($line -match "time=(\d{2}):(\d{2}):(\d{2}\.\d{2})") {
+            $hours, $minutes, $seconds = [int]$matches[1], [int]$matches[2], [double]$matches[3]
+            $currentPos = ($hours * 3600) + ($minutes * 60) + $seconds
+
+            if ($TotalSeconds -gt 0) {
+                $percent = [math]::Min(100, [math]::Round(($currentPos / $TotalSeconds) * 100, 1))
+
+                $timeElapsed = (Get-Date) - $startTime
+                if ($percent -gt 0) {
+                    $totalEstimatedSeconds = ($timeElapsed.TotalSeconds / $percent) * 100
+                    $remaining = [timespan]::FromSeconds($totalEstimatedSeconds - $timeElapsed.TotalSeconds)
+                    $etaString = $remaining.ToString("hh\:mm\:ss")
+                } else { $etaString = "--:--:--" }
+
+                Update-ProgressBar -Activity $Activity -Percent $percent -ETA $etaString -StatusInfo $StatusInfo
+            }
+        }
+    }
+    $process.WaitForExit()
+    try { [Console]::CursorVisible = $true } catch {}
+
+    return $process.ExitCode
+}
+
+Export-ModuleMember -Function Show-AsciiBanner, Show-RotatingFFmpegLogo, Show-AnimatedIcon, Show-Banner, Write-AnimatedLine, Update-ProgressBar, Show-CompletionAnimation, Wait-KeyPress, Select-VideoFile, Invoke-FFmpegProcess

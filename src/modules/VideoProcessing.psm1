@@ -1,5 +1,4 @@
 Import-Module "$PSScriptRoot/UI.psm1"
-$ffmpeg = "ffmpeg"
 $ffprobe = "ffprobe"
 
 $script:CompressionPresets = @{}
@@ -14,50 +13,44 @@ function Set-CompressionMode {
         
         $script:CompressionPresets = @{
             "High Quality" = @{
-                Codec     = "h264_nvenc" 
-                CRF       = "21"    
-                Preset    = "p7"   
-                MapAll    = $true
-                CopyAudio = $true
+                Codec  = "h264_nvenc"
+                CRF    = "21"
+                Preset = "p7"
+                MapAll = $true
             }
             "Balanced"     = @{
-                Codec     = "h264_nvenc"
-                CRF       = "24"     
-                Preset    = "p5"    
-                MapAll    = $true
-                CopyAudio = $true
+                Codec  = "h264_nvenc"
+                CRF    = "24"
+                Preset = "p5"
+                MapAll = $true
             }
             "Small Size"   = @{
-                Codec     = "h264_nvenc"
-                CRF       = "30"
-                Preset    = "p3"     
-                MapAll    = $true
-                CopyAudio = $true
+                Codec  = "h264_nvenc"
+                CRF    = "30"
+                Preset = "p3"
+                MapAll = $true
             }
         }
     }
     else {
         $script:CompressionPresets = @{
             "High Quality" = @{
-                Codec     = "libx264"
-                CRF       = "18"
-                Preset    = "slow"
-                MapAll    = $true
-                CopyAudio = $true
+                Codec  = "libx264"
+                CRF    = "18"
+                Preset = "slow"
+                MapAll = $true
             }
             "Balanced"     = @{
-                Codec     = "libx264"
-                CRF       = "23"
-                Preset    = "slow"
-                MapAll    = $true
-                CopyAudio = $true
+                Codec  = "libx264"
+                CRF    = "23"
+                Preset = "slow"
+                MapAll = $true
             }
             "Small Size"   = @{
-                Codec     = "libx264"
-                CRF       = "28"
-                Preset    = "fast"
-                MapAll    = $true
-                CopyAudio = $true
+                Codec  = "libx264"
+                CRF    = "28"
+                Preset = "fast"
+                MapAll = $true
             }
         }
     }
@@ -76,12 +69,6 @@ function Write-ErrorDetails {
     Write-Host $ErrorRecord.Exception.Message -ForegroundColor Red
     Write-Host "Stack trace:" -ForegroundColor Red
     Write-Host $ErrorRecord.ScriptStackTrace -ForegroundColor Red
-}
-
-function Exit-Application {
-    Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
-    [void][System.Console]::ReadKey($true)
-    exit 
 }
 
 function Write-SectionHeader {
@@ -156,17 +143,11 @@ function Get-VideoProperties {
 function Get-SystemSpecs {
     try {
         $cpuInfo = Get-CimInstance Win32_Processor | Select-Object -First 1
-        $gpuInfo = Get-CimInstance Win32_VideoController | Select-Object -First 1
+        # Prefer a dedicated NVIDIA adapter: on laptops the first controller is usually the iGPU
+        $gpus = @(Get-CimInstance Win32_VideoController)
+        $gpuInfo = $gpus | Where-Object { $_.Name -match "NVIDIA" } | Select-Object -First 1
+        if (-not $gpuInfo) { $gpuInfo = $gpus | Select-Object -First 1 }
         $ramInfo = Get-CimInstance Win32_ComputerSystem
-        $gpuMemory = "Unknown"
-        if ($gpuInfo.AdapterRAM) {
-            try {
-                $gpuMemory = [math]::Round([decimal]$gpuInfo.AdapterRAM / 1GB, 2)
-            }
-            catch {
-                $gpuMemory = "Unknown"
-            }
-        }
 
         return @{
             CPU = @{
@@ -175,8 +156,7 @@ function Get-SystemSpecs {
                 Speed = if ($cpuInfo.MaxClockSpeed) { $cpuInfo.MaxClockSpeed } else { 2000 }
             }
             GPU = @{
-                Name   = if ($gpuInfo.Name) { $gpuInfo.Name } else { "Unknown" }
-                Memory = $gpuMemory
+                Name = if ($gpuInfo.Name) { $gpuInfo.Name } else { "Unknown" }
             }
             RAM = @{
                 Total = if ($ramInfo.TotalPhysicalMemory) { 
@@ -197,8 +177,7 @@ function Get-SystemSpecs {
                 Speed = 2000
             }
             GPU = @{
-                Name   = "Unknown GPU"
-                Memory = "Unknown"
+                Name = "Unknown GPU"
             }
             RAM = @{
                 Total = 8
@@ -222,14 +201,15 @@ function Show-PresetDetails {
 function Get-CompressionSuggestions {
     param (
         [Parameter(Mandatory = $true)]
-        [string]$inputFile
+        [string]$inputFile,
+        [hashtable]$systemSpecs
     )
-    
+
     try {
         $videoProps = Get-VideoProperties -inputFile $inputFile
         if (-not $videoProps) { throw "Failed to get video properties" }
 
-        $systemSpecs = Get-SystemSpecs
+        if (-not $systemSpecs) { $systemSpecs = Get-SystemSpecs }
         if (-not $systemSpecs) { throw "Failed to get system specifications" }
 
         Write-SectionHeader "Video Analysis"
@@ -254,20 +234,24 @@ function Get-CompressionSuggestions {
         Show-PresetDetails "Small Size" 3
 
         Write-Host "`n[B] Go Back" -ForegroundColor White
+
+        return $videoProps
     }
     catch {
         Write-Host "Error generating compression suggestions: $_" -ForegroundColor Red
+        return $null
     }
 }
 
 function Compress-Video {
     param (
         [Parameter(Mandatory = $true)][string]$inputFile,
-        [Parameter(Mandatory = $true)][string]$preset
+        [Parameter(Mandatory = $true)][string]$preset,
+        [hashtable]$videoProps
     )
-    
+
     try {
-        $videoProps = Get-VideoProperties $inputFile
+        if (-not $videoProps) { $videoProps = Get-VideoProperties -inputFile $inputFile }
         if (-not $videoProps) { throw "Failed to analyze video" }
         $totalSeconds = $videoProps.Duration.TotalSeconds
         $selectedPreset = $script:CompressionPresets[$preset]
@@ -277,57 +261,21 @@ function Compress-Video {
         Write-Host "`nStarting video compression ($preset)..." -ForegroundColor Cyan
         Write-Host "-------------------------------------------" -ForegroundColor Cyan
 
-        $pInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pInfo.FileName = $ffmpeg
         $argList = @("-i", "`"$inputFile`"")
         if ($selectedPreset.MapAll) { $argList += "-map", "0" }
-        
+
         if ($selectedPreset.Codec -like "*nvenc") {
             $argList += "-c:v", $selectedPreset.Codec, "-rc", "vbr", "-cq", $selectedPreset.CRF, "-preset", $selectedPreset.Preset, "-b:v", "0"
         } else {
             $argList += "-c:v", $selectedPreset.Codec, "-crf", $selectedPreset.CRF, "-preset", $selectedPreset.Preset
         }
         $argList += "-c:a", "copy", "`"$outputFile`"", "-y"
-        
-        $pInfo.Arguments = $argList -join " "
-        $pInfo.RedirectStandardError = $true
-        $pInfo.UseShellExecute = $false
-        $pInfo.CreateNoWindow = $true
 
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $pInfo
-        
-        try { [Console]::CursorVisible = $false } catch {}
-        $startTime = Get-Date
-        $process.Start() | Out-Null
-        
-        while (-not $process.HasExited) {
-            $line = $process.StandardError.ReadLine()
-            
-            if ($line -match "time=(\d{2}):(\d{2}):(\d{2}\.\d{2})") {
-                $hours, $minutes, $seconds = [int]$matches[1], [int]$matches[2], [double]$matches[3]
-                $currentPos = ($hours * 3600) + ($minutes * 60) + $seconds
-                
-                if ($totalSeconds -gt 0) {
-                    $percent = [math]::Min(100, [math]::Round(($currentPos / $totalSeconds) * 100, 1))
-                    
-                    $timeElapsed = (Get-Date) - $startTime
-                    if ($percent -gt 0) {
-                        $totalEstimatedSeconds = ($timeElapsed.TotalSeconds / $percent) * 100
-                        $remaining = [timespan]::FromSeconds($totalEstimatedSeconds - $timeElapsed.TotalSeconds)
-                        $etaString = $remaining.ToString("hh\:mm\:ss")
-                    } else { $etaString = "--:--:--" }
+        [void](Invoke-FFmpegProcess -ArgumentList $argList -Activity "Compressing" -StatusInfo "Speed: $($selectedPreset.Preset)" -TotalSeconds $totalSeconds)
 
-                    Update-ProgressBar -Activity "Compressing" -Percent $percent -ETA $etaString -StatusInfo "Speed: $($selectedPreset.Preset)"
-                }
-            }
-        }
-        $process.WaitForExit()
-        try { [Console]::CursorVisible = $true } catch {}
-
-        if (Test-Path $outputFile) {
-            $originalSize = (Get-Item $inputFile).Length / 1MB
-            $compressedSize = (Get-Item $outputFile).Length / 1MB
+        if (Test-Path -LiteralPath $outputFile) {
+            $originalSize = (Get-Item -LiteralPath $inputFile).Length / 1MB
+            $compressedSize = (Get-Item -LiteralPath $outputFile).Length / 1MB
             $savingsPercent = [math]::Round(100 - ($compressedSize / $originalSize * 100), 1)
 
             Show-CompletionAnimation
@@ -338,9 +286,8 @@ function Compress-Video {
             Write-Host "Compressed Size: $([math]::Round($compressedSize, 2)) MB"
             Write-Host "Space Saved: $savingsPercent%"
             Write-Host "`nOutput File: $outputFile"
-            
-            Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
-            [void][System.Console]::ReadKey($true)
+
+            Wait-KeyPress
         } else {
             throw "FFmpeg failed to create the output file. Please check if the codec is supported on your system."
         }
@@ -351,4 +298,4 @@ function Compress-Video {
     }
 }
 
-Export-ModuleMember -Function Get-VideoProperties, Get-SystemSpecs, Get-SmartRecommendation, Get-CompressionSuggestions, Compress-Video, Set-CompressionMode
+Export-ModuleMember -Function Get-VideoProperties, Get-SystemSpecs, Get-CompressionSuggestions, Compress-Video, Set-CompressionMode
