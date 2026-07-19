@@ -1,5 +1,11 @@
 What's New in This Update:
 
-• Fixed "running scripts is disabled on this system" errors when launching the tool on a fresh Windows install
-• Launcher.exe now works without changing any PowerShell settings
-• If you still see the error when running the script directly, launch with Launcher.exe or "assets/Launcher Config.bat" instead
+• Fixed videos with [brackets] in the filename failing to compress or merge
+• NVIDIA GPU mode is now offered on laptops with two graphics cards
+• YouTube quality menu no longer lists resolutions the video doesn't have
+• Compression now analyzes the video once instead of twice (faster start)
+• Trim progress bar now reaches 100% correctly
+• File lists now always show file sizes
+• Fixed misleading "Press any key to exit" messages (they return to the menu)
+• Fixed "running scripts is disabled on this system" errors on fresh Windows installs
+• Lots of internal cleanup for future updates

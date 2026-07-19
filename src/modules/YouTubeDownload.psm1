@@ -1,4 +1,6 @@
-Import-Module (Join-Path $PSScriptRoot "UI.psm1") -Force
+# No -Force: it would demote the globally imported UI module to a nested one,
+# hiding UI functions from the main script and the other modules
+Import-Module (Join-Path $PSScriptRoot "UI.psm1")
 
 function Save-YouTubeMP3 {
     Write-Host "`nYouTube MP3 Downloader" -ForegroundColor Cyan
@@ -85,8 +87,7 @@ function Save-YouTubeMP3 {
         Write-Host "`nError during download: $_" -ForegroundColor Red
     }
 
-    Write-Host "`nPress any key to continue..." -ForegroundColor Yellow
-    [void][System.Console]::ReadKey($true)
+    Wait-KeyPress -Message "Press any key to continue..."
 }
 
 function Save-YouTubeMP4 {
@@ -112,13 +113,15 @@ function Save-YouTubeMP4 {
         
         $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         $commonArgs = "--no-playlist --no-warnings --socket-timeout 30 --user-agent `"$ua`""
-        
-        $videoTitle = & yt-dlp --get-title $url $commonArgs.Split(' ') 2>&1
+        # Array form for direct calls: splitting the string on spaces would shatter the quoted user-agent
+        $commonArgList = @("--no-playlist", "--no-warnings", "--socket-timeout", "30", "--user-agent", $ua)
+
+        $videoTitle = & yt-dlp --get-title $url @commonArgList 2>&1
         Write-Host "`nVideo Found: " -NoNewline -ForegroundColor Cyan
         Write-Host "$videoTitle" -ForegroundColor Yellow
         Write-Host ""
 
-        $formats = & yt-dlp -F $url $commonArgs.Split(' ') 2>&1 | Out-String
+        $formats = & yt-dlp -F $url @commonArgList 2>&1 | Out-String
         
         $resolutions = @(
             @{height = "4320"; name = "8K"; code = "2160p60"; formatString = "bestvideo[height<=4320]+bestaudio/best[height<=4320]" },
@@ -132,7 +135,9 @@ function Save-YouTubeMP4 {
 
         $availableResolutions = @()
         foreach ($res in $resolutions) {
-            if ($formats -match "$($res.height)p" -or $formats -match "$($res.height)") {
+            # Match "1080p" or a "1920x1080" resolution column; a bare height would
+            # match stray digits in file sizes/bitrates and list unavailable options
+            if ($formats -match "$($res.height)p" -or $formats -match "x$($res.height)\b") {
                 $availableResolutions += $res
             }
         }
@@ -229,8 +234,7 @@ function Save-YouTubeMP4 {
         Write-Host "`nError during download: $_" -ForegroundColor Red
     }
     
-    Write-Host "`nPress any key to continue..." -ForegroundColor Yellow
-    [void][System.Console]::ReadKey($true)
+    Wait-KeyPress -Message "Press any key to continue..."
 }
 
-Export-ModuleMember -Function *
+Export-ModuleMember -Function Save-YouTubeMP3, Save-YouTubeMP4

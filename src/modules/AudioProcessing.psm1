@@ -1,6 +1,7 @@
-Import-Module (Join-Path $PSScriptRoot "UI.psm1") -Force
+# No -Force: it would demote the globally imported UI module to a nested one,
+# hiding UI functions from the main script and the other modules
+Import-Module (Join-Path $PSScriptRoot "UI.psm1")
 
-$ffmpeg = "ffmpeg"
 $ffprobe = "ffprobe"
 
 function Merge-AudioStreams {
@@ -98,8 +99,6 @@ function Merge-AudioStreams {
         }
         $filterComplex += "$mixInputs amix=inputs=$($audioStreams.Count):duration=longest:normalize=0[aout]"
 
-        $pInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pInfo.FileName = $ffmpeg
         $argList = @(
             "-i", "`"$inputVideo`"",
             "-filter_complex", "`"$filterComplex`"",
@@ -109,66 +108,26 @@ function Merge-AudioStreams {
             "-c:a", "aac",
             "-b:a", "256k",
             "`"$outputFile`"",
-            "-y" 
+            "-y"
         )
-        $pInfo.Arguments = $argList -join " "
-        $pInfo.RedirectStandardError = $true
-        $pInfo.UseShellExecute = $false
-        $pInfo.CreateNoWindow = $true
 
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $pInfo
-        
-        try { [Console]::CursorVisible = $false } catch {}
-        $startTime = Get-Date
-        $process.Start() | Out-Null
-        
-        # --- PROGRESS LOOP ---
-        while (-not $process.HasExited) {
-            $line = $process.StandardError.ReadLine()
-            
-            if ($line -match "time=(\d{2}):(\d{2}):(\d{2}\.\d{2})") {
-                $hours = [int]$matches[1]
-                $minutes = [int]$matches[2]
-                $seconds = [double]$matches[3]
-                $currentPos = ($hours * 3600) + ($minutes * 60) + $seconds
-                
-                if ($totalSeconds -gt 0) {
-                    $percent = [math]::Min(100, [math]::Round(($currentPos / $totalSeconds) * 100, 1))
-                    
-                    # Calculate ETA
-                    $timeElapsed = (Get-Date) - $startTime
-                    if ($percent -gt 0) {
-                        $totalEstimatedSeconds = ($timeElapsed.TotalSeconds / $percent) * 100
-                        $remaining = [timespan]::FromSeconds($totalEstimatedSeconds - $timeElapsed.TotalSeconds)
-                        $etaString = $remaining.ToString("hh\:mm\:ss")
-                    } else { $etaString = "--:--:--" }
+        $exitCode = Invoke-FFmpegProcess -ArgumentList $argList -Activity "Merging Audio" -StatusInfo "AAC 256k" -TotalSeconds $totalSeconds
 
-                    Update-ProgressBar -Activity "Merging Audio" -Percent $percent -ETA $etaString -StatusInfo "AAC 256k"
-                }
-            }
-        }
-        $process.WaitForExit()
-        try { [Console]::CursorVisible = $true } catch {}
-
-        if ($process.ExitCode -eq 0) {
+        if ($exitCode -eq 0) {
             Show-CompletionAnimation
             Write-Host "`nAll audio streams successfully merged!" -ForegroundColor Green
             Write-Host "Output file: $outputFile"
-            Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
-            [void][System.Console]::ReadKey($true)
+            Wait-KeyPress
         } else {
             Write-Host "`nError occurred while merging audio streams." -ForegroundColor Red
-            Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
-            [void][System.Console]::ReadKey($true)
+            Wait-KeyPress
         }
     }
     catch {
         try { [Console]::CursorVisible = $true } catch {}
         Write-Host "Error during audio merge: $_" -ForegroundColor Red
-        Write-Host "`nPress any key to exit..." -ForegroundColor Yellow
-        [void][System.Console]::ReadKey($true)
+        Wait-KeyPress
     }
 }
 
-Export-ModuleMember -Function *
+Export-ModuleMember -Function Merge-AudioStreams
