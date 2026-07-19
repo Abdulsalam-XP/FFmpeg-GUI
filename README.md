@@ -31,6 +31,15 @@ A handy PowerShell script for processing `.mp4` files using `ffmpeg`. Compress v
 
 ## ▶️ Usage Instructions
 
+- ✅ **Launch the tool with `Launcher.exe`** (or `assets/Launcher Config.bat`) – do **not** run the `.ps1` file directly.
+  Windows blocks downloaded PowerShell scripts by default, so running `./Video-Audio-Tool.ps1` in a terminal will show:
+  `...cannot be loaded because running scripts is disabled on this system.`
+
+- If you really want to run the script from a terminal, use:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\Video-Audio-Tool.ps1
+  ```
+
 - ⚠️ **Important**: Make sure that there is atleast one video present in the directory of your folder
 
 
@@ -53,10 +62,11 @@ If you encounter issues:
 1. Check that FFmpeg is properly installed (`ffmpeg -version`)
 2. Ensure you have `.mp4` files in the same directory as the script
 3. Run PowerShell as Administrator if you get permission errors
-4. If for whatever reason your script is executing for one second then closing, open powershell normally, navigate to your folder and execute the script to fetch the error message by typing:
+4. If you see `running scripts is disabled on this system`, launch the tool with `Launcher.exe` or `assets/Launcher Config.bat` instead of running the `.ps1` directly (or use the `-ExecutionPolicy Bypass` command from the Usage section)
+5. If for whatever reason your script is executing for one second then closing, open powershell normally, navigate to your folder and execute the script to fetch the error message by typing:
    
    ```
-   ./Video-Audio-Tool
+   powershell -ExecutionPolicy Bypass -File .\Video-Audio-Tool.ps1
    ```
    You can try showing the message to any AI model for any further assistance 
    

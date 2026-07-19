@@ -1,7 +1,5 @@
 What's New in This Update:
 
-• Fixed issues with resolutions above 1080P not downloading properly from YT
-• Fixed an issue with 4k resolution not compressing properly
-• Added a trimmer mode for easy and fast trimming (will make it advanced in the future)
-• Added feature to disable/enable animations
-• Fixed a lot of bugs and inconsistencies 
+• Fixed "running scripts is disabled on this system" errors when launching the tool on a fresh Windows install
+• Launcher.exe now works without changing any PowerShell settings
+• If you still see the error when running the script directly, launch with Launcher.exe or "assets/Launcher Config.bat" instead
