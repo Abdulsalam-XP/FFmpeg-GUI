@@ -1,0 +1,41 @@
+<!-- src/assets/MainWindow.xaml -->
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="FFmpeg GUI" Height="620" Width="960"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BrushShellBase}">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="180"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Sidebar -->
+        <Grid Grid.Column="0" Background="#0B0F1C">
+            <Canvas x:Name="PillCanvas">
+                <Border x:Name="NavPill" Width="150" Height="38" CornerRadius="8"
+                        Background="{StaticResource BrushAccentGradient}"
+                        Canvas.Left="10" Canvas.Top="70"/>
+            </Canvas>
+            <StackPanel Margin="0,60,0,0">
+                <Button x:Name="NavCompress" Content="Compress" Style="{StaticResource SidebarItemStyle}" Tag="Compress"/>
+                <Button x:Name="NavMergeAudio" Content="Merge Audio" Style="{StaticResource SidebarItemStyle}" Tag="MergeAudio"/>
+                <Button x:Name="NavTrim" Content="Trim" Style="{StaticResource SidebarItemStyle}" Tag="Trim"/>
+                <Button x:Name="NavYouTubeMP3" Content="YouTube MP3" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP3"/>
+                <Button x:Name="NavYouTubeMP4" Content="YouTube MP4" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP4"/>
+                <Button x:Name="NavSettings" Content="Settings" Style="{StaticResource SidebarItemStyle}" Tag="Settings"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Content -->
+        <Grid Grid.Column="1" Margin="30,24">
+            <Grid x:Name="PanelCompress" Visibility="Visible"/>
+            <Grid x:Name="PanelMergeAudio" Visibility="Collapsed"/>
+            <Grid x:Name="PanelTrim" Visibility="Collapsed"/>
+            <Grid x:Name="PanelYouTubeMP3" Visibility="Collapsed"/>
+            <Grid x:Name="PanelYouTubeMP4" Visibility="Collapsed"/>
+            <Grid x:Name="PanelSettings" Visibility="Collapsed"/>
+        </Grid>
+    </Grid>
+</Window>
