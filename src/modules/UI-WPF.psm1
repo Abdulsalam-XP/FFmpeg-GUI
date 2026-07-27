@@ -21,7 +21,16 @@ function Initialize-MainWindow {
     if (-not [System.Windows.Application]::Current) {
         $null = New-Object System.Windows.Application
     }
-    [System.Windows.Application]::Current.Resources.MergedDictionaries.Add($themeDict)
+
+    # Guard against accumulating duplicate merged dictionaries if Initialize-MainWindow is
+    # ever called more than once in the same process (repeated manual-repro runs, a future
+    # hot-reload, etc.). Merged dictionaries flatten their keys into the parent's resource
+    # lookup, so checking for one of Theme.xaml's own keys ("FontChrome") tells us whether
+    # the theme has already been merged onto Application.Current without needing to track
+    # dictionary identity/Source separately.
+    if (-not [System.Windows.Application]::Current.Resources.Contains("FontChrome")) {
+        [System.Windows.Application]::Current.Resources.MergedDictionaries.Add($themeDict)
+    }
 
     [xml]$xaml = Get-Content -Path $xamlPath -Raw
     $reader = New-Object System.Xml.XmlNodeReader $xaml
