@@ -2,8 +2,8 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <FontFamily x:Key="FontChrome">Segoe UI</FontFamily>
-    <FontFamily x:Key="FontData">Consolas</FontFamily>
+    <FontFamily x:Key="FontChrome">Plus Jakarta Sans, Segoe UI</FontFamily>
+    <FontFamily x:Key="FontData">JetBrains Mono, Consolas</FontFamily>
 
     <SolidColorBrush x:Key="BrushShellBase" Color="#090D1A"/>
 
@@ -23,7 +23,7 @@
         <GradientStop Color="#D3A24C" Offset="1"/>
     </LinearGradientBrush>
 
-    <SolidColorBrush x:Key="BrushBorderGold" Color="#3AD3A24C"/>
+    <SolidColorBrush x:Key="BrushBorderGold" Color="#2ED3A24C"/>
     <SolidColorBrush x:Key="BrushCardBackground" Color="#0C1626"/>
     <SolidColorBrush x:Key="BrushTextPrimary" Color="#F2EDE0"/>
     <SolidColorBrush x:Key="BrushTextMuted" Color="#8890B0"/>
