@@ -2,6 +2,28 @@
 # hiding UI functions from the main script and the other modules
 Import-Module (Join-Path $PSScriptRoot "UI.psm1")
 
+function Get-AvailableResolutions {
+    param([Parameter(Mandatory = $true)][string]$FormatsText)
+
+    $resolutions = @(
+        @{height = "4320"; name = "8K"; code = "2160p60"; formatString = "bestvideo[height<=4320]+bestaudio/best[height<=4320]" },
+        @{height = "2160"; name = "4K"; code = "2160p"; formatString = "bestvideo[height<=2160]+bestaudio/best[height<=2160]" },
+        @{height = "1440"; name = "2K"; code = "1440p"; formatString = "bestvideo[height<=1440]+bestaudio/best[height<=1440]" },
+        @{height = "1080"; name = "Full HD"; code = "1080p"; formatString = "best[height<=1080][ext=mp4]/best[ext=mp4]/best" },
+        @{height = "720"; name = "HD"; code = "720p"; formatString = "best[height<=720][ext=mp4]/best[ext=mp4]/best" },
+        @{height = "480"; name = "SD"; code = "480p"; formatString = "best[height<=480][ext=mp4]/best[ext=mp4]/best" },
+        @{height = "360"; name = "Low"; code = "360p"; formatString = "best[height<=360][ext=mp4]/best[ext=mp4]/best" }
+    )
+
+    $available = @()
+    foreach ($res in $resolutions) {
+        if ($FormatsText -match "$($res.height)p" -or $FormatsText -match "x$($res.height)\b") {
+            $available += $res
+        }
+    }
+    return $available
+}
+
 function Save-YouTubeMP3 {
     Write-Host "`nYouTube MP3 Downloader" -ForegroundColor Cyan
     Write-Host "--------------------" -ForegroundColor Cyan
@@ -237,4 +259,4 @@ function Save-YouTubeMP4 {
     Wait-KeyPress -Message "Press any key to continue..."
 }
 
-Export-ModuleMember -Function Save-YouTubeMP3, Save-YouTubeMP4
+Export-ModuleMember -Function Get-AvailableResolutions, Save-YouTubeMP3, Save-YouTubeMP4
