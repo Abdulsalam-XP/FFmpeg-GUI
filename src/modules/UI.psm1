@@ -285,6 +285,37 @@ function Select-VideoFile {
     return $videoFiles[$selectionNumber - 1]
 }
 
+function ConvertFrom-FFmpegProgressLine {
+    param(
+        [Parameter(Mandatory = $true)][string]$Line,
+        [Parameter(Mandatory = $true)][double]$TotalSeconds,
+        [Parameter(Mandatory = $true)][double]$ElapsedSeconds
+    )
+
+    if ($Line -notmatch "time=(\d{2}):(\d{2}):(\d{2}\.\d{2})") {
+        return $null
+    }
+
+    $hours, $minutes, $seconds = [int]$matches[1], [int]$matches[2], [double]$matches[3]
+    $currentPos = ($hours * 3600) + ($minutes * 60) + $seconds
+
+    if ($TotalSeconds -le 0) {
+        return @{ Percent = 0; EtaString = "--:--:--" }
+    }
+
+    $percent = [math]::Min(100, [math]::Round(($currentPos / $TotalSeconds) * 100, 1))
+
+    if ($percent -gt 0) {
+        $totalEstimatedSeconds = ($ElapsedSeconds / $percent) * 100
+        $remaining = [timespan]::FromSeconds($totalEstimatedSeconds - $ElapsedSeconds)
+        $etaString = $remaining.ToString("hh\:mm\:ss")
+    } else {
+        $etaString = "--:--:--"
+    }
+
+    return @{ Percent = $percent; EtaString = $etaString }
+}
+
 function Invoke-FFmpegProcess {
     param(
         [Parameter(Mandatory = $true)][string[]]$ArgumentList,
@@ -337,4 +368,4 @@ function Invoke-FFmpegProcess {
     return $process.ExitCode
 }
 
-Export-ModuleMember -Function Show-AsciiBanner, Show-RotatingFFmpegLogo, Show-AnimatedIcon, Show-Banner, Write-AnimatedLine, Update-ProgressBar, Show-CompletionAnimation, Wait-KeyPress, Select-VideoFile, Invoke-FFmpegProcess
+Export-ModuleMember -Function Show-AsciiBanner, Show-RotatingFFmpegLogo, Show-AnimatedIcon, Show-Banner, Write-AnimatedLine, Update-ProgressBar, Show-CompletionAnimation, Wait-KeyPress, Select-VideoFile, ConvertFrom-FFmpegProgressLine, Invoke-FFmpegProcess
