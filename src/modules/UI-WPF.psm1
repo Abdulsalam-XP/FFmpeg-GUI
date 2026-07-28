@@ -64,14 +64,13 @@ function Initialize-MainWindow {
     return $context
 }
 
-# Dock-style hover: the item under the cursor grows and every other item in the list
-# shrinks, so the hover reads as the whole list deferring to the item being pointed at
-# rather than just one row inflating.
+# Hover magnification: the item under the cursor grows, everything else stays put.
 #
-# This can't live in the item's ControlTemplate, which is where the rest of the nav
-# styling sits: a template only ever sees the single control it was applied to, and this
-# effect requires reacting to a *sibling's* hover state. So each item gets its own
-# ScaleTransform up front, and one handler drives all of them together.
+# This lives here rather than in the item's ControlTemplate, where the rest of the nav
+# styling sits, because of the exception below: hovering the already-selected item must
+# do nothing. A template EventTrigger fires on MouseEnter unconditionally and cannot be
+# suppressed by a state trigger, so the scaling is driven from one handler instead, with
+# every item's ScaleTransform set up front.
 function Enable-NavHoverMagnify {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Context,
@@ -89,9 +88,7 @@ function Enable-NavHoverMagnify {
         param([int]$HoveredIndex)
 
         for ($i = 0; $i -lt $items.Count; $i++) {
-            $scale = if ($HoveredIndex -lt 0) { 1.0 }
-                     elseif ($i -eq $HoveredIndex) { 1.08 }
-                     else { 0.93 }
+            $scale = if ($i -eq $HoveredIndex) { 1.08 } else { 1.0 }
 
             $transform = $items[$i].RenderTransform
             foreach ($property in @([System.Windows.Media.ScaleTransform]::ScaleXProperty,
