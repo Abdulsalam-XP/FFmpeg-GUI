@@ -98,8 +98,12 @@
             </StackPanel>
         </Grid>
 
-        <!-- Content -->
-        <Grid Grid.Column="1" Margin="48,40,48,40">
+        <!-- Content. Scrollable because a panel can outgrow the window: the Compress
+             screen gains a whole card when an NVIDIA GPU is present, and the window is
+             resizable down to MinHeight. -->
+        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      Padding="48,40,40,40" Background="Transparent">
+        <Grid>
             <Grid x:Name="PanelCompress" Visibility="Visible">
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Compress Video" FontSize="22" FontWeight="Bold"
@@ -124,6 +128,23 @@
                         </StackPanel>
                     </Button>
 
+                    <!-- Shown only when an NVIDIA card is detected, matching the console
+                         version, which offered the NVENC choice on those machines only. -->
+                    <Border x:Name="CardGpuMode" Style="{StaticResource OptionCardBorderStyle}"
+                            Margin="0,0,0,26" Visibility="Collapsed">
+                        <DockPanel LastChildFill="False">
+                            <StackPanel DockPanel.Dock="Left">
+                                <TextBlock x:Name="TextGpuName" Text="NVIDIA GPU detected" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="Encode with NVENC: far faster, slightly larger files than CPU at the same quality."
+                                           FontSize="12" Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}"
+                                           Margin="0,5,0,0" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <CheckBox x:Name="ToggleGpuMode" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitchStyle}"
+                                      VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
                     <TextBlock Text="PRESET" FontSize="10.5" FontFamily="{StaticResource FontChrome}"
                                Foreground="{StaticResource BrushTextMuted}" Opacity="0.8" Margin="2,0,0,10"/>
                     <Grid Margin="0,0,0,26">
@@ -134,8 +155,9 @@
                             <ColumnDefinition Width="12"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <!-- TextEstSize* stay at an em dash until a file is loaded; Task 10
-                             fills them from Get-CompressionSuggestions. -->
+                        <!-- The detail line shows the encoder settings the preset will
+                             actually use, filled by Get-CompressionPresetDetails and
+                             refreshed when the GPU toggle changes the codec. -->
                         <RadioButton x:Name="ButtonPresetHigh" Grid.Column="0" GroupName="CompressPreset"
                                      Style="{StaticResource PresetCardStyle}">
                             <StackPanel>
@@ -145,9 +167,9 @@
                                            FontFamily="{StaticResource FontChrome}" FontSize="12" Foreground="{StaticResource BrushTextBody}"
                                            Margin="0,6,0,14" LineHeight="17"/>
                                 <Grid>
-                                    <TextBlock Text="Est. size" FontFamily="{StaticResource FontData}" FontSize="11"
+                                    <TextBlock Text="Encoder" FontFamily="{StaticResource FontData}" FontSize="11"
                                                Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
-                                    <TextBlock x:Name="TextEstSizeHigh" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                    <TextBlock x:Name="TextPresetDetailHigh" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
                                                FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}" HorizontalAlignment="Right"/>
                                 </Grid>
                             </StackPanel>
@@ -161,9 +183,9 @@
                                            FontFamily="{StaticResource FontChrome}" FontSize="12" Foreground="{StaticResource BrushTextBody}"
                                            Margin="0,6,0,14" LineHeight="17"/>
                                 <Grid>
-                                    <TextBlock Text="Est. size" FontFamily="{StaticResource FontData}" FontSize="11"
+                                    <TextBlock Text="Encoder" FontFamily="{StaticResource FontData}" FontSize="11"
                                                Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
-                                    <TextBlock x:Name="TextEstSizeBalanced" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                    <TextBlock x:Name="TextPresetDetailBalanced" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
                                                FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}" HorizontalAlignment="Right"/>
                                 </Grid>
                             </StackPanel>
@@ -177,14 +199,19 @@
                                            FontFamily="{StaticResource FontChrome}" FontSize="12" Foreground="{StaticResource BrushTextBody}"
                                            Margin="0,6,0,14" LineHeight="17"/>
                                 <Grid>
-                                    <TextBlock Text="Est. size" FontFamily="{StaticResource FontData}" FontSize="11"
+                                    <TextBlock Text="Encoder" FontFamily="{StaticResource FontData}" FontSize="11"
                                                Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
-                                    <TextBlock x:Name="TextEstSizeSmall" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                    <TextBlock x:Name="TextPresetDetailSmall" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
                                                FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}" HorizontalAlignment="Right"/>
                                 </Grid>
                             </StackPanel>
                         </RadioButton>
                     </Grid>
+
+                    <!-- Selecting a preset only selects it; starting a multi-minute encode
+                         is a separate, deliberate action. -->
+                    <Button x:Name="ButtonCompressStart" Content="Compress" Style="{StaticResource PrimaryButtonStyle}"
+                            HorizontalAlignment="Left" Margin="0,0,0,26" IsEnabled="False"/>
 
                     <Border Style="{StaticResource CardBorderStyle}">
                         <StackPanel>
@@ -430,5 +457,6 @@
                 </StackPanel>
             </Grid>
         </Grid>
+        </ScrollViewer>
     </Grid>
 </Window>

@@ -31,12 +31,15 @@ static class Launcher
             return;
         }
 
+        // Hidden window + CreateNoWindow: the app is a WPF window now, and a console
+        // flashing up behind it would give away that this is a script.
         var psi = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\"",
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\"",
             WorkingDirectory = dir,
-            UseShellExecute = false
+            UseShellExecute = false,
+            CreateNoWindow = true
         };
 
         try
