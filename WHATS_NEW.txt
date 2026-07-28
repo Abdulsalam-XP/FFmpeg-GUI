@@ -1,22 +1,24 @@
 What's New in This Update:
 
-Version 2.0 - the tool is now a real app, not a terminal menu.
+Version 2.1 - keep ffmpeg and yt-dlp up to date from inside the app, plus two
+fixes worth updating for on their own.
 
-• Brand new window. No more typing numbers into a black console screen. Every tool
-  has its own screen with real buttons, and the console never appears at all.
-• Drag and drop. Drop a video onto the app, or click to browse for one. Your videos
-  no longer have to sit in the same folder as the tool.
-• Cancel button. Long compressions and downloads can be stopped mid-run, which was
-  not possible before.
-• The window stays responsive while it works, so you can move it and watch live
-  progress instead of staring at a frozen screen.
-• Nothing to install. ffmpeg, ffprobe and yt-dlp now come bundled in the download,
-  so there is no winget setup and nothing to add to your PATH.
-• NVIDIA GPU mode is now a simple on/off switch, shown only if you have an NVIDIA
-  card, and each preset tells you the encoder settings it will use.
-• YouTube MP4 lists only the qualities your video actually offers, and downloads
-  above 1080p are merged correctly.
-• Clearer mistakes. Bad timestamps and unreadable files are explained on screen
-  instead of scrolling past in a console.
-• Settings shows which ffmpeg/ffprobe/yt-dlp the app is actually using, which makes
-  "it suddenly stopped working" far easier to diagnose.
+• Settings now shows the version of ffmpeg, ffprobe and yt-dlp you actually have,
+  and offers an Update button when a newer build is available. The download runs
+  in the background with progress, and can be cancelled. Nothing to fetch by hand.
+• Keeping yt-dlp current is the single best fix for "YouTube links stopped
+  working" - YouTube changes things often, and an out-of-date yt-dlp is nearly
+  always the reason.
+• The check is remembered for an hour, so reopening Settings is instant instead of
+  going to the network every time.
+
+Fixed:
+
+• Cancel stopped working after the first job. Starting a second compression,
+  merge, trim or download in the same session left a Cancel button that quietly
+  did nothing, and closing the app was the only way to stop the job. It now works
+  every time.
+• Clicking Compress (or Merge, Trim, Download) while a job was already running
+  started a second job on top of it. The progress bar jumped back and forth
+  between the two, and both wrote to the same output file at once. The button is
+  now disabled until the running job finishes or is cancelled.
