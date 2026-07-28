@@ -51,7 +51,7 @@
                     <Border.Effect><DropShadowEffect Color="#D3A24C" Opacity="0.4" BlurRadius="18" ShadowDepth="4"/></Border.Effect>
                 </Border>
             </Canvas>
-            <StackPanel Margin="12,60,12,0">
+            <StackPanel x:Name="NavList" Margin="12,60,12,0">
                 <RadioButton x:Name="NavCompress" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="Compress">
                     <StackPanel Orientation="Horizontal">
                         <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconCompress}"/>
@@ -108,33 +108,26 @@
                     <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="11.5"
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Border Style="{StaticResource DropzoneBorderStyle}" ClipToBounds="True" Margin="0,0,0,26">
-                        <Grid>
-                            <!-- Canvas reports no desired size, so the oversized glow
-                                 paints over the dropzone without inflating its height. -->
-                            <Canvas>
-                                <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
-                            </Canvas>
-                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
-                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
-                            <DockPanel LastChildFill="True">
-                                <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
-                                        Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
-                                        VerticalAlignment="Center" Margin="0,0,16,0">
-                                    <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <Button x:Name="ButtonCompressBrowse" Content="Browse&#8230;" Style="{StaticResource PresetButtonStyle}"
-                                        DockPanel.Dock="Right" VerticalAlignment="Center" Padding="18,10"/>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
-                                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                    <TextBlock Text="MP4 &#183; MKV &#183; MOV &#8212; presets below adjust once a file loads" FontSize="12"
-                                               Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
-                                </StackPanel>
-                            </DockPanel>
-                        </Grid>
-                    </Border>
+                    <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="True">
+                            <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
+                                    Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
+                                    VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <Border DockPanel.Dock="Right" Style="{StaticResource DropzoneChipStyle}">
+                                <TextBlock Text="Browse&#8230;" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextPrimary}"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="MP4 &#183; MKV &#183; MOV &#8212; presets below adjust once a file loads" FontSize="12"
+                                           Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </Button>
 
                     <TextBlock Text="PRESET" FontSize="10.5" FontFamily="{StaticResource FontChrome}"
                                Foreground="{StaticResource BrushTextMuted}" Opacity="0.8" Margin="2,0,0,10"/>
@@ -221,33 +214,26 @@
                     <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="11.5"
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Border Style="{StaticResource DropzoneBorderStyle}" ClipToBounds="True" Margin="0,0,0,26">
-                        <Grid>
-                            <!-- Canvas reports no desired size, so the oversized glow
-                                 paints over the dropzone without inflating its height. -->
-                            <Canvas>
-                                <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
-                            </Canvas>
-                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
-                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
-                            <DockPanel LastChildFill="True">
-                                <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
-                                        Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
-                                        VerticalAlignment="Center" Margin="0,0,16,0">
-                                    <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <Button x:Name="ButtonMergeBrowse" Content="Browse&#8230;" Style="{StaticResource PresetButtonStyle}"
-                                        DockPanel.Dock="Right" VerticalAlignment="Center" Padding="18,10"/>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="Drop a multi-stream video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
-                                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                    <TextBlock Text="System and mic audio streams get mixed into one track" FontSize="12"
-                                               Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
-                                </StackPanel>
-                            </DockPanel>
-                        </Grid>
-                    </Border>
+                    <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="True">
+                            <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
+                                    Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
+                                    VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <Border DockPanel.Dock="Right" Style="{StaticResource DropzoneChipStyle}">
+                                <TextBlock Text="Browse&#8230;" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextPrimary}"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Drop a multi-stream video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="System and mic audio streams get mixed into one track" FontSize="12"
+                                           Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </Button>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <StackPanel Orientation="Horizontal">
@@ -283,33 +269,26 @@
                     <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="11.5"
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Border Style="{StaticResource DropzoneBorderStyle}" ClipToBounds="True" Margin="0,0,0,26">
-                        <Grid>
-                            <!-- Canvas reports no desired size, so the oversized glow
-                                 paints over the dropzone without inflating its height. -->
-                            <Canvas>
-                                <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
-                            </Canvas>
-                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
-                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
-                            <DockPanel LastChildFill="True">
-                                <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
-                                        Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
-                                        VerticalAlignment="Center" Margin="0,0,16,0">
-                                    <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <Button x:Name="ButtonTrimBrowse" Content="Browse&#8230;" Style="{StaticResource PresetButtonStyle}"
-                                        DockPanel.Dock="Right" VerticalAlignment="Center" Padding="18,10"/>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
-                                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                    <TextBlock Text="Cut everything before or after a timestamp, no re-encode" FontSize="12"
-                                               Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
-                                </StackPanel>
-                            </DockPanel>
-                        </Grid>
-                    </Border>
+                    <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="True">
+                            <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
+                                    Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
+                                    VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <Border DockPanel.Dock="Right" Style="{StaticResource DropzoneChipStyle}">
+                                <TextBlock Text="Browse&#8230;" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextPrimary}"/>
+                            </Border>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="Cut everything before or after a timestamp, no re-encode" FontSize="12"
+                                           Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </Button>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <StackPanel>

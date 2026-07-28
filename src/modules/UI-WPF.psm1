@@ -51,12 +51,81 @@ function Initialize-MainWindow {
         $navButtons[$name] = $window.FindName("Nav$name")
     }
 
-    return @{
+    $context = @{
         Window     = $window
         Panels     = $panels
         NavButtons = $navButtons
+        NavList    = $window.FindName("NavList")
         Pill       = $window.FindName("NavPill")
         PillCanvas = $window.FindName("PillCanvas")
+    }
+
+    Enable-NavHoverMagnify -Context $context -Order $panelNames
+    return $context
+}
+
+# Dock-style hover: the item under the cursor grows and its immediate neighbours shrink,
+# so the hover reads as displacing the list rather than just enlarging one row.
+#
+# This can't live in the item's ControlTemplate, which is where the rest of the nav
+# styling sits: a template only ever sees the single control it was applied to, and this
+# effect requires reacting to a *sibling's* hover state. So each item gets its own
+# ScaleTransform up front, and one handler drives all of them together.
+function Enable-NavHoverMagnify {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][string[]]$Order
+    )
+
+    $items = @($Order | ForEach-Object { $Context.NavButtons[$_] } | Where-Object { $_ })
+    if ($items.Count -eq 0) { return }
+
+    foreach ($item in $items) {
+        $item.RenderTransform = New-Object System.Windows.Media.ScaleTransform 1, 1
+    }
+
+    $applyScales = {
+        param([int]$HoveredIndex)
+
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            $distance = if ($HoveredIndex -lt 0) { 99 } else { [Math]::Abs($i - $HoveredIndex) }
+            $scale = switch ($distance) {
+                0       { 1.08 }
+                1       { 0.93 }
+                default { 1.0 }
+            }
+
+            $transform = $items[$i].RenderTransform
+            foreach ($property in @([System.Windows.Media.ScaleTransform]::ScaleXProperty,
+                                    [System.Windows.Media.ScaleTransform]::ScaleYProperty)) {
+                if (-not $global:ShowAnimations) {
+                    # Clear the animation clock before writing directly: a held animation
+                    # value silently wins over a plain property set.
+                    $transform.BeginAnimation($property, $null)
+                    $transform.SetValue($property, $scale)
+                    continue
+                }
+
+                $animation = New-Object System.Windows.Media.Animation.DoubleAnimation
+                $animation.To = $scale
+                $animation.Duration = [System.Windows.Duration]::new([timespan]::FromMilliseconds(160))
+                $animation.EasingFunction = New-Object System.Windows.Media.Animation.QuadraticEase
+                $animation.EasingFunction.EasingMode = "EaseOut"
+                $transform.BeginAnimation($property, $animation)
+            }
+        }
+    }.GetNewClosure()
+
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $captured = $index
+        $items[$index].Add_MouseEnter({ & $applyScales $captured }.GetNewClosure())
+    }
+
+    # Reset from the list itself, not per-item MouseLeave. Leaving one item to enter its
+    # neighbour would otherwise fire a reset immediately after that neighbour's enter,
+    # flattening the effect while the cursor is still inside the list.
+    if ($Context.NavList) {
+        $Context.NavList.Add_MouseLeave({ & $applyScales -1 }.GetNewClosure())
     }
 }
 
@@ -103,10 +172,13 @@ function Show-Panel {
             return
         }
 
+        # Short and non-overshooting. The original BackEase deliberately sprang past the
+        # target and settled back, which reads as the highlight wobbling into place
+        # instead of simply following the click.
         $animation = New-Object System.Windows.Media.Animation.DoubleAnimation
         $animation.To = $targetTop
-        $animation.Duration = [System.Windows.Duration]::new([timespan]::FromMilliseconds(280))
-        $animation.EasingFunction = New-Object System.Windows.Media.Animation.BackEase
+        $animation.Duration = [System.Windows.Duration]::new([timespan]::FromMilliseconds(150))
+        $animation.EasingFunction = New-Object System.Windows.Media.Animation.QuadraticEase
         $animation.EasingFunction.EasingMode = "EaseOut"
 
         $Context.Pill.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $animation)
@@ -276,4 +348,4 @@ function Start-TrackedProcess {
     return $process
 }
 
-Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess
+Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess, Enable-NavHoverMagnify
