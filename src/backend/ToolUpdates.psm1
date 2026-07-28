@@ -16,7 +16,7 @@ function ConvertFrom-FfmpegVersionString {
 
     # (?<!\d) and (?!\d) pin the match to an exactly-8-digit run, so a longer digit
     # sequence is rejected rather than having a date read out of the middle of it.
-    $match = [regex]::Match($Line, 'ffmpeg version \S*?(?<!\d)(20\d{6})(?!\d)')
+    $match = [regex]::Match($Line, '(?:ffmpeg|ffprobe) version \S*?(?<!\d)(20\d{6})(?!\d)')
     if (-not $match.Success) { return $null }
 
     return ConvertTo-DateOrNull -Text $match.Groups[1].Value -Format "yyyyMMdd"
@@ -145,8 +145,16 @@ function Get-InstalledToolVersion {
 
         # Read stdout fully *before* WaitForExit. Waiting first can deadlock if the child
         # fills the redirected pipe buffer, which is the standard trap with redirection.
+        # Also drain stderr to prevent it from blocking.
         $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
         $process.WaitForExit(10000) | Out-Null
+
+        # Kill the process if it's still running after timeout, and prevent handle leak
+        if (-not $process.HasExited) {
+            $process.Kill()
+            $process.WaitForExit(1000) | Out-Null
+        }
 
         $firstLine = ($stdout -split "`r?`n" | Where-Object { $_.Trim() -ne "" } | Select-Object -First 1)
         if (-not $firstLine) { $firstLine = "" }
@@ -166,6 +174,9 @@ function Get-InstalledToolVersion {
     }
     catch {
         $result.Display = "unreadable"
+    }
+    finally {
+        if ($process) { $process.Dispose() }
     }
 
     return $result
