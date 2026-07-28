@@ -89,4 +89,108 @@ function Show-Panel {
     $Context.Pill.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $animation)
 }
 
-Export-ModuleMember -Function Initialize-MainWindow, Show-Panel
+if (-not ([System.Management.Automation.PSTypeName]'FFmpegGui.NamedPipePeek').Type) {
+    Add-Type -Namespace FFmpegGui -Name NamedPipePeek -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool PeekNamedPipe(
+    Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+    byte[] buffer, uint bufferSize, out uint bytesRead,
+    out uint bytesAvail, out uint bytesLeftThisMessage);
+'@
+}
+
+function Start-TrackedProcess {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][string]$Arguments,
+        [ValidateSet("Output", "Error")][string]$ReadStream = "Error",
+        [Parameter(Mandatory = $true)][scriptblock]$OnLine,
+        [Parameter(Mandatory = $true)][scriptblock]$OnExit
+    )
+
+    $pInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pInfo.FileName = $FileName
+    $pInfo.Arguments = $Arguments
+    $pInfo.WorkingDirectory = (Get-Location).Path
+    $pInfo.UseShellExecute = $false
+    $pInfo.CreateNoWindow = $true
+    if ($ReadStream -eq "Error") { $pInfo.RedirectStandardError = $true }
+    else { $pInfo.RedirectStandardOutput = $true }
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $pInfo
+    $process.Start() | Out-Null
+
+    $reader = if ($ReadStream -eq "Error") { $process.StandardError } else { $process.StandardOutput }
+    $pipeHandle = $reader.BaseStream.SafeFileHandle
+    $peekBuffer = New-Object byte[] 1
+
+    # NOTE on the polling design (deviation from the brief's literal add_ErrorDataReceived /
+    # add_OutputDataReceived / add_Exited + Register-ObjectEvent sample):
+    #
+    # ffmpeg reports progress by rewriting the same terminal line with a bare '\r'
+    # (no '\n'). .NET's async line-based redirection (BeginErrorReadLine /
+    # ErrorDataReceived) only recognizes '\n' as a line terminator, so it never delivers
+    # any of ffmpeg's progress output -- confirmed empirically: a real ffmpeg run that
+    # completes in 0.3s left the wrapper hung for 90+s with zero progress lines and no
+    # Exited event, stalled right where the '\n'-terminated startup banner ends and
+    # '\r'-only progress begins. (The existing console version avoids this because
+    # StreamReader.ReadLine(), which it uses synchronously, treats bare '\r' as a line
+    # terminator too -- see Invoke-FFmpegProcess in UI.psm1.)
+    #
+    # The fix here polls the stream on a DispatcherTimer (i.e. entirely on the UI
+    # thread, so PowerShell scriptblocks can run inline with a valid runspace context --
+    # no cross-thread marshaling, no Register-ObjectEvent, nothing to Unregister-Event),
+    # splitting accumulated text on '\r' or '\n' like the console version does. A plain
+    # StreamReader.Peek()/Read() would block the UI thread whenever no data is currently
+    # available (anonymous pipes have no non-blocking read in .NET), so PeekNamedPipe is
+    # used first to check the OS pipe's buffered byte count without blocking.
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(40)
+    $lineBuffer = New-Object System.Text.StringBuilder
+    $exitHandled = $false
+
+    $timer.Add_Tick({
+        [uint32]$bytesRead = 0
+        [uint32]$bytesAvail = 0
+        [uint32]$bytesLeftThisMessage = 0
+        while (-not $pipeHandle.IsClosed -and
+               [FFmpegGui.NamedPipePeek]::PeekNamedPipe($pipeHandle, $peekBuffer, 0, [ref]$bytesRead, [ref]$bytesAvail, [ref]$bytesLeftThisMessage) -and
+               $bytesAvail -gt 0) {
+            $ch = [char]$reader.Read()
+            if ($ch -eq "`r" -or $ch -eq "`n") {
+                if ($lineBuffer.Length -gt 0) {
+                    & $OnLine $lineBuffer.ToString()
+                    [void]$lineBuffer.Clear()
+                }
+            } else {
+                [void]$lineBuffer.Append($ch)
+            }
+        }
+
+        if (-not $exitHandled -and $process.HasExited) {
+            $exitHandled = $true
+            # HasExited becoming true doesn't guarantee every byte the child wrote has
+            # been drained yet -- the PeekNamedPipe loop above can race the child's exit
+            # and stop one tick early, silently dropping the last chunk (confirmed
+            # empirically: real ffmpeg runs lost their final progress/summary lines this
+            # way). Once the process is confirmed dead no further writer can add data, so
+            # a final synchronous ReadToEnd() is safe here and can't hang.
+            [void]$lineBuffer.Append($reader.ReadToEnd())
+            $final = $lineBuffer.ToString() -split "`r|`n"
+            foreach ($piece in $final) {
+                if ($piece.Length -gt 0) { & $OnLine $piece }
+            }
+            [void]$lineBuffer.Clear()
+            $timer.Stop()
+            & $OnExit $process.ExitCode
+        }
+    }.GetNewClosure())
+
+    $timer.Start()
+
+    return $process
+}
+
+Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess
