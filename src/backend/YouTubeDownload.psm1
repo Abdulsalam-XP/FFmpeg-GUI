@@ -51,6 +51,9 @@ function Start-YtDlpDownload {
     $statusText = $Panel.FindName("Text${ControlSuffix}Status")
     $etaText = $Panel.FindName("Text${ControlSuffix}Eta")
     $cancelButton = $Panel.FindName("Button${ControlSuffix}Cancel")
+    # Disabled for the duration of the run -- see Compress-VideoAsync: without this a
+    # second click starts a parallel download sharing this panel's progress controls.
+    $startButton = $Panel.FindName("Button${ControlSuffix}Start")
 
     # Captured as a scriptblock rather than called by name: Start-TrackedProcess invokes
     # -OnLine from UI-WPF.psm1's own module scope, where a command imported into *this*
@@ -74,6 +77,7 @@ function Start-YtDlpDownload {
         -OnExit {
             param($exitCode)
             $cancelButton.IsEnabled = $false
+            if ($startButton) { $startButton.IsEnabled = $true }
             if ($exitCode -eq 0) {
                 $progressBar.Value = 100
                 $statusText.Text = "Saved to $DestinationPath"
@@ -85,8 +89,9 @@ function Start-YtDlpDownload {
             }
         }.GetNewClosure()
 
+    if ($startButton) { $startButton.IsEnabled = $false }
     $cancelButton.IsEnabled = $true
-    $cancelButton.Add_Click({ if (-not $process.HasExited) { $process.Kill() } }.GetNewClosure())
+    Set-CancelButtonTarget -Button $cancelButton -Process $process
     return $process
 }
 
