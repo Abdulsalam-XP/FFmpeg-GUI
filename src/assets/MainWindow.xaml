@@ -59,8 +59,59 @@
                             HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
                 </StackPanel>
             </Grid>
-            <Grid x:Name="PanelMergeAudio" Visibility="Collapsed"/>
-            <Grid x:Name="PanelTrim" Visibility="Collapsed"/>
+            <Grid x:Name="PanelMergeAudio" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBlock Text="Merge Audio Streams" FontSize="20" FontWeight="Bold"
+                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                    <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="11"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,16"/>
+                    <Button x:Name="ButtonMergeBrowse" Content="Browse for a .mp4..." Style="{StaticResource PresetButtonStyle}"
+                            HorizontalAlignment="Left" Padding="16,10" Margin="0,0,0,16"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="System volume:" Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox x:Name="ComboSystemVolume" Width="100" SelectedIndex="0">
+                            <ComboBoxItem Content="1.0x"/><ComboBoxItem Content="2.0x"/><ComboBoxItem Content="3.5x"/><ComboBoxItem Content="5.0x"/>
+                        </ComboBox>
+                        <TextBlock Text="Mic volume:" Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" VerticalAlignment="Center" Margin="16,0,8,0"/>
+                        <ComboBox x:Name="ComboMicVolume" Width="100" SelectedIndex="0">
+                            <ComboBoxItem Content="1.0x"/><ComboBoxItem Content="2.0x"/><ComboBoxItem Content="3.5x"/><ComboBoxItem Content="5.0x"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <Button x:Name="ButtonMergeStart" Content="Merge" Style="{StaticResource PresetButtonStyle}" Width="140" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                    <ProgressBar x:Name="ProgressBarMerge" Height="10" Minimum="0" Maximum="100" Value="0"
+                                 Foreground="{StaticResource BrushAccentGradient}" Background="#0D1526"/>
+                    <Grid Margin="0,4,0,0">
+                        <TextBlock x:Name="TextMergePercent" Text="0.0%" FontFamily="{StaticResource FontData}" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                        <TextBlock x:Name="TextMergeEta" Text="--:--:--" FontFamily="{StaticResource FontData}" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <Button x:Name="ButtonMergeCancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}" HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
+                </StackPanel>
+            </Grid>
+            <Grid x:Name="PanelTrim" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBlock Text="Trim Video" FontSize="20" FontWeight="Bold"
+                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                    <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="11"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,16"/>
+                    <Button x:Name="ButtonTrimBrowse" Content="Browse for a .mp4..." Style="{StaticResource PresetButtonStyle}"
+                            HorizontalAlignment="Left" Padding="16,10" Margin="0,0,0,16"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <RadioButton x:Name="RadioTrimBefore" Content="Remove content BEFORE timestamp" GroupName="TrimMode" IsChecked="True"
+                                     Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" Margin="0,0,20,0"/>
+                        <RadioButton x:Name="RadioTrimAfter" Content="Remove content AFTER timestamp" GroupName="TrimMode"
+                                     Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}"/>
+                    </StackPanel>
+                    <TextBox x:Name="TextTrimTimestamp" Width="140" HorizontalAlignment="Left" FontFamily="{StaticResource FontData}" Text="00:00:00" Margin="0,0,0,12"/>
+                    <Button x:Name="ButtonTrimStart" Content="Trim" Style="{StaticResource PresetButtonStyle}" Width="140" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                    <ProgressBar x:Name="ProgressBarTrim" Height="10" Minimum="0" Maximum="100" Value="0"
+                                 Foreground="{StaticResource BrushAccentGradient}" Background="#0D1526"/>
+                    <Grid Margin="0,4,0,0">
+                        <TextBlock x:Name="TextTrimPercent" Text="0.0%" FontFamily="{StaticResource FontData}" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                        <TextBlock x:Name="TextTrimEta" Text="--:--:--" FontFamily="{StaticResource FontData}" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <Button x:Name="ButtonTrimCancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}" HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
+                </StackPanel>
+            </Grid>
             <Grid x:Name="PanelYouTubeMP3" Visibility="Collapsed"/>
             <Grid x:Name="PanelYouTubeMP4" Visibility="Collapsed"/>
             <Grid x:Name="PanelSettings" Visibility="Collapsed"/>
