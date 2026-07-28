@@ -123,7 +123,10 @@ function Start-TrackedProcess {
     $process.Start() | Out-Null
 
     $reader = if ($ReadStream -eq "Error") { $process.StandardError } else { $process.StandardOutput }
-    $pipeHandle = $reader.BaseStream.SafeFileHandle
+    $stream = $reader.BaseStream
+    $pipeHandle = $stream.SafeFileHandle
+    $encoding = $reader.CurrentEncoding
+    $readBuffer = New-Object byte[] 4096
     $peekBuffer = New-Object byte[] 1
 
     # NOTE on the polling design (deviation from the brief's literal add_ErrorDataReceived /
@@ -146,19 +149,37 @@ function Start-TrackedProcess {
     # StreamReader.Peek()/Read() would block the UI thread whenever no data is currently
     # available (anonymous pipes have no non-blocking read in .NET), so PeekNamedPipe is
     # used first to check the OS pipe's buffered byte count without blocking.
-    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    #
+    # The loop below reads raw bytes directly off $stream (bypassing $reader/
+    # StreamReader's own internal buffering) in chunks sized to exactly what
+    # PeekNamedPipe just confirmed is sitting in the OS pipe. Two earlier approaches
+    # were tried and rejected:
+    #   - Gating solely on PeekNamedPipe while still calling StreamReader.Read(): a
+    #     single StreamReader.Read() call can pull a whole chunk (up to ~1KB) out of the
+    #     OS pipe into StreamReader's private buffer in one shot, after which
+    #     PeekNamedPipe correctly reports the OS pipe as empty even though StreamReader
+    #     is still holding undelivered chars -- the loop exits early and lines sit stuck
+    #     in managed memory until the next OS-level write (or process exit) incidentally
+    #     flushes them.
+    #   - Checking $reader.Peek() first to drain that managed buffer before falling back
+    #     to PeekNamedPipe: StreamReader.Peek() itself performs a blocking Stream.Read()
+    #     to refill its buffer whenever that buffer is empty, so this reintroduces a
+    #     genuine UI-thread freeze whenever the child briefly has no output ready
+    #     (confirmed empirically: froze for the length of a slow ffmpeg encode's gaps
+    #     between writes).
+    # Reading exactly $bytesAvail bytes straight off $stream sidesteps both: there is
+    # only one buffer (ours), it's only ever filled with bytes already confirmed
+    # present, and Stream.Read for that many bytes returns immediately without blocking.
+    $timer = New-Object System.Windows.Threading.DispatcherTimer -ArgumentList (
+        [System.Windows.Threading.DispatcherPriority]::Normal, $Context.Window.Dispatcher)
     $timer.Interval = [TimeSpan]::FromMilliseconds(40)
     $lineBuffer = New-Object System.Text.StringBuilder
     $exitHandled = $false
 
-    $timer.Add_Tick({
-        [uint32]$bytesRead = 0
-        [uint32]$bytesAvail = 0
-        [uint32]$bytesLeftThisMessage = 0
-        while (-not $pipeHandle.IsClosed -and
-               [FFmpegGui.NamedPipePeek]::PeekNamedPipe($pipeHandle, $peekBuffer, 0, [ref]$bytesRead, [ref]$bytesAvail, [ref]$bytesLeftThisMessage) -and
-               $bytesAvail -gt 0) {
-            $ch = [char]$reader.Read()
+    $appendChunk = {
+        param([byte[]]$Bytes, [int]$Count)
+        $text = $encoding.GetString($Bytes, 0, $Count)
+        foreach ($ch in $text.ToCharArray()) {
             if ($ch -eq "`r" -or $ch -eq "`n") {
                 if ($lineBuffer.Length -gt 0) {
                     & $OnLine $lineBuffer.ToString()
@@ -168,23 +189,52 @@ function Start-TrackedProcess {
                 [void]$lineBuffer.Append($ch)
             }
         }
+    }.GetNewClosure()
 
-        if (-not $exitHandled -and $process.HasExited) {
-            $exitHandled = $true
-            # HasExited becoming true doesn't guarantee every byte the child wrote has
-            # been drained yet -- the PeekNamedPipe loop above can race the child's exit
-            # and stop one tick early, silently dropping the last chunk (confirmed
-            # empirically: real ffmpeg runs lost their final progress/summary lines this
-            # way). Once the process is confirmed dead no further writer can add data, so
-            # a final synchronous ReadToEnd() is safe here and can't hang.
-            [void]$lineBuffer.Append($reader.ReadToEnd())
-            $final = $lineBuffer.ToString() -split "`r|`n"
-            foreach ($piece in $final) {
-                if ($piece.Length -gt 0) { & $OnLine $piece }
+    $timer.Add_Tick({
+        try {
+            [uint32]$bytesRead = 0
+            [uint32]$bytesAvail = 0
+            [uint32]$bytesLeftThisMessage = 0
+            while (-not $pipeHandle.IsClosed -and
+                   [FFmpegGui.NamedPipePeek]::PeekNamedPipe($pipeHandle, $peekBuffer, 0, [ref]$bytesRead, [ref]$bytesAvail, [ref]$bytesLeftThisMessage) -and
+                   $bytesAvail -gt 0) {
+                $toRead = [Math]::Min([int]$bytesAvail, $readBuffer.Length)
+                $actuallyRead = $stream.Read($readBuffer, 0, $toRead)
+                if ($actuallyRead -le 0) { break }
+                & $appendChunk $readBuffer $actuallyRead
             }
-            [void]$lineBuffer.Clear()
-            $timer.Stop()
-            & $OnExit $process.ExitCode
+
+            if (-not $exitHandled -and $process.HasExited) {
+                $exitHandled = $true
+                # HasExited becoming true doesn't guarantee every byte the child wrote
+                # has been drained yet. Once the process is confirmed dead no further
+                # writer can add data, so a final synchronous drain is safe here and
+                # can't hang.
+                while ($true) {
+                    $actuallyRead = $stream.Read($readBuffer, 0, $readBuffer.Length)
+                    if ($actuallyRead -le 0) { break }
+                    & $appendChunk $readBuffer $actuallyRead
+                }
+                if ($lineBuffer.Length -gt 0) {
+                    & $OnLine $lineBuffer.ToString()
+                    [void]$lineBuffer.Clear()
+                }
+                $timer.Stop()
+                & $OnExit $process.ExitCode
+                $process.Dispose()
+            }
+        } catch {
+            # A broken pipe / disposed handle (e.g. the process was killed externally,
+            # or Cancel called .Kill() mid-read) must not leave the timer ticking
+            # forever re-throwing, and must not crash the WPF app via an unhandled
+            # DispatcherTimer.Tick exception -- surface it to the caller as a failed
+            # exit instead.
+            if (-not $exitHandled) {
+                $exitHandled = $true
+                $timer.Stop()
+                & $OnExit -1
+            }
         }
     }.GetNewClosure())
 
