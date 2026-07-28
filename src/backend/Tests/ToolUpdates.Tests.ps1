@@ -50,3 +50,87 @@ Describe "ConvertFrom-YtDlpVersionString" {
         ConvertFrom-YtDlpVersionString -Line "" | Should BeNullOrEmpty
     }
 }
+
+function New-InstalledStub {
+    param([string]$Source = "bin", $Version = $null, [string]$Display = "x")
+    return @{ Name = "yt-dlp"; Path = "C:\app\bin\yt-dlp.exe"; Source = $Source; Version = $Version; Display = $Display }
+}
+
+function New-LatestStub {
+    param($Version = [datetime]::new(2026, 7, 4))
+    return @{ Name = "yt-dlp"; Version = $Version; Display = "2026.07.04"
+              DownloadUrl = "https://example.invalid/yt-dlp.exe"; AssetName = "yt-dlp.exe" }
+}
+
+Describe "Test-ToolUpdate" {
+    It "reports Available when the remote build is newer" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Version ([datetime]::new(2026, 3, 17))) -Latest (New-LatestStub)
+        $r.Status | Should Be "Available"
+    }
+
+    It "reports Current when the versions match" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Version ([datetime]::new(2026, 7, 4))) -Latest (New-LatestStub)
+        $r.Status | Should Be "Current"
+    }
+
+    It "reports Current when the installed build is newer than the remote" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Version ([datetime]::new(2026, 9, 1))) -Latest (New-LatestStub)
+        $r.Status | Should Be "Current"
+    }
+
+    It "reports Unknown when the installed version could not be parsed" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Version $null) -Latest (New-LatestStub)
+        $r.Status | Should Be "Unknown"
+    }
+
+    It "reports Missing when no tool is installed" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Source "missing") -Latest (New-LatestStub)
+        $r.Status | Should Be "Missing"
+    }
+
+    It "reports Missing for a PATH tool even when its version is current" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Source "system" -Version ([datetime]::new(2026, 7, 4))) -Latest (New-LatestStub)
+        $r.Status | Should Be "Missing"
+    }
+
+    It "reports Missing for a PATH tool even when its version is newer than the remote" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Source "system" -Version ([datetime]::new(2027, 1, 1))) -Latest (New-LatestStub)
+        $r.Status | Should Be "Missing"
+    }
+
+    It "reports Unknown when the remote lookup produced nothing" {
+        $r = Test-ToolUpdate -Installed (New-InstalledStub -Version ([datetime]::new(2026, 3, 17))) -Latest $null
+        $r.Status | Should Be "Unknown"
+    }
+
+    It "passes the installed and latest records through unchanged" {
+        $installed = New-InstalledStub -Version ([datetime]::new(2026, 3, 17))
+        $r = Test-ToolUpdate -Installed $installed -Latest (New-LatestStub)
+        $r.Installed.Path | Should Be "C:\app\bin\yt-dlp.exe"
+        $r.Latest.Display | Should Be "2026.07.04"
+    }
+}
+
+Describe "Test-ToolCacheFresh" {
+    $now = [datetime]::new(2026, 7, 28, 12, 0, 0, [System.DateTimeKind]::Utc)
+
+    It "treats a five-minute-old timestamp as fresh" {
+        Test-ToolCacheFresh -Timestamp "2026-07-28T11:55:00Z" -Now $now -MaxAgeMinutes 60 | Should Be $true
+    }
+
+    It "treats a ninety-minute-old timestamp as stale" {
+        Test-ToolCacheFresh -Timestamp "2026-07-28T10:30:00Z" -Now $now -MaxAgeMinutes 60 | Should Be $false
+    }
+
+    It "treats a missing timestamp as stale" {
+        Test-ToolCacheFresh -Timestamp $null -Now $now -MaxAgeMinutes 60 | Should Be $false
+    }
+
+    It "treats an unparseable timestamp as stale" {
+        Test-ToolCacheFresh -Timestamp "last tuesday" -Now $now -MaxAgeMinutes 60 | Should Be $false
+    }
+
+    It "treats a future timestamp as stale so a clock change cannot pin the cache" {
+        Test-ToolCacheFresh -Timestamp "2026-07-29T12:00:00Z" -Now $now -MaxAgeMinutes 60 | Should Be $false
+    }
+}
