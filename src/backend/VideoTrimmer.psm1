@@ -35,6 +35,9 @@ function Split-VideoAsync {
     $percentText = $panel.FindName("TextTrimPercent")
     $etaText = $panel.FindName("TextTrimEta")
     $cancelButton = $panel.FindName("ButtonTrimCancel")
+    # Disabled for the duration of the run -- see Compress-VideoAsync: without this a
+    # second click starts a parallel job sharing this panel's output and progress bar.
+    $startButton = $panel.FindName("ButtonTrimStart")
     $startTime = Get-Date
     $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
 
@@ -59,11 +62,13 @@ function Split-VideoAsync {
         -OnExit {
             param($exitCode)
             $cancelButton.IsEnabled = $false
+            if ($startButton) { $startButton.IsEnabled = $true }
             if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
         }.GetNewClosure()
 
+    if ($startButton) { $startButton.IsEnabled = $false }
     $cancelButton.IsEnabled = $true
-    $cancelButton.Add_Click({ if (-not $process.HasExited) { $process.Kill() } }.GetNewClosure())
+    Set-CancelButtonTarget -Button $cancelButton -Process $process
     return $process
 }
 

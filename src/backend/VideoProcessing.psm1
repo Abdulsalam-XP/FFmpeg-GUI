@@ -218,6 +218,9 @@ function Compress-VideoAsync {
     $percentText = $panel.FindName("TextCompressPercent")
     $etaText = $panel.FindName("TextCompressEta")
     $cancelButton = $panel.FindName("ButtonCompressCancel")
+    # Held so the run can disable it: nothing else stops a second click from launching a
+    # parallel ffmpeg that writes the same output file and the same progress controls.
+    $startButton = $panel.FindName("ButtonCompressStart")
     $startTime = Get-Date
 
     $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
@@ -247,11 +250,13 @@ function Compress-VideoAsync {
         -OnExit {
             param($exitCode)
             $cancelButton.IsEnabled = $false
+            if ($startButton) { $startButton.IsEnabled = $true }
             if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
         }.GetNewClosure()
 
+    if ($startButton) { $startButton.IsEnabled = $false }
     $cancelButton.IsEnabled = $true
-    $cancelButton.Add_Click({ if (-not $process.HasExited) { $process.Kill() } }.GetNewClosure())
+    Set-CancelButtonTarget -Button $cancelButton -Process $process
 
     return $process
 }
