@@ -41,6 +41,7 @@ if (-not (Test-Path $assetsPath)) { New-Item -ItemType Directory -Path $assetsPa
 # so omitting one would leave updated installs broken.
 $requiredModules = @(
     "backend\ToolPaths.psm1",
+    "backend\ToolUpdates.psm1",
     "backend\UI.psm1",
     "frontend\UI-WPF.psm1",
     "backend\Settings.psm1",
@@ -72,6 +73,10 @@ foreach ($mod in $requiredModules) {
 }
 
 Import-Config
+
+# Left behind by a previous update: a replaced exe cannot be deleted while the old
+# process still holds it, so cleanup happens on the next launch instead.
+Clear-StaleToolFiles -BinFolder (Join-Path $scriptRoot "bin")
 
 function Test-ScriptUpdates {
     try {
@@ -201,6 +206,34 @@ try {
     $script:TrimTotalSeconds = $null
     $script:YoutubeMP4Resolutions = @()
 
+    # Tracks live child processes so the Settings screen can tell whether replacing a
+    # tool right now would fail. A list of processes rather than a boolean flag: it
+    # cannot drift out of sync the way a flag set in one handler and cleared in another
+    # can, and it needs no exit hook.
+    $script:TrackedJobs = New-Object System.Collections.ArrayList
+
+    function Register-Job {
+        param($Process)
+        if ($Process) { [void]$script:TrackedJobs.Add($Process) }
+    }
+
+    function Test-AnyJobRunning {
+        # Only a definite $false from HasExited counts as a live job. Start-TrackedProcess
+        # disposes the process once it exits, and reading HasExited on a disposed Process
+        # yields $null rather than $true -- so the obvious "-not $_.HasExited" would treat
+        # every finished job as still running and leave the update buttons disabled for
+        # the rest of the session.
+        $live = @($script:TrackedJobs | Where-Object {
+            if (-not $_) { return $false }
+            $exited = $null
+            try { $exited = $_.HasExited } catch { $exited = $true }
+            return ($exited -eq $false)
+        })
+        $script:TrackedJobs.Clear()
+        foreach ($p in $live) { [void]$script:TrackedJobs.Add($p) }
+        return ($live.Count -gt 0)
+    }
+
     $mutedBrush = $ctx.Window.FindResource("BrushTextMuted")
 
     function Show-PanelMessage {
@@ -242,7 +275,13 @@ try {
     # ---------------- Navigation ----------------
     foreach ($name in @("Compress", "MergeAudio", "Trim", "YouTubeMP3", "YouTubeMP4", "Settings")) {
         $panelName = $name
-        $ctx.NavButtons[$panelName].Add_Click({ Show-Panel -Context $ctx -Name $panelName }.GetNewClosure())
+        $ctx.NavButtons[$panelName].Add_Click({
+            Show-Panel -Context $ctx -Name $panelName
+            # Settings is the only screen with anything to refresh on entry. Show-Panel
+            # itself stays generic -- it is shared by all six screens and must not learn
+            # about tool updates.
+            if ($panelName -eq "Settings") { Update-ToolsCard }
+        }.GetNewClosure())
     }
 
     # ---------------- Compress ----------------
@@ -288,8 +327,8 @@ try {
         if (-not $script:CompressInputFile) { return }
         $selected = ($presetControls.GetEnumerator() | Where-Object { $_.Value.IsChecked } | Select-Object -First 1)
         if (-not $selected) { return }
-        Compress-VideoAsync -Context $ctx -InputFile $script:CompressInputFile `
-            -Preset $selected.Key -VideoProps $script:CompressVideoProps | Out-Null
+        Register-Job (Compress-VideoAsync -Context $ctx -InputFile $script:CompressInputFile `
+            -Preset $selected.Key -VideoProps $script:CompressVideoProps)
     })
 
     # GPU mode is offered only where it can actually be used, same as the console version.
@@ -322,8 +361,8 @@ try {
         $volumeMap = @(1.0, 2.0, 3.5, 5.0)
         $sysIndex = [Math]::Max(0, $panelMerge.FindName("ComboSystemVolume").SelectedIndex)
         $micIndex = [Math]::Max(0, $panelMerge.FindName("ComboMicVolume").SelectedIndex)
-        Merge-AudioStreamsAsync -Context $ctx -InputVideo $script:MergeInputFile `
-            -SystemVolume $volumeMap[$sysIndex] -MicVolume $volumeMap[$micIndex] | Out-Null
+        Register-Job (Merge-AudioStreamsAsync -Context $ctx -InputVideo $script:MergeInputFile `
+            -SystemVolume $volumeMap[$sysIndex] -MicVolume $volumeMap[$micIndex])
     })
 
     # ---------------- Trim ----------------
@@ -364,7 +403,7 @@ try {
         }
 
         $mode = if ($panelTrim.FindName("RadioTrimBefore").IsChecked) { "Before" } else { "After" }
-        Split-VideoAsync -Context $ctx -InputFile $script:TrimInputFile -Mode $mode -Timestamp $timestamp | Out-Null
+        Register-Job (Split-VideoAsync -Context $ctx -InputFile $script:TrimInputFile -Mode $mode -Timestamp $timestamp)
     })
 
     # ---------------- YouTube MP3 ----------------
@@ -375,7 +414,7 @@ try {
             Show-PanelMessage -Block $status -Text "Enter a full video URL starting with http." -IsError
             return
         }
-        Save-YouTubeMP3Async -Context $ctx -Url $url | Out-Null
+        Register-Job (Save-YouTubeMP3Async -Context $ctx -Url $url)
     })
 
     # ---------------- YouTube MP4 ----------------
@@ -422,7 +461,7 @@ try {
         $url = $panelYtMp4.FindName("TextYoutubeMP4Url").Text.Trim()
         $index = $comboQuality.SelectedIndex
         if ($index -lt 0 -or $index -ge $script:YoutubeMP4Resolutions.Count) { return }
-        Save-YouTubeMP4Async -Context $ctx -Url $url -Resolution $script:YoutubeMP4Resolutions[$index] | Out-Null
+        Register-Job (Save-YouTubeMP4Async -Context $ctx -Url $url -Resolution $script:YoutubeMP4Resolutions[$index])
     })
 
     # ---------------- Settings ----------------
@@ -433,9 +472,187 @@ try {
         Save-Settings
     }.GetNewClosure())
 
-    $panelSettings.FindName("TextToolPathFfmpeg").Text  = Get-ToolPath -Name "ffmpeg"  -ScriptRoot $scriptRoot
-    $panelSettings.FindName("TextToolPathFfprobe").Text = Get-ToolPath -Name "ffprobe" -ScriptRoot $scriptRoot
-    $panelSettings.FindName("TextToolPathYtDlp").Text   = Get-ToolPath -Name "yt-dlp"  -ScriptRoot $scriptRoot
+    $toolRows = @{
+        ffmpeg    = @{ Version = $panelSettings.FindName("TextToolVersionFfmpeg")
+                       Path = $panelSettings.FindName("TextToolPathFfmpeg")
+                       Button = $panelSettings.FindName("ButtonUpdateFfmpeg") }
+        ffprobe   = @{ Version = $panelSettings.FindName("TextToolVersionFfprobe")
+                       Path = $panelSettings.FindName("TextToolPathFfprobe")
+                       Button = $null }
+        "yt-dlp"  = @{ Version = $panelSettings.FindName("TextToolVersionYtDlp")
+                       Path = $panelSettings.FindName("TextToolPathYtDlp")
+                       Button = $panelSettings.FindName("ButtonUpdateYtDlp") }
+    }
+    $toolsProgress = $panelSettings.FindName("ProgressBarTools")
+    $toolsCancel = $panelSettings.FindName("ButtonToolsCancel")
+    $toolsStatus = $panelSettings.FindName("TextToolsStatus")
+    $binFolder = Join-Path $scriptRoot "bin"
+
+    $script:LatestReleases = @{}
+    $script:ToolInstallRunning = $false
+    $script:ToolInstallState = $null
+    # Kept as one string so the card can recognise its own stale warning and clear it
+    # once the job ends, without clobbering an install result message sitting in the
+    # same block.
+    $script:JobGuardMessage = "Finish the job that's running before updating a tool."
+
+    function Set-ToolRow {
+        param([string]$Name, [hashtable]$Installed, [string]$ButtonText, [bool]$ButtonEnabled)
+
+        $row = $toolRows[$Name]
+        $row.Version.Text = $Installed.Display
+        $row.Path.Text = switch ($Installed.Source) {
+            "bin"    { "app folder" }
+            "system" { "found on your PC: $($Installed.Path)" }
+            default  { "not found" }
+        }
+        if ($row.Button) {
+            $row.Button.Content = $ButtonText
+            $row.Button.IsEnabled = $ButtonEnabled -and -not (Test-AnyJobRunning) -and -not $script:ToolInstallRunning
+        }
+    }
+
+    # Rendered from cache when the last check was under an hour ago, so reopening
+    # Settings costs nothing. -Force is what the "Couldn't check" retry uses.
+    function Update-ToolsCard {
+        param([switch]$Force)
+
+        foreach ($name in @("ffmpeg", "ffprobe", "yt-dlp")) {
+            $installed = Get-InstalledToolVersion -Name $name -ScriptRoot $scriptRoot
+            $toolRows[$name].Installed = $installed
+            Set-ToolRow -Name $name -Installed $installed -ButtonText "Checking…" -ButtonEnabled $false
+        }
+
+        $useCache = (-not $Force) -and $global:ToolCheckCache -and `
+                    (Test-ToolCacheFresh -Timestamp $global:ToolCheckCache.CheckedUtc -MaxAgeMinutes 60)
+
+        foreach ($name in @("ffmpeg", "yt-dlp")) {
+            $latest = $null
+            $failed = $false
+
+            if ($useCache -and $global:ToolCheckCache.Tools.$name) {
+                $cached = $global:ToolCheckCache.Tools.$name
+                # Re-parse the timestamp exactly as Get-LatestToolRelease did, so the cached
+                # and freshly-fetched paths yield the identical value. A plain [datetime]
+                # cast would read ffmpeg's trailing "Z" and convert it to local time, leaving
+                # it hours ahead of the date-only installed build -- east of UTC that pins
+                # ffmpeg on "Update ->" forever, west of it hides a genuinely newer build.
+                $restored = [datetime]::MinValue
+                [void][datetime]::TryParse($cached.Version,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                    [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$restored)
+                $latest = @{ Name = $name; Version = $restored.Date; Display = $cached.Display
+                             DownloadUrl = $cached.DownloadUrl; AssetName = $cached.AssetName }
+            } else {
+                # The window is unresponsive for the ~0.5s this takes. That is deliberate:
+                # a 58-82 KB request is far too small to justify a second async path, and
+                # the cursor change makes the pause legible.
+                $ctx.Window.Cursor = [System.Windows.Input.Cursors]::Wait
+                try { $latest = Get-LatestToolRelease -Name $name }
+                catch { $failed = $true }
+                finally { $ctx.Window.Cursor = $null }
+            }
+
+            $script:LatestReleases[$name] = $latest
+
+            if ($failed) {
+                Set-ToolRow -Name $name -Installed $toolRows[$name].Installed `
+                    -ButtonText "Couldn't check" -ButtonEnabled $true
+                continue
+            }
+
+            $verdict = Test-ToolUpdate -Installed $toolRows[$name].Installed -Latest $latest
+            switch ($verdict.Status) {
+                "Current"   { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Up to date" -ButtonEnabled $false }
+                "Available" { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Update → $($latest.Display)" -ButtonEnabled $true }
+                default     { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Install" -ButtonEnabled $true }
+            }
+        }
+
+        if (-not $useCache) {
+            $tools = @{}
+            foreach ($name in @("ffmpeg", "yt-dlp")) {
+                $r = $script:LatestReleases[$name]
+                if ($r) {
+                    $tools[$name] = @{ Version = $r.Version.ToString("o"); Display = $r.Display
+                                       DownloadUrl = $r.DownloadUrl; AssetName = $r.AssetName }
+                }
+            }
+            if ($tools.Count -gt 0) {
+                $global:ToolCheckCache = @{ CheckedUtc = ([datetime]::UtcNow.ToString("o")); Tools = $tools }
+                Save-Settings
+            }
+        }
+
+        if (Test-AnyJobRunning) {
+            Show-PanelMessage -Block $toolsStatus -Text $script:JobGuardMessage
+        } elseif ($toolsStatus.Text -eq $script:JobGuardMessage) {
+            # The job has since finished. Clear only this warning -- an "Updated to ..."
+            # message set moments earlier by OnComplete must survive.
+            Show-PanelMessage -Block $toolsStatus -Text ""
+        }
+    }
+
+    function Start-ToolInstall {
+        param([string]$Name)
+
+        $release = $script:LatestReleases[$Name]
+        if (-not $release) { Update-ToolsCard -Force; return }
+        if (Test-AnyJobRunning) {
+            Show-PanelMessage -Block $toolsStatus -Text $script:JobGuardMessage -IsError
+            return
+        }
+
+        $script:ToolInstallRunning = $true
+        $toolRows[$Name].Button.IsEnabled = $false
+        if ($toolRows["ffmpeg"].Button) { $toolRows["ffmpeg"].Button.IsEnabled = $false }
+        if ($toolRows["yt-dlp"].Button) { $toolRows["yt-dlp"].Button.IsEnabled = $false }
+        $toolsProgress.Value = 0
+        $toolsProgress.Visibility = "Visible"
+        $toolsCancel.Visibility = "Visible"
+        $toolsCancel.IsEnabled = $true
+        Show-PanelMessage -Block $toolsStatus -Text "Downloading $Name…"
+
+        $script:ToolInstallState = Install-ToolUpdate -Context $ctx -Release $release -BinFolder $binFolder `
+            -OnProgress {
+                param($received, $total)
+                if ($total -gt 0) {
+                    $toolsProgress.Value = [math]::Round(($received / $total) * 100, 1)
+                    $toolRows[$Name].Button.Content = "{0:N0}%" -f $toolsProgress.Value
+                } else {
+                    $toolRows[$Name].Button.Content = "{0:N1} MB" -f ($received / 1MB)
+                }
+            }.GetNewClosure() `
+            -OnComplete {
+                param($success, $message)
+                # No .GetNewClosure() on this block, deliberately. Inside a closure,
+                # $script: binds to the closure's own dynamic module, so the two resets
+                # below would never reach the copies Set-ToolRow reads and every update
+                # button would stay disabled until the app restarted. OnProgress above
+                # still needs its closure -- it captures $Name, which dies with this
+                # function; this block captures nothing.
+                $script:ToolInstallRunning = $false
+                $script:ToolInstallState = $null
+                $toolsProgress.Visibility = "Collapsed"
+                $toolsCancel.Visibility = "Collapsed"
+                $toolsCancel.IsEnabled = $false
+                Show-PanelMessage -Block $toolsStatus -Text $message -IsError:(-not $success)
+                # Re-reads the exe from disk, so the version shown is what actually
+                # landed rather than what was expected to land.
+                Update-ToolsCard
+            }
+    }
+
+    $toolRows["ffmpeg"].Button.Add_Click({ Start-ToolInstall -Name "ffmpeg" })
+    $toolRows["yt-dlp"].Button.Add_Click({ Start-ToolInstall -Name "yt-dlp" })
+
+    # Cancelling faults the in-flight copy; Install-ToolUpdate's next tick observes that,
+    # deletes the partial file and calls OnComplete, so the reset all happens there.
+    $toolsCancel.Add_Click({
+        $toolsCancel.IsEnabled = $false
+        if ($script:ToolInstallState) { & $script:ToolInstallState.Cancel }
+    })
 
     Show-Panel -Context $ctx -Name "Compress"
     $ctx.Window.ShowDialog() | Out-Null
