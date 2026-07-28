@@ -14,7 +14,10 @@ function Initialize-MainWindow {
     # since the Window has no resources of its own yet. Merging the theme onto the
     # window only *after* XamlReader.Load returns is too late -- the parse already
     # throws ("Provide value on 'StaticResourceExtension' threw an exception").
-    [xml]$themeXaml = Get-Content -Path $themePath -Raw
+    # -Encoding UTF8 is required: Windows PowerShell 5.1's Get-Content defaults to the
+    # system ANSI codepage for files without a BOM, which mangles every non-ASCII glyph
+    # in the markup (en-dash, middot, ellipsis) into mojibake before the XAML is parsed.
+    [xml]$themeXaml = Get-Content -Path $themePath -Raw -Encoding UTF8
     $themeReader = New-Object System.Xml.XmlNodeReader $themeXaml
     $themeDict = [System.Windows.Markup.XamlReader]::Load($themeReader)
 
@@ -32,7 +35,7 @@ function Initialize-MainWindow {
         [System.Windows.Application]::Current.Resources.MergedDictionaries.Add($themeDict)
     }
 
-    [xml]$xaml = Get-Content -Path $xamlPath -Raw
+    [xml]$xaml = Get-Content -Path $xamlPath -Raw -Encoding UTF8
     $reader = New-Object System.Xml.XmlNodeReader $xaml
     $window = [System.Windows.Markup.XamlReader]::Load($reader)
 

@@ -7,14 +7,31 @@
 
     <SolidColorBrush x:Key="BrushShellBase" Color="#090D1A"/>
 
-    <RadialGradientBrush x:Key="BrushGlowGold" GradientOrigin="0.5,0.5" Center="0.5,0.5" RadiusX="0.6" RadiusY="0.6">
-        <GradientStop Color="#29D3A24C" Offset="0"/>
+    <!-- Mesh/glow alphas are deliberately well above the "barely there" range: these sit
+         under a BlurEffect and behind translucent panels, both of which wash out a subtle
+         fill until it reads as flat grey rather than a tinted corner. -->
+    <RadialGradientBrush x:Key="BrushGlowGold" GradientOrigin="0.5,0.5" Center="0.5,0.5" RadiusX="0.55" RadiusY="0.55">
+        <GradientStop Color="#59D3A24C" Offset="0"/>
+        <GradientStop Color="#1FD3A24C" Offset="0.55"/>
         <GradientStop Color="#00D3A24C" Offset="1"/>
     </RadialGradientBrush>
 
-    <RadialGradientBrush x:Key="BrushGlowNavy" GradientOrigin="0.5,0.5" Center="0.5,0.5" RadiusX="0.6" RadiusY="0.6">
-        <GradientStop Color="#471F3F7A" Offset="0"/>
-        <GradientStop Color="#001F3F7A" Offset="1"/>
+    <RadialGradientBrush x:Key="BrushGlowNavy" GradientOrigin="0.5,0.5" Center="0.5,0.5" RadiusX="0.55" RadiusY="0.55">
+        <GradientStop Color="#7A2B4D95" Offset="0"/>
+        <GradientStop Color="#2E2B4D95" Offset="0.55"/>
+        <GradientStop Color="#002B4D95" Offset="1"/>
+    </RadialGradientBrush>
+
+    <RadialGradientBrush x:Key="BrushGlowPlum" GradientOrigin="0.5,0.5" Center="0.5,0.5" RadiusX="0.55" RadiusY="0.55">
+        <GradientStop Color="#6B5A3568" Offset="0"/>
+        <GradientStop Color="#285A3568" Offset="0.55"/>
+        <GradientStop Color="#005A3568" Offset="1"/>
+    </RadialGradientBrush>
+
+    <RadialGradientBrush x:Key="BrushGlowDeepNavy" GradientOrigin="0.5,0.5" Center="0.5,0.5" RadiusX="0.55" RadiusY="0.55">
+        <GradientStop Color="#8A16224A" Offset="0"/>
+        <GradientStop Color="#3516224A" Offset="0.55"/>
+        <GradientStop Color="#0016224A" Offset="1"/>
     </RadialGradientBrush>
 
     <LinearGradientBrush x:Key="BrushAccentGradient" StartPoint="0,0" EndPoint="1,0">
@@ -28,25 +45,336 @@
     <SolidColorBrush x:Key="BrushTextPrimary" Color="#F2EDE0"/>
     <SolidColorBrush x:Key="BrushTextMuted" Color="#8890B0"/>
     <SolidColorBrush x:Key="BrushGoldValue" Color="#E0C48F"/>
+    <SolidColorBrush x:Key="BrushDropzoneFill" Color="#8C0F1830"/>
+
+    <DropShadowEffect x:Key="EffectCardLift" Color="#000000" Opacity="0.45" BlurRadius="28" ShadowDepth="10" Direction="270"/>
+    <DropShadowEffect x:Key="EffectGoldGlow" Color="#D3A24C" Opacity="0.45" BlurRadius="22" ShadowDepth="0"/>
 
     <Style x:Key="SidebarItemStyle" TargetType="Button">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
         <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="13.5"/>
         <Setter Property="HorizontalContentAlignment" Value="Left"/>
         <Setter Property="Padding" Value="14,10"/>
         <Setter Property="Cursor" Value="Hand"/>
     </Style>
 
+    <!-- The "Convert to MP4" nav entry is permanently disabled in v1 (same as the
+         console menu). Stock disabled chrome would grey it with system colors, so it
+         gets its own muted-but-on-theme treatment. -->
+    <Style x:Key="SidebarItemDisabledStyle" TargetType="Button" BasedOn="{StaticResource SidebarItemStyle}">
+        <Setter Property="Foreground" Value="#4A4F68"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontStyle" Value="Italic"/>
+        <Setter Property="Cursor" Value="Arrow"/>
+        <Setter Property="IsHitTestVisible" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Custom template: the stock WPF button chrome repaints disabled/hover states
+         with light system colors, which reads as a glaring white slab on this dark
+         theme. The template keeps our brushes in every state. -->
     <Style x:Key="PresetButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="#101B30"/>
-        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
         <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="12.5"/>
         <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Padding" Value="10,8"/>
         <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Chrome" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="Background" Value="#18264A"/>
+                            <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.35"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Gradient-border card technique: WPF lets BorderBrush itself be a gradient,
+         so a single Border gives the thin gradient outline the spec calls for
+         without layering a second inner panel. Kept to a hairline; at any real
+         thickness the full navy-to-gold accent ramp reads as a loud outlined box
+         rather than the restrained edge the spec asks for. -->
+    <Style x:Key="CardBorderStyle" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="12"/>
+        <Setter Property="Background" Value="#990C1626"/>
+        <Setter Property="Padding" Value="22,20"/>
+    </Style>
+
+    <!-- The stock ProgressBar template paints a light track, a glossy overlay and a
+         system-colored border, none of which survive contact with this theme. -->
+    <Style x:Key="ProgressBarStyle" TargetType="ProgressBar">
+        <Setter Property="Height" Value="9"/>
+        <Setter Property="Minimum" Value="0"/>
+        <Setter Property="Maximum" Value="100"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushAccentGradient}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Border Background="#0D1526" CornerRadius="5"
+                            BorderBrush="#1FD3A24C" BorderThickness="1" ClipToBounds="True">
+                        <Grid>
+                            <Rectangle x:Name="PART_Track"/>
+                            <Rectangle x:Name="PART_Indicator" HorizontalAlignment="Left"
+                                       Fill="{TemplateBinding Foreground}" RadiusX="4" RadiusY="4"/>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Quieter card variant for preset options: gold hairline instead of the full
+         accent gradient, reserved for the actively-selected preset. -->
+    <Style x:Key="OptionCardBorderStyle" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="11"/>
+        <Setter Property="Background" Value="{StaticResource BrushCardBackground}"/>
+        <Setter Property="Padding" Value="16,14"/>
+    </Style>
+
+    <Style x:Key="PresetCardButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource BrushCardBackground}"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="16,14"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="11">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                           HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="BorderBrush" Value="{StaticResource BrushAccentGradient}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Dropzone glow: a soft ellipse that drifts left-right on a loop, per the
+         spec's "slowly drifts left-right (~6s ease-in-out)" glassmorphism note.
+         Self-targeting so the same style works inside any dropzone instance. -->
+    <Style x:Key="DropzoneGlowStyle" TargetType="Ellipse">
+        <Setter Property="Width" Value="300"/>
+        <Setter Property="Height" Value="300"/>
+        <Setter Property="Fill" Value="{StaticResource BrushGlowGold}"/>
+        <Setter Property="IsHitTestVisible" Value="False"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <BlurEffect Radius="45"/>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="RenderTransform">
+            <Setter.Value>
+                <TranslateTransform X="0"/>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                <BeginStoryboard>
+                    <Storyboard>
+                        <DoubleAnimation
+                            Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
+                            From="0" To="140" Duration="0:0:6"
+                            AutoReverse="True" RepeatBehavior="Forever">
+                            <DoubleAnimation.EasingFunction>
+                                <SineEase EasingMode="EaseInOut"/>
+                            </DoubleAnimation.EasingFunction>
+                        </DoubleAnimation>
+                    </Storyboard>
+                </BeginStoryboard>
+            </EventTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- Input controls below are implicit styles (no x:Key) so every panel, including
+         the ones still to be built, picks them up automatically. Left to their stock
+         templates, TextBox/ComboBox/RadioButton all paint themselves with light Windows
+         system chrome and read as white slabs punched through the dark theme. -->
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="#101B30"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+        <Setter Property="CaretBrush" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="SelectionBrush" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="10,7"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8">
+                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsFocused" Value="True">
+                            <Setter Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Padding" Value="12,8"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Chrome" Background="Transparent" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Chrome" Property="Background" Value="#1F3F7A"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="#101B30"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton x:Name="ToggleButton" Focusable="False" ClickMode="Press"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border x:Name="Chrome" Background="{StaticResource BrushCardBackground}"
+                                            BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
+                                            CornerRadius="8">
+                                        <Path HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"
+                                              Data="M 0 0 L 8 0 L 4 5 Z" Fill="{StaticResource BrushGoldValue}"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <ContentPresenter IsHitTestVisible="False" Margin="12,0,30,0" VerticalAlignment="Center"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          TextElement.Foreground="{StaticResource BrushTextPrimary}"/>
+                        <Popup x:Name="Popup" Placement="Bottom" AllowsTransparency="True" Focusable="False"
+                               IsOpen="{TemplateBinding IsDropDownOpen}">
+                            <Border Background="{StaticResource BrushCardBackground}" CornerRadius="8" Margin="0,4,0,0"
+                                    BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
+                                    MinWidth="{TemplateBinding ActualWidth}"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                <ScrollViewer>
+                                    <StackPanel IsItemsHost="True" Margin="4"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Grid Width="16" Height="16" VerticalAlignment="Center" Margin="0,0,8,0">
+                            <Ellipse x:Name="Ring" Stroke="{StaticResource BrushBorderGold}" StrokeThickness="1.4"
+                                     Fill="{StaticResource BrushCardBackground}"/>
+                            <Ellipse x:Name="Dot" Width="7" Height="7" Visibility="Collapsed"
+                                     Fill="{StaticResource BrushGoldValue}"/>
+                        </Grid>
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="Ring" Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+                            <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Ring" Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="DropzoneBorderStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource BrushDropzoneFill}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="14"/>
+        <Setter Property="Padding" Value="26,22"/>
+        <Setter Property="Effect" Value="{StaticResource EffectCardLift}"/>
     </Style>
 
 </ResourceDictionary>
