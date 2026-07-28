@@ -1,11 +1,11 @@
-# src/modules/UI-WPF.psm1
+# src/frontend/UI-WPF.psm1
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 function Initialize-MainWindow {
     param([Parameter(Mandatory = $true)][string]$ScriptRoot)
 
-    $xamlPath = Join-Path $ScriptRoot "assets\MainWindow.xaml"
-    $themePath = Join-Path $ScriptRoot "assets\Theme.xaml"
+    $xamlPath = Join-Path $ScriptRoot "frontend\MainWindow.xaml"
+    $themePath = Join-Path $ScriptRoot "frontend\Theme.xaml"
 
     # Theme must be loaded and merged into the Application's resources *before* the
     # window XAML is parsed. MainWindow.xaml references {StaticResource ...} on the

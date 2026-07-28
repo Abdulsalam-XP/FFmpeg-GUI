@@ -2,7 +2,7 @@
 # that inherits the machine policy (Restricted by default), which blocks Import-Module.
 try { Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force } catch {}
 
-$scriptVersion = "1.0.9"
+$scriptVersion = "2.0.0"
 $repoOwner = "Abdulsalam-XP"
 $repoName = "FFmpeg-GUI"
 $scriptName = "src/Video-Audio-Tool.ps1"
@@ -10,7 +10,6 @@ $branch = "main"
 
 $scriptRoot = if ($PSScriptRoot -ne "") { $PSScriptRoot } else { Split-Path -Parent ([Environment]::GetCommandLineArgs()[0]) }
 $assetsPath = Join-Path $scriptRoot "assets"
-$modulePath = Join-Path $scriptRoot "modules"
 
 $shortcutPath = Join-Path $scriptRoot "FFmpeg-Tool.lnk"
 if (Test-Path $shortcutPath) {
@@ -34,28 +33,32 @@ if (Test-Path $shortcutPath) {
 }
 
 if (-not (Test-Path $assetsPath)) { New-Item -ItemType Directory -Path $assetsPath | Out-Null }
-if (-not (Test-Path $modulePath)) { New-Item -ItemType Directory -Path $modulePath | Out-Null }
 
-# ToolPaths and UI-WPF must be listed here, not just imported: this loop is what pulls
-# missing modules down on a fresh install and what the self-updater refreshes. Omitting
-# them would leave updated installs with no window to show.
+# Paths are relative to src\ and include their folder, because the modules are split
+# across frontend\ (the window and everything that touches it) and backend\ (the ffmpeg
+# and yt-dlp work). Every module must be listed here, not merely imported: this list is
+# what pulls missing files down on a fresh install and what the self-updater refreshes,
+# so omitting one would leave updated installs broken.
 $requiredModules = @(
-    "ToolPaths.psm1",
-    "UI.psm1",
-    "UI-WPF.psm1",
-    "Settings.psm1",
-    "VideoProcessing.psm1",
-    "AudioProcessing.psm1",
-    "YouTubeDownload.psm1",
-    "VideoTrimmer.psm1"
+    "backend\ToolPaths.psm1",
+    "backend\UI.psm1",
+    "frontend\UI-WPF.psm1",
+    "backend\Settings.psm1",
+    "backend\VideoProcessing.psm1",
+    "backend\AudioProcessing.psm1",
+    "backend\YouTubeDownload.psm1",
+    "backend\VideoTrimmer.psm1"
 )
 
 foreach ($mod in $requiredModules) {
-    $localModPath = Join-Path $modulePath $mod
+    $localModPath = Join-Path $scriptRoot $mod
     if (-not (Test-Path $localModPath)) {
         Write-Host "Detected missing module: $mod. Downloading..." -ForegroundColor Cyan
         try {
-            $modUrl = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch/src/modules/$mod"
+            $modParent = Split-Path $localModPath -Parent
+            if (-not (Test-Path $modParent)) { New-Item -ItemType Directory -Path $modParent | Out-Null }
+            # GitHub raw URLs are forward-slashed regardless of the local separator.
+            $modUrl = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch/src/$($mod -replace '\\', '/')"
             Invoke-RestMethod -Uri $modUrl -OutFile $localModPath
         }
         catch {
@@ -65,7 +68,7 @@ foreach ($mod in $requiredModules) {
 }
 
 foreach ($mod in $requiredModules) {
-    Import-Module (Join-Path $modulePath $mod) -Force
+    Import-Module (Join-Path $scriptRoot $mod) -Force
 }
 
 Import-Config
@@ -138,12 +141,15 @@ function Test-ScriptUpdates {
                     $response.TrimStart([char]0xFEFF) | Out-File -FilePath $PSCommandPath -Force
                     
                     Write-Host "Updating modules..." -ForegroundColor Cyan
-                    $modulesUrlBase = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch/src/modules"
-                    
+                    $modulesUrlBase = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch/src"
+
                     foreach ($mod in $requiredModules) {
                         try {
-                            $target = Join-Path $modulePath $mod
-                            Invoke-RestMethod -Uri "$modulesUrlBase/$mod" -OutFile $target -ErrorAction Stop
+                            $target = Join-Path $scriptRoot $mod
+                            $targetParent = Split-Path $target -Parent
+                            if (-not (Test-Path $targetParent)) { New-Item -ItemType Directory -Path $targetParent | Out-Null }
+                            $modUri = "$modulesUrlBase/$($mod -replace '\\', '/')"
+                            Invoke-RestMethod -Uri $modUri -OutFile $target -ErrorAction Stop
                         } catch {
                             Write-Host "Warning: Could not update module $mod" -ForegroundColor Yellow
                         }
