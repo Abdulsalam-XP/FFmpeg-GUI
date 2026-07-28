@@ -64,8 +64,9 @@ function Initialize-MainWindow {
     return $context
 }
 
-# Dock-style hover: the item under the cursor grows and its immediate neighbours shrink,
-# so the hover reads as displacing the list rather than just enlarging one row.
+# Dock-style hover: the item under the cursor grows and every other item in the list
+# shrinks, so the hover reads as the whole list deferring to the item being pointed at
+# rather than just one row inflating.
 #
 # This can't live in the item's ControlTemplate, which is where the rest of the nav
 # styling sits: a template only ever sees the single control it was applied to, and this
@@ -88,12 +89,9 @@ function Enable-NavHoverMagnify {
         param([int]$HoveredIndex)
 
         for ($i = 0; $i -lt $items.Count; $i++) {
-            $distance = if ($HoveredIndex -lt 0) { 99 } else { [Math]::Abs($i - $HoveredIndex) }
-            $scale = switch ($distance) {
-                0       { 1.08 }
-                1       { 0.93 }
-                default { 1.0 }
-            }
+            $scale = if ($HoveredIndex -lt 0) { 1.0 }
+                     elseif ($i -eq $HoveredIndex) { 1.08 }
+                     else { 0.93 }
 
             $transform = $items[$i].RenderTransform
             foreach ($property in @([System.Windows.Media.ScaleTransform]::ScaleXProperty,
