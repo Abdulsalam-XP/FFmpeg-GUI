@@ -103,5 +103,73 @@ function Test-ToolCacheFresh {
     return $age.TotalMinutes -le $MaxAgeMinutes
 }
 
+# Runs the tool and parses what it prints. Never throws: a missing, corrupt or
+# non-responding exe is a normal state the Settings card has to render, not an error.
+function Get-InstalledToolVersion {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("ffmpeg", "ffprobe", "yt-dlp")][string]$Name,
+        [Parameter(Mandatory = $true)][string]$ScriptRoot
+    )
+
+    $result = @{ Name = $Name; Path = $null; Source = "missing"; Version = $null; Display = "not installed" }
+
+    $path = Get-ToolPath -Name $Name -ScriptRoot $ScriptRoot
+    $result.Path = $path
+
+    # Get-ToolPath returns the bare name when nothing was found in bin/, which means
+    # "let Windows resolve it on PATH". Resolve it here so the card can distinguish a
+    # system copy from nothing at all.
+    if ($path -eq $Name) {
+        $onPath = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+        if (-not $onPath) { return $result }
+        $result.Source = "system"
+        $result.Path = $onPath.Source
+    } else {
+        if (-not (Test-Path -LiteralPath $path)) { return $result }
+        $result.Source = "bin"
+    }
+
+    $arguments = if ($Name -eq "yt-dlp") { "--version" } else { "-version" }
+
+    try {
+        $pInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pInfo.FileName = $result.Path
+        $pInfo.Arguments = $arguments
+        $pInfo.UseShellExecute = $false
+        $pInfo.CreateNoWindow = $true
+        $pInfo.RedirectStandardOutput = $true
+        $pInfo.RedirectStandardError = $true
+
+        $process = [System.Diagnostics.Process]::Start($pInfo)
+
+        # Read stdout fully *before* WaitForExit. Waiting first can deadlock if the child
+        # fills the redirected pipe buffer, which is the standard trap with redirection.
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $process.WaitForExit(10000) | Out-Null
+
+        $firstLine = ($stdout -split "`r?`n" | Where-Object { $_.Trim() -ne "" } | Select-Object -First 1)
+        if (-not $firstLine) { $firstLine = "" }
+        $result.Display = $firstLine.Trim()
+
+        if ($Name -eq "yt-dlp") {
+            $result.Version = ConvertFrom-YtDlpVersionString -Line $firstLine
+            if ($result.Version) { $result.Display = $result.Version.ToString("yyyy.MM.dd") }
+        } else {
+            $result.Version = ConvertFrom-FfmpegVersionString -Line $firstLine
+            if ($result.Version) { $result.Display = $result.Version.ToString("yyyy-MM-dd") + " build" }
+        }
+
+        if (-not $result.Version -and $result.Display.Length -gt 40) {
+            $result.Display = $result.Display.Substring(0, 40) + "…"
+        }
+    }
+    catch {
+        $result.Display = "unreadable"
+    }
+
+    return $result
+}
+
 Export-ModuleMember -Function ConvertFrom-FfmpegVersionString, ConvertFrom-YtDlpVersionString, `
-    Test-ToolUpdate, Test-ToolCacheFresh
+    Test-ToolUpdate, Test-ToolCacheFresh, Get-InstalledToolVersion
