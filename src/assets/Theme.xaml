@@ -533,6 +533,83 @@
         <Setter Property="HorizontalAlignment" Value="Center"/>
     </Style>
 
+    <!-- The one affirmative action on a screen (Download, Merge, Trim). Carries the accent
+         gradient so it is distinguishable at a glance from Cancel and the neutral
+         secondary buttons, which share PresetButtonStyle's dark fill. -->
+    <Style x:Key="PrimaryButtonStyle" TargetType="Button">
+        <Setter Property="Foreground" Value="#FFF8EC"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Padding" Value="24,11"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <Border x:Name="Fill" CornerRadius="8" Background="{StaticResource BrushAccentGradient}"/>
+                        <Border x:Name="Sheen" CornerRadius="8" Background="#00FFFFFF"/>
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Sheen" Property="Background" Value="#1FFFFFFF"/>
+                            <Setter TargetName="Fill" Property="Effect" Value="{StaticResource EffectGoldGlow}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Sheen" Property="Background" Value="#26000000"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.32"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Settings uses a real switch rather than a tick box, per the design spec. -->
+    <Style x:Key="ToggleSwitchStyle" TargetType="CheckBox">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Border x:Name="Track" Width="48" Height="27" CornerRadius="13.5"
+                                Background="#0D1526" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1">
+                            <Ellipse x:Name="Knob" Width="19" Height="19" HorizontalAlignment="Left"
+                                     Margin="3,0,0,0" Fill="{StaticResource BrushTextMuted}"/>
+                        </Border>
+                        <ContentPresenter VerticalAlignment="Center" Margin="14,0,0,0"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Track" Property="Background" Value="{StaticResource BrushAccentGradient}"/>
+                            <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
+                            <Setter TargetName="Knob" Property="Margin" Value="0,0,3,0"/>
+                            <Setter TargetName="Knob" Property="Fill" Value="#FFF8EC"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="Opacity" Value="0.8"/>
+        <Setter Property="Margin" Value="2,0,0,10"/>
+    </Style>
+
     <!-- Preset options are RadioButtons, not Buttons: selection is mutually exclusive and
          IsChecked drives the selected visual for free. They still raise Click, so the
          planned Task 10 wiring is unaffected. -->

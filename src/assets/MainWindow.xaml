@@ -305,9 +305,130 @@
                 </StackPanel>
             </Grid>
 
-            <Grid x:Name="PanelYouTubeMP3" Visibility="Collapsed"/>
-            <Grid x:Name="PanelYouTubeMP4" Visibility="Collapsed"/>
-            <Grid x:Name="PanelSettings" Visibility="Collapsed"/>
+            <Grid x:Name="PanelYouTubeMP3" Visibility="Collapsed">
+                <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
+                    <TextBlock Text="YouTube MP3" FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                    <TextBlock Text="Audio is extracted to MP3 and saved in the MP3 Downloads folder" FontSize="11.5"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
+
+                    <TextBlock Text="VIDEO URL" Style="{StaticResource SectionLabelStyle}"/>
+                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="True">
+                            <Button x:Name="ButtonYoutubeMP3Start" DockPanel.Dock="Right" Content="Download"
+                                    Style="{StaticResource PrimaryButtonStyle}" Margin="14,0,0,0"/>
+                            <TextBox x:Name="TextYoutubeMP3Url" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel>
+                            <ProgressBar x:Name="ProgressBarYoutubeMP3" Style="{StaticResource ProgressBarStyle}" Value="0"/>
+                            <Grid Margin="0,8,0,0">
+                                <TextBlock x:Name="TextYoutubeMP3Status" Text="Waiting for a link" FontFamily="{StaticResource FontData}"
+                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextYoutubeMP3Eta" Text="--:--:--" FontFamily="{StaticResource FontData}"
+                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Button x:Name="ButtonYoutubeMP3Cancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}"
+                                    HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <Grid x:Name="PanelYouTubeMP4" Visibility="Collapsed">
+                <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
+                    <TextBlock Text="YouTube MP4" FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                    <TextBlock Text="Videos are saved in the MP4 Downloads folder" FontSize="11.5"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
+
+                    <TextBlock Text="VIDEO URL" Style="{StaticResource SectionLabelStyle}"/>
+                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,20">
+                        <DockPanel LastChildFill="True">
+                            <Button x:Name="ButtonYoutubeMP4Fetch" DockPanel.Dock="Right" Content="Find qualities"
+                                    Style="{StaticResource PresetButtonStyle}" Padding="18,11" Margin="14,0,0,0"/>
+                            <TextBox x:Name="TextYoutubeMP4Url" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+
+                    <TextBlock Text="QUALITY" Style="{StaticResource SectionLabelStyle}"/>
+                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="True">
+                            <Button x:Name="ButtonYoutubeMP4Start" DockPanel.Dock="Right" Content="Download"
+                                    Style="{StaticResource PrimaryButtonStyle}" Margin="14,0,0,0" IsEnabled="False"/>
+                            <!-- Populated by Find qualities; only the resolutions the video
+                                 actually offers are listed. -->
+                            <ComboBox x:Name="ComboYoutubeMP4Quality" Width="240" HorizontalAlignment="Left"
+                                      IsEnabled="False"/>
+                        </DockPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel>
+                            <ProgressBar x:Name="ProgressBarYoutubeMP4" Style="{StaticResource ProgressBarStyle}" Value="0"/>
+                            <Grid Margin="0,8,0,0">
+                                <TextBlock x:Name="TextYoutubeMP4Status" Text="Waiting for a link" FontFamily="{StaticResource FontData}"
+                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextYoutubeMP4Eta" Text="--:--:--" FontFamily="{StaticResource FontData}"
+                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Button x:Name="ButtonYoutubeMP4Cancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}"
+                                    HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <Grid x:Name="PanelSettings" Visibility="Collapsed">
+                <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
+                    <TextBlock Text="Settings" FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                    <TextBlock Text="Preferences are saved to assets/settings.json" FontSize="11.5"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
+
+                    <TextBlock Text="APPEARANCE" Style="{StaticResource SectionLabelStyle}"/>
+                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="False">
+                            <StackPanel DockPanel.Dock="Left">
+                                <TextBlock Text="Animations" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="The sliding nav highlight, hover effects and the drifting dropzone glow."
+                                           FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                           FontFamily="{StaticResource FontChrome}" Margin="0,5,0,0" TextWrapping="Wrap" MaxWidth="480"
+                                           HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <CheckBox x:Name="CheckShowAnimations" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitchStyle}"
+                                      VerticalAlignment="Center" IsChecked="True"/>
+                        </DockPanel>
+                    </Border>
+
+                    <TextBlock Text="TOOLS" Style="{StaticResource SectionLabelStyle}"/>
+                    <Border Style="{StaticResource OptionCardBorderStyle}">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,8">
+                                <TextBlock Text="ffmpeg" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextBody}" HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextToolPathFfmpeg" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                           Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,8">
+                                <TextBlock Text="ffprobe" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextBody}" HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextToolPathFfprobe" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                           Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Grid>
+                                <TextBlock Text="yt-dlp" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextBody}" HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextToolPathYtDlp" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                           Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
         </Grid>
     </Grid>
 </Window>
