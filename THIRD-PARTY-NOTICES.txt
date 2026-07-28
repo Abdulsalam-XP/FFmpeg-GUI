@@ -1,0 +1,48 @@
+THIRD-PARTY COMPONENTS BUNDLED WITH THIS RELEASE
+================================================
+
+This application is a wrapper. The programs that do the actual video and audio
+work are third-party software, included here unmodified for convenience. They
+remain under their own licenses, which apply to those files rather than to this
+project's own code.
+
+
+1. FFmpeg  (bin/ffmpeg.exe, bin/ffprobe.exe)
+--------------------------------------------
+Project:  https://ffmpeg.org
+Source:   https://github.com/FFmpeg/FFmpeg
+Build:    N-124716-g054dffd133-20260531, win64-gpl (BtbN/FFmpeg-Builds)
+          https://github.com/BtbN/FFmpeg-Builds
+
+LICENSE:  GNU General Public License, version 3 or later (GPLv3+).
+
+This build is configured with --enable-gpl and --enable-version3, which places
+the resulting binaries under the GPL rather than the LGPL. Redistributing it
+carries GPL obligations, including making the corresponding source code
+available to recipients.
+
+The complete corresponding source for this build is published by the FFmpeg
+project at https://github.com/FFmpeg/FFmpeg (commit 054dffd133), and the build
+scripts used to produce this Windows binary are at
+https://github.com/BtbN/FFmpeg-Builds.
+
+Full license text: https://www.gnu.org/licenses/gpl-3.0.html
+
+
+2. yt-dlp  (bin/yt-dlp.exe)
+---------------------------
+Project:  https://github.com/yt-dlp/yt-dlp
+Version:  2026.03.17
+LICENSE:  The Unlicense (public domain dedication).
+Full license text: https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE
+
+
+NOTE FOR WHOEVER PUBLISHES THIS RELEASE
+---------------------------------------
+Because the bundled FFmpeg is a GPL build, distributing this zip means
+distributing GPL-licensed binaries. If you would rather not take on those
+obligations, swap bin/ffmpeg.exe and bin/ffprobe.exe for an LGPL build (the
+same BtbN build server publishes "win64-lgpl" variants). The application does
+not depend on any GPL-only feature; it uses libx264 for CPU compression, which
+is itself GPL, so an LGPL FFmpeg build would need its own check that the
+compression presets still work.

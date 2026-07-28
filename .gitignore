@@ -1,0 +1,2 @@
+# Release artifacts: built on demand from src/, never committed.
+dist/
