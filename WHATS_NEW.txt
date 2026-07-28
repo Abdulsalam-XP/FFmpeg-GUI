@@ -1,11 +1,22 @@
 What's New in This Update:
 
-• Fixed videos with [brackets] in the filename failing to compress or merge
-• NVIDIA GPU mode is now offered on laptops with two graphics cards
-• YouTube quality menu no longer lists resolutions the video doesn't have
-• Compression now analyzes the video once instead of twice (faster start)
-• Trim progress bar now reaches 100% correctly
-• File lists now always show file sizes
-• Fixed misleading "Press any key to exit" messages (they return to the menu)
-• Fixed "running scripts is disabled on this system" errors on fresh Windows installs
-• Lots of internal cleanup for future updates
+Version 2.0 - the tool is now a real app, not a terminal menu.
+
+• Brand new window. No more typing numbers into a black console screen. Every tool
+  has its own screen with real buttons, and the console never appears at all.
+• Drag and drop. Drop a video onto the app, or click to browse for one. Your videos
+  no longer have to sit in the same folder as the tool.
+• Cancel button. Long compressions and downloads can be stopped mid-run, which was
+  not possible before.
+• The window stays responsive while it works, so you can move it and watch live
+  progress instead of staring at a frozen screen.
+• Nothing to install. ffmpeg, ffprobe and yt-dlp now come bundled in the download,
+  so there is no winget setup and nothing to add to your PATH.
+• NVIDIA GPU mode is now a simple on/off switch, shown only if you have an NVIDIA
+  card, and each preset tells you the encoder settings it will use.
+• YouTube MP4 lists only the qualities your video actually offers, and downloads
+  above 1080p are merged correctly.
+• Clearer mistakes. Bad timestamps and unreadable files are explained on screen
+  instead of scrolling past in a console.
+• Settings shows which ffmpeg/ffprobe/yt-dlp the app is actually using, which makes
+  "it suddenly stopped working" far easier to diagnose.
