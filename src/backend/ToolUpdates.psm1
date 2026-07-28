@@ -50,4 +50,58 @@ function ConvertTo-DateOrNull {
     return $null
 }
 
-Export-ModuleMember -Function ConvertFrom-FfmpegVersionString, ConvertFrom-YtDlpVersionString
+# Pure comparison, no I/O -- this is the decision the whole feature turns on, so it is
+# kept free of network and filesystem access to stay fully unit-testable.
+function Test-ToolUpdate {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Installed,
+        [hashtable]$Latest
+    )
+
+    $result = @{ Status = "Unknown"; Installed = $Installed; Latest = $Latest }
+
+    # A tool resolved from PATH is never "updated": the app does not own that copy and
+    # must not touch it. The offered action is to place a managed copy in bin/, which
+    # then wins in Get-ToolPath -- so it is Missing (i.e. "Install"), regardless of how
+    # the versions compare.
+    if ($Installed.Source -eq "missing" -or $Installed.Source -eq "system") {
+        $result.Status = "Missing"
+        return $result
+    }
+
+    if ($null -eq $Latest -or $null -eq $Latest.Version) { return $result }
+    if ($null -eq $Installed.Version) { return $result }
+
+    if ($Installed.Version -ge $Latest.Version) {
+        $result.Status = "Current"
+    } else {
+        $result.Status = "Available"
+    }
+
+    return $result
+}
+
+# A future timestamp counts as stale: a clock that jumps forward (or a hand-edited
+# settings.json) would otherwise pin the cache as permanently fresh.
+function Test-ToolCacheFresh {
+    param(
+        [string]$Timestamp,
+        [datetime]$Now = ([datetime]::UtcNow),
+        [int]$MaxAgeMinutes = 60
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Timestamp)) { return $false }
+
+    $parsed = [datetime]::MinValue
+    $ok = [datetime]::TryParse($Timestamp, [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+        [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)
+    if (-not $ok) { return $false }
+
+    $age = $Now - $parsed
+    if ($age.TotalMinutes -lt 0) { return $false }
+    return $age.TotalMinutes -le $MaxAgeMinutes
+}
+
+Export-ModuleMember -Function ConvertFrom-FfmpegVersionString, ConvertFrom-YtDlpVersionString, `
+    Test-ToolUpdate, Test-ToolCacheFresh
