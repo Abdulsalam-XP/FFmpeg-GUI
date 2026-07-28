@@ -82,7 +82,6 @@
                         <TextBlock Text="YouTube MP4" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
-                <Border Height="1" Background="{StaticResource BrushBorderGold}" Opacity="0.45" Margin="16,14,16,14"/>
                 <RadioButton x:Name="NavSettings" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="Settings">
                     <StackPanel Orientation="Horizontal">
                         <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconSettings}"/>
@@ -109,24 +108,20 @@
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
                     <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
-                        <DockPanel LastChildFill="True">
-                            <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
-                                    Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
-                                    VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
+                            <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
+                                       Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
+                                       HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                            <TextBlock Text="MP4 &#183; MKV &#183; MOV" FontSize="11.5" FontFamily="{StaticResource FontData}"
+                                       Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="or" FontSize="12" FontFamily="{StaticResource FontChrome}"
+                                       Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,12,0,12"/>
+                            <Border Style="{StaticResource DropzoneChipStyle}">
+                                <TextBlock Text="Browse Files" FontFamily="{StaticResource FontChrome}" FontSize="13" FontWeight="Bold"
+                                           Foreground="#FFF8EC"/>
                             </Border>
-                            <Border DockPanel.Dock="Right" Style="{StaticResource DropzoneChipStyle}">
-                                <TextBlock Text="Browse&#8230;" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
-                                           Foreground="{StaticResource BrushTextPrimary}"/>
-                            </Border>
-                            <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
-                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                <TextBlock Text="MP4 &#183; MKV &#183; MOV &#8212; presets below adjust once a file loads" FontSize="12"
-                                           Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </DockPanel>
+                        </StackPanel>
                     </Button>
 
                     <TextBlock Text="PRESET" FontSize="10.5" FontFamily="{StaticResource FontChrome}"
@@ -215,24 +210,20 @@
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
                     <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
-                        <DockPanel LastChildFill="True">
-                            <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
-                                    Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
-                                    VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
+                            <TextBlock Text="Drag and drop a multi-stream video here" FontSize="16" FontWeight="Bold"
+                                       Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
+                                       HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                            <TextBlock Text="System and mic audio get mixed into one track" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
+                                       Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="or" FontSize="12" FontFamily="{StaticResource FontChrome}"
+                                       Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,12,0,12"/>
+                            <Border Style="{StaticResource DropzoneChipStyle}">
+                                <TextBlock Text="Browse Files" FontFamily="{StaticResource FontChrome}" FontSize="13" FontWeight="Bold"
+                                           Foreground="#FFF8EC"/>
                             </Border>
-                            <Border DockPanel.Dock="Right" Style="{StaticResource DropzoneChipStyle}">
-                                <TextBlock Text="Browse&#8230;" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
-                                           Foreground="{StaticResource BrushTextPrimary}"/>
-                            </Border>
-                            <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Drop a multi-stream video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
-                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                <TextBlock Text="System and mic audio streams get mixed into one track" FontSize="12"
-                                           Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </DockPanel>
+                        </StackPanel>
                     </Button>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
@@ -270,24 +261,20 @@
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
                     <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
-                        <DockPanel LastChildFill="True">
-                            <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
-                                    Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
-                                    VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="&#8593;" FontSize="18" Foreground="{StaticResource BrushGoldValue}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
+                            <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
+                                       Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
+                                       HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                            <TextBlock Text="Cut before or after a timestamp, no re-encode" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
+                                       Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="or" FontSize="12" FontFamily="{StaticResource FontChrome}"
+                                       Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,12,0,12"/>
+                            <Border Style="{StaticResource DropzoneChipStyle}">
+                                <TextBlock Text="Browse Files" FontFamily="{StaticResource FontChrome}" FontSize="13" FontWeight="Bold"
+                                           Foreground="#FFF8EC"/>
                             </Border>
-                            <Border DockPanel.Dock="Right" Style="{StaticResource DropzoneChipStyle}">
-                                <TextBlock Text="Browse&#8230;" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
-                                           Foreground="{StaticResource BrushTextPrimary}"/>
-                            </Border>
-                            <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
-                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                <TextBlock Text="Cut everything before or after a timestamp, no re-encode" FontSize="12"
-                                           Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </DockPanel>
+                        </StackPanel>
                     </Button>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">

@@ -116,7 +116,12 @@ function Enable-NavHoverMagnify {
 
     for ($index = 0; $index -lt $items.Count; $index++) {
         $captured = $index
-        $items[$index].Add_MouseEnter({ & $applyScales $captured }.GetNewClosure())
+        $items[$index].Add_MouseEnter({
+            # Pointing at the item you are already on is not a navigation target, so it
+            # gets no reaction: passing -1 leaves the whole list at rest.
+            if ($items[$captured].IsChecked) { & $applyScales -1 }
+            else { & $applyScales $captured }
+        }.GetNewClosure())
     }
 
     # Reset from the list itself, not per-item MouseLeave. Leaving one item to enter its
