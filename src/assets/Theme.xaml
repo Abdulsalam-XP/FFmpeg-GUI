@@ -455,6 +455,8 @@
         <GradientStop Color="#00FFFFFF" Offset="1"/>
     </LinearGradientBrush>
 
+    <SolidColorBrush x:Key="BrushGlassDash" Color="#82D3A24C"/>
+
     <LinearGradientBrush x:Key="BrushGlassFillHover" StartPoint="0,0" EndPoint="0,1">
         <GradientStop Color="#4DFFFFFF" Offset="0"/>
         <GradientStop Color="#24FFFFFF" Offset="0.4"/>
@@ -468,28 +470,36 @@
          smaller competing hit area inside its own parent. -->
     <Style x:Key="DropzoneButtonStyle" TargetType="Button">
         <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="MinHeight" Value="200"/>
         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Glass" Background="{StaticResource BrushGlassFill}"
-                            BorderBrush="{StaticResource BrushGlassEdge}" BorderThickness="1"
-                            CornerRadius="14" Padding="26,22" ClipToBounds="True"
-                            Effect="{StaticResource EffectCardLift}">
-                        <Grid>
+                    <Grid>
+                        <!-- A Rectangle rather than a Border: Border has no dashed-stroke
+                             option, and the dash is what makes this read as a drop target
+                             on sight instead of as another card. -->
+                        <!-- Solid stroke colour, not the vertical BrushGlassEdge gradient
+                             used elsewhere: that gradient fades to near-transparent down
+                             the sides, which erases most of the dashes. -->
+                        <Rectangle x:Name="Glass" RadiusX="14" RadiusY="14"
+                                   Fill="{StaticResource BrushGlassFill}"
+                                   Stroke="{StaticResource BrushGlassDash}" StrokeThickness="1.7"
+                                   StrokeDashArray="4 3" StrokeDashCap="Round"
+                                   Effect="{StaticResource EffectCardLift}"/>
+                        <Grid ClipToBounds="True">
                             <!-- Canvas reports no desired size, so the oversized glow
                                  paints over the dropzone without inflating its height. -->
                             <Canvas>
-                                <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
+                                <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-60" Canvas.Top="-130"/>
                             </Canvas>
-                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
-                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
-                            <ContentPresenter/>
                         </Grid>
-                    </Border>
+                        <ContentPresenter Margin="26,24"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Glass" Property="Background" Value="{StaticResource BrushGlassFillHover}"/>
+                            <Setter TargetName="Glass" Property="Fill" Value="{StaticResource BrushGlassFillHover}"/>
+                            <Setter TargetName="Glass" Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -497,15 +507,30 @@
         </Setter>
     </Style>
 
-    <!-- Looks like the button it used to be, but it is decoration now: the parent
-         dropzone handles the click. -->
+    <!-- The call to action inside the dropzone. Deliberately not a Button: the whole
+         dropzone already handles the click, and a real Button here would just carve a
+         competing hit area out of its own parent. -->
     <Style x:Key="DropzoneChipStyle" TargetType="Border">
-        <Setter Property="Background" Value="#101B30"/>
-        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
-        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Background" Value="{StaticResource BrushAccentGradient}"/>
         <Setter Property="CornerRadius" Value="8"/>
-        <Setter Property="Padding" Value="18,10"/>
-        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Padding" Value="26,11"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="Effect" Value="{StaticResource EffectGoldGlow}"/>
+    </Style>
+
+    <!-- Cloud with a down arrow: the conventional "drop things here" mark. -->
+    <Geometry x:Key="IconDropCloud">M7.5 15.5 A4.2 4.2 0 0 1 8 7.2 A5.8 5.8 0 0 1 19.3 7.6 A4 4 0 0 1 19 15.5 Z M13.4 14 V23 M9.9 19.5 L13.4 23 L16.9 19.5</Geometry>
+
+    <Style x:Key="DropCloudIconStyle" TargetType="Path">
+        <Setter Property="Width" Value="40"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="Stretch" Value="Uniform"/>
+        <Setter Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="StrokeThickness" Value="1.5"/>
+        <Setter Property="StrokeLineJoin" Value="Round"/>
+        <Setter Property="StrokeStartLineCap" Value="Round"/>
+        <Setter Property="StrokeEndLineCap" Value="Round"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
     </Style>
 
     <!-- Preset options are RadioButtons, not Buttons: selection is mutually exclusive and
