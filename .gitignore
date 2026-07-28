@@ -1,2 +1,5 @@
+# Local progress ledger for the in-flight work, not part of the app.
+.superpowers/
+
 # Release artifacts: built on demand from src/, never committed.
 dist/
