@@ -243,9 +243,8 @@ function Start-TrackedProcess {
     # any of ffmpeg's progress output -- confirmed empirically: a real ffmpeg run that
     # completes in 0.3s left the wrapper hung for 90+s with zero progress lines and no
     # Exited event, stalled right where the '\n'-terminated startup banner ends and
-    # '\r'-only progress begins. (The existing console version avoids this because
-    # StreamReader.ReadLine(), which it uses synchronously, treats bare '\r' as a line
-    # terminator too -- see Invoke-FFmpegProcess in UI.psm1.)
+    # '\r'-only progress begins. (The now-deleted console version never hit this because
+    # its synchronous StreamReader.ReadLine() treats a bare '\r' as a line terminator.)
     #
     # The fix here polls the stream on a DispatcherTimer (i.e. entirely on the UI
     # thread, so PowerShell scriptblocks can run inline with a valid runspace context --
