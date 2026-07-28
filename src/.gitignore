@@ -7,3 +7,7 @@ assets/settings.json
 *.mp3
 *.png
 *.jpg
+# Bundled tool binaries: shipped inside the release zip, never committed.
+# Get-ToolPath prefers bin/ and falls back to PATH, so a source checkout works
+# either by dropping the exes in here or by having them installed.
+bin/*.exe
