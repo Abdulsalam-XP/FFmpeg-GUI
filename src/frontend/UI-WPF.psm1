@@ -347,4 +347,42 @@ function Start-TrackedProcess {
     return $process
 }
 
-Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess, Enable-NavHoverMagnify
+# Points a panel's Cancel button at the job it should kill.
+#
+# The obvious "$cancelButton.Add_Click({ ... $process.Kill() }.GetNewClosure())" at the end
+# of every *Async function looks harmless but stacks a new handler on the same button once
+# per run, each closed over that run's process. Start-TrackedProcess disposes a process
+# when it exits, and HasExited on a disposed Process reads back as $null -- so "-not
+# $_.HasExited" is true and the stale handler calls Kill() on a disposed object, which
+# throws. WPF stops dispatching a routed event once a handler throws, so the live handler
+# added after it never runs: Cancel silently did nothing from the second job of a session
+# onward, leaving an unkillable job on screen.
+#
+# So the handler is registered once per button and always acts on whichever process was
+# most recently registered for it.
+$script:CancelTargets = @{}
+
+function Set-CancelButtonTarget {
+    param(
+        [Parameter(Mandatory = $true)]$Button,
+        [Parameter(Mandatory = $true)]$Process
+    )
+
+    $script:CancelTargets[$Button.Name] = $Process
+
+    if ($Button.Tag -ne "cancel-wired") {
+        $Button.Tag = "cancel-wired"
+        $Button.Add_Click({
+            param($sender, $e)
+            $p = $script:CancelTargets[$sender.Name]
+            if (-not $p) { return }
+            # Only a definite $false means there is still something to kill: a disposed
+            # process answers $null here, and "-not $null" would send us into Kill().
+            $exited = $null
+            try { $exited = $p.HasExited } catch { return }
+            if ($exited -eq $false) { try { $p.Kill() } catch {} }
+        })
+    }
+}
+
+Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess, Enable-NavHoverMagnify, Set-CancelButtonTarget
