@@ -182,5 +182,64 @@ function Get-InstalledToolVersion {
     return $result
 }
 
+$script:ReleaseApi = @{
+    "yt-dlp" = @{
+        Uri   = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+        Asset = "yt-dlp.exe"
+    }
+    "ffmpeg" = @{
+        # BtbN publishes one rolling release whose tag is the literal string "latest",
+        # so there is no version number on the remote side -- published_at is the only
+        # comparable value, which is why the ffmpeg path is date-based throughout.
+        Uri   = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
+        Asset = "ffmpeg-master-latest-win64-gpl.zip"
+    }
+}
+
+function Get-LatestToolRelease {
+    param([Parameter(Mandatory = $true)][ValidateSet("ffmpeg", "yt-dlp")][string]$Name)
+
+    $api = $script:ReleaseApi[$Name]
+
+    # GitHub rejects API requests without a User-Agent. TLS 1.2 is forced because 5.1
+    # defaults to SSL3/TLS1.0 on some machines, which api.github.com refuses outright.
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+        [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.ServicePointManager]::SecurityProtocol
+
+    $response = Invoke-RestMethod -Uri $api.Uri -Headers @{
+        "User-Agent" = "FFmpeg-GUI"
+        "Accept"     = "application/vnd.github+json"
+    } -TimeoutSec 20
+
+    $asset = $response.assets | Where-Object { $_.name -eq $api.Asset } | Select-Object -First 1
+    if (-not $asset) {
+        throw "The $Name release does not contain the expected file '$($api.Asset)'."
+    }
+
+    if ($Name -eq "yt-dlp") {
+        $version = ConvertFrom-YtDlpVersionString -Line $response.tag_name
+        if (-not $version) { throw "Could not read a version from the yt-dlp tag '$($response.tag_name)'." }
+        $display = $version.ToString("yyyy.MM.dd")
+    } else {
+        $published = [datetime]::MinValue
+        $ok = [datetime]::TryParse($response.published_at,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+            [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$published)
+        if (-not $ok) { throw "Could not read a build date from the ffmpeg release." }
+        # Compared against a date-only installed build, so the time of day is dropped.
+        $version = $published.Date
+        $display = $version.ToString("yyyy-MM-dd") + " build"
+    }
+
+    return @{
+        Name        = $Name
+        Version     = $version
+        Display     = $display
+        DownloadUrl = $asset.browser_download_url
+        AssetName   = $asset.name
+    }
+}
+
 Export-ModuleMember -Function ConvertFrom-FfmpegVersionString, ConvertFrom-YtDlpVersionString, `
-    Test-ToolUpdate, Test-ToolCacheFresh, Get-InstalledToolVersion
+    Test-ToolUpdate, Test-ToolCacheFresh, Get-InstalledToolVersion, Get-LatestToolRelease
