@@ -1,5 +1,6 @@
 Import-Module "$PSScriptRoot/UI.psm1"
-$ffprobe = "ffprobe"
+Import-Module "$PSScriptRoot/ToolPaths.psm1"
+$ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
 
 $script:CompressionPresets = @{}
 
@@ -298,4 +299,70 @@ function Compress-Video {
     }
 }
 
-Export-ModuleMember -Function Get-VideoProperties, Get-SystemSpecs, Get-CompressionSuggestions, Compress-Video, Set-CompressionMode
+function Compress-VideoAsync {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        [Parameter(Mandatory = $true)][string]$Preset,
+        [hashtable]$VideoProps
+    )
+
+    if (-not $VideoProps) { $VideoProps = Get-VideoProperties -inputFile $InputFile }
+    $totalSeconds = $VideoProps.Duration.TotalSeconds
+    $selectedPreset = $script:CompressionPresets[$Preset]
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
+    $outputFile = "$baseName-$($Preset.ToLower().Replace(' ', '-')).mp4"
+
+    $argList = @("-i", "`"$InputFile`"")
+    if ($selectedPreset.MapAll) { $argList += "-map", "0" }
+    if ($selectedPreset.Codec -like "*nvenc") {
+        $argList += "-c:v", $selectedPreset.Codec, "-rc", "vbr", "-cq", $selectedPreset.CRF, "-preset", $selectedPreset.Preset, "-b:v", "0"
+    } else {
+        $argList += "-c:v", $selectedPreset.Codec, "-crf", $selectedPreset.CRF, "-preset", $selectedPreset.Preset
+    }
+    $argList += "-c:a", "copy", "`"$outputFile`"", "-y"
+
+    $panel = $Context.Panels.Compress
+    $progressBar = $panel.FindName("ProgressBarCompress")
+    $percentText = $panel.FindName("TextCompressPercent")
+    $etaText = $panel.FindName("TextCompressEta")
+    $cancelButton = $panel.FindName("ButtonCompressCancel")
+    $startTime = Get-Date
+
+    $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+
+    # Captured as a scriptblock (rather than calling the command by name inside the
+    # -OnLine closure below) because Start-TrackedProcess invokes -OnLine from
+    # UI-WPF.psm1's own module scope. GetNewClosure() copies variables into the
+    # closure, but does not make VideoProcessing.psm1's imported command table
+    # resolvable from that foreign invocation context, so an unqualified call to
+    # ConvertFrom-FFmpegProgressLine there fails with "not recognized" -- confirmed
+    # empirically while verifying this function against real ffmpeg runs. Grabbing
+    # the function's own scriptblock here and invoking it via "& $convertProgressLine"
+    # sidesteps command-name lookup entirely.
+    $convertProgressLine = ${function:ConvertFrom-FFmpegProgressLine}
+
+    $process = Start-TrackedProcess -Context $Context -FileName $ffmpegPath -Arguments ($argList -join " ") -ReadStream Error `
+        -OnLine {
+            param($line)
+            $elapsed = ((Get-Date) - $startTime).TotalSeconds
+            $progress = & $convertProgressLine -Line $line -TotalSeconds $totalSeconds -ElapsedSeconds $elapsed
+            if ($progress) {
+                $progressBar.Value = $progress.Percent
+                $percentText.Text = "{0:N1}%" -f $progress.Percent
+                $etaText.Text = $progress.EtaString
+            }
+        }.GetNewClosure() `
+        -OnExit {
+            param($exitCode)
+            $cancelButton.IsEnabled = $false
+            if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
+        }.GetNewClosure()
+
+    $cancelButton.IsEnabled = $true
+    $cancelButton.Add_Click({ if (-not $process.HasExited) { $process.Kill() } }.GetNewClosure())
+
+    return $process
+}
+
+Export-ModuleMember -Function Get-VideoProperties, Get-SystemSpecs, Get-CompressionSuggestions, Compress-Video, Set-CompressionMode, Compress-VideoAsync

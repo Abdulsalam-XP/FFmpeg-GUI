@@ -30,7 +30,35 @@
 
         <!-- Content -->
         <Grid Grid.Column="1" Margin="30,24">
-            <Grid x:Name="PanelCompress" Visibility="Visible"/>
+            <Grid x:Name="PanelCompress" Visibility="Visible">
+                <StackPanel>
+                    <TextBlock Text="Compress Video" FontSize="20" FontWeight="Bold"
+                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                    <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="11"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,16"/>
+
+                    <Button x:Name="ButtonCompressBrowse" Content="Browse for a .mp4..." Style="{StaticResource PresetButtonStyle}"
+                            HorizontalAlignment="Left" Padding="16,10" Margin="0,0,0,16"/>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <Button x:Name="ButtonPresetHigh" Content="High Quality" Style="{StaticResource PresetButtonStyle}" Width="140" Margin="0,0,8,0"/>
+                        <Button x:Name="ButtonPresetBalanced" Content="Balanced" Style="{StaticResource PresetButtonStyle}" Width="140" Margin="0,0,8,0"/>
+                        <Button x:Name="ButtonPresetSmall" Content="Small Size" Style="{StaticResource PresetButtonStyle}" Width="140"/>
+                    </StackPanel>
+
+                    <ProgressBar x:Name="ProgressBarCompress" Height="10" Minimum="0" Maximum="100" Value="0"
+                                 Foreground="{StaticResource BrushAccentGradient}" Background="#0D1526"/>
+                    <Grid Margin="0,4,0,0">
+                        <TextBlock x:Name="TextCompressPercent" Text="0.0%" FontFamily="{StaticResource FontData}"
+                                   Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                        <TextBlock x:Name="TextCompressEta" Text="--:--:--" FontFamily="{StaticResource FontData}"
+                                   Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                    </Grid>
+
+                    <Button x:Name="ButtonCompressCancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}"
+                            HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
+                </StackPanel>
+            </Grid>
             <Grid x:Name="PanelMergeAudio" Visibility="Collapsed"/>
             <Grid x:Name="PanelTrim" Visibility="Collapsed"/>
             <Grid x:Name="PanelYouTubeMP3" Visibility="Collapsed"/>
