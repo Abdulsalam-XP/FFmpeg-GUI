@@ -42,22 +42,60 @@
                        Foreground="{StaticResource BrushTextMuted}" Opacity="0.75"
                        Margin="24,22,0,0" VerticalAlignment="Top"/>
             <Canvas x:Name="PillCanvas">
-                <Border x:Name="NavPill" Width="190" Height="38" CornerRadius="9"
+                <!-- Width/Height/Top are placeholders; Show-Panel resizes and positions
+                     the pill from the selected nav item's measured bounds. Left matches
+                     the nav StackPanel's horizontal margin. -->
+                <Border x:Name="NavPill" Width="196" Height="40" CornerRadius="9"
                         Background="{StaticResource BrushAccentGradient}"
-                        Canvas.Left="10" Canvas.Top="70">
+                        Canvas.Left="12" Canvas.Top="60">
                     <Border.Effect><DropShadowEffect Color="#D3A24C" Opacity="0.4" BlurRadius="18" ShadowDepth="4"/></Border.Effect>
                 </Border>
             </Canvas>
-            <StackPanel Margin="0,60,0,0">
-                <Button x:Name="NavCompress" Content="Compress" Style="{StaticResource SidebarItemStyle}" Tag="Compress"/>
-                <Button x:Name="NavMergeAudio" Content="Merge Audio" Style="{StaticResource SidebarItemStyle}" Tag="MergeAudio"/>
-                <Button x:Name="NavTrim" Content="Trim" Style="{StaticResource SidebarItemStyle}" Tag="Trim"/>
-                <Button x:Name="NavYouTubeMP3" Content="YouTube MP3" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP3"/>
-                <Button x:Name="NavYouTubeMP4" Content="YouTube MP4" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP4"/>
-                <Button x:Name="NavSettings" Content="Settings" Style="{StaticResource SidebarItemStyle}" Tag="Settings"/>
-                <Border Height="1" Background="{StaticResource BrushBorderGold}" Opacity="0.5" Margin="14,12,14,10"/>
-                <Button x:Name="NavConvertMp4" Content="Convert to MP4 (Coming Soon)"
-                        Style="{StaticResource SidebarItemDisabledStyle}" IsEnabled="False"/>
+            <StackPanel Margin="12,60,12,0">
+                <RadioButton x:Name="NavCompress" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="Compress">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconCompress}"/>
+                        <TextBlock Text="Compress" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton x:Name="NavMergeAudio" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="MergeAudio">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconMergeAudio}"/>
+                        <TextBlock Text="Merge Audio" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton x:Name="NavTrim" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="Trim">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconTrim}"/>
+                        <TextBlock Text="Trim" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton x:Name="NavYouTubeMP3" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP3">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconVideo}"/>
+                        <TextBlock Text="YouTube MP3" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton x:Name="NavYouTubeMP4" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP4">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconVideo}"/>
+                        <TextBlock Text="YouTube MP4" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <Border Height="1" Background="{StaticResource BrushBorderGold}" Opacity="0.45" Margin="16,14,16,14"/>
+                <RadioButton x:Name="NavSettings" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="Settings">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconSettings}"/>
+                        <TextBlock Text="Settings" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <Button x:Name="NavConvertMp4" Style="{StaticResource SidebarItemDisabledStyle}" IsEnabled="False" Margin="0,6,0,0">
+                    <DockPanel LastChildFill="False">
+                        <TextBlock Text="Convert to MP4" DockPanel.Dock="Left" VerticalAlignment="Center"/>
+                        <TextBlock Text="SOON" DockPanel.Dock="Right" VerticalAlignment="Center"
+                                   FontFamily="{StaticResource FontData}" FontSize="9" Foreground="#4A4F68"/>
+                    </DockPanel>
+                </Button>
             </StackPanel>
         </Grid>
 
@@ -77,6 +115,8 @@
                             <Canvas>
                                 <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
                             </Canvas>
+                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
+                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
                             <DockPanel LastChildFill="True">
                                 <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
                                         Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
@@ -89,8 +129,8 @@
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
                                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                    <TextBlock Text="MP4 &#183; MKV &#183; MOV &#8212; presets below adjust once a file loads" FontSize="11.5"
-                                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" Margin="0,3,0,0"/>
+                                    <TextBlock Text="MP4 &#183; MKV &#183; MOV &#8212; presets below adjust once a file loads" FontSize="12"
+                                               Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
                                 </StackPanel>
                             </DockPanel>
                         </Grid>
@@ -106,24 +146,56 @@
                             <ColumnDefinition Width="12"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <Button x:Name="ButtonPresetHigh" Grid.Column="0" Style="{StaticResource PresetCardButtonStyle}">
+                        <!-- TextEstSize* stay at an em dash until a file is loaded; Task 10
+                             fills them from Get-CompressionSuggestions. -->
+                        <RadioButton x:Name="ButtonPresetHigh" Grid.Column="0" GroupName="CompressPreset"
+                                     Style="{StaticResource PresetCardStyle}">
                             <StackPanel>
-                                <TextBlock Text="High Quality" FontFamily="{StaticResource FontChrome}" FontWeight="SemiBold" FontSize="13.5"/>
-                                <TextBlock Text="Visually lossless" FontFamily="{StaticResource FontChrome}" FontSize="11" Foreground="{StaticResource BrushTextMuted}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="High Quality" FontFamily="{StaticResource FontChrome}" FontWeight="Bold" FontSize="15"
+                                           Foreground="{StaticResource BrushTextPrimary}"/>
+                                <TextBlock Text="Visually lossless. Best for archival or re-editing later." TextWrapping="Wrap"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                           Margin="0,6,0,14" LineHeight="17"/>
+                                <Grid>
+                                    <TextBlock Text="Est. size" FontFamily="{StaticResource FontData}" FontSize="11"
+                                               Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                    <TextBlock x:Name="TextEstSizeHigh" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                               FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}" HorizontalAlignment="Right"/>
+                                </Grid>
                             </StackPanel>
-                        </Button>
-                        <Button x:Name="ButtonPresetBalanced" Grid.Column="2" Style="{StaticResource PresetCardButtonStyle}">
+                        </RadioButton>
+                        <RadioButton x:Name="ButtonPresetBalanced" Grid.Column="2" GroupName="CompressPreset" IsChecked="True"
+                                     Style="{StaticResource PresetCardStyle}">
                             <StackPanel>
-                                <TextBlock Text="Balanced" FontFamily="{StaticResource FontChrome}" FontWeight="SemiBold" FontSize="13.5"/>
-                                <TextBlock Text="Sensible default" FontFamily="{StaticResource FontChrome}" FontSize="11" Foreground="{StaticResource BrushTextMuted}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="Balanced" FontFamily="{StaticResource FontChrome}" FontWeight="Bold" FontSize="15"
+                                           Foreground="{StaticResource BrushTextPrimary}"/>
+                                <TextBlock Text="Sensible default &#8212; small size loss most people never notice." TextWrapping="Wrap"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                           Margin="0,6,0,14" LineHeight="17"/>
+                                <Grid>
+                                    <TextBlock Text="Est. size" FontFamily="{StaticResource FontData}" FontSize="11"
+                                               Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                    <TextBlock x:Name="TextEstSizeBalanced" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                               FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}" HorizontalAlignment="Right"/>
+                                </Grid>
                             </StackPanel>
-                        </Button>
-                        <Button x:Name="ButtonPresetSmall" Grid.Column="4" Style="{StaticResource PresetCardButtonStyle}">
+                        </RadioButton>
+                        <RadioButton x:Name="ButtonPresetSmall" Grid.Column="4" GroupName="CompressPreset"
+                                     Style="{StaticResource PresetCardStyle}">
                             <StackPanel>
-                                <TextBlock Text="Small Size" FontFamily="{StaticResource FontChrome}" FontWeight="SemiBold" FontSize="13.5"/>
-                                <TextBlock Text="Aggressive compression" FontFamily="{StaticResource FontChrome}" FontSize="11" Foreground="{StaticResource BrushTextMuted}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="Small Size" FontFamily="{StaticResource FontChrome}" FontWeight="Bold" FontSize="15"
+                                           Foreground="{StaticResource BrushTextPrimary}"/>
+                                <TextBlock Text="Aggressive compression for sharing or slow connections." TextWrapping="Wrap"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                           Margin="0,6,0,14" LineHeight="17"/>
+                                <Grid>
+                                    <TextBlock Text="Est. size" FontFamily="{StaticResource FontData}" FontSize="11"
+                                               Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                    <TextBlock x:Name="TextEstSizeSmall" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
+                                               FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}" HorizontalAlignment="Right"/>
+                                </Grid>
                             </StackPanel>
-                        </Button>
+                        </RadioButton>
                     </Grid>
 
                     <Border Style="{StaticResource CardBorderStyle}">
@@ -156,6 +228,8 @@
                             <Canvas>
                                 <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
                             </Canvas>
+                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
+                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
                             <DockPanel LastChildFill="True">
                                 <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
                                         Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
@@ -168,8 +242,8 @@
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="Drop a multi-stream video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
                                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                    <TextBlock Text="System and mic audio streams get mixed into one track" FontSize="11.5"
-                                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" Margin="0,3,0,0"/>
+                                    <TextBlock Text="System and mic audio streams get mixed into one track" FontSize="12"
+                                               Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
                                 </StackPanel>
                             </DockPanel>
                         </Grid>
@@ -216,6 +290,8 @@
                             <Canvas>
                                 <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
                             </Canvas>
+                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
+                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
                             <DockPanel LastChildFill="True">
                                 <Border DockPanel.Dock="Left" Width="48" Height="48" CornerRadius="10"
                                         Background="#1A2340" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"
@@ -228,8 +304,8 @@
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="Drop a video here, or browse your files" FontSize="14.5" FontWeight="SemiBold"
                                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                                    <TextBlock Text="Cut everything before or after a timestamp, no re-encode" FontSize="11.5"
-                                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" Margin="0,3,0,0"/>
+                                    <TextBlock Text="Cut everything before or after a timestamp, no re-encode" FontSize="12"
+                                               Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}" Margin="0,4,0,0"/>
                                 </StackPanel>
                             </DockPanel>
                         </Grid>

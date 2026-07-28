@@ -44,37 +44,121 @@
     <SolidColorBrush x:Key="BrushCardBackground" Color="#0C1626"/>
     <SolidColorBrush x:Key="BrushTextPrimary" Color="#F2EDE0"/>
     <SolidColorBrush x:Key="BrushTextMuted" Color="#8890B0"/>
+    <!-- One step up from muted, for body copy that has to stay readable at 12px. -->
+    <SolidColorBrush x:Key="BrushTextBody" Color="#AEB6D4"/>
     <SolidColorBrush x:Key="BrushGoldValue" Color="#E0C48F"/>
     <SolidColorBrush x:Key="BrushDropzoneFill" Color="#8C0F1830"/>
 
     <DropShadowEffect x:Key="EffectCardLift" Color="#000000" Opacity="0.45" BlurRadius="28" ShadowDepth="10" Direction="270"/>
     <DropShadowEffect x:Key="EffectGoldGlow" Color="#D3A24C" Opacity="0.45" BlurRadius="22" ShadowDepth="0"/>
 
-    <Style x:Key="SidebarItemStyle" TargetType="Button">
+    <!-- Nav icons. Stroked outlines rather than filled shapes: at 15px a filled glyph
+         turns into a blob, and a stroke can inherit the item's Foreground so the icon
+         brightens with its label on hover and selection. -->
+    <Geometry x:Key="IconCompress">M8 1.5 L14.5 5 L8 8.5 L1.5 5 Z M1.5 8.5 L8 12 L14.5 8.5</Geometry>
+    <Geometry x:Key="IconMergeAudio">M6 11.5 V2.5 L13.5 1 V10 M2.5 9.5 A1.9 1.9 0 1 0 2.5 13.3 A1.9 1.9 0 1 0 2.5 9.5 M10 8 A1.9 1.9 0 1 0 10 11.8 A1.9 1.9 0 1 0 10 8</Geometry>
+    <Geometry x:Key="IconTrim">M5 1.5 V14.5 M11 1.5 V14.5 M1.5 5 H8 M8 11 H14.5</Geometry>
+    <Geometry x:Key="IconVideo">M1.5 4 H10 V12 H1.5 Z M10 8 L14.5 5 V11 Z</Geometry>
+    <Geometry x:Key="IconSettings">M8 5.75 A2.25 2.25 0 1 0 8 10.25 A2.25 2.25 0 1 0 8 5.75 M8 1 V2.75 M8 13.25 V15 M15 8 H13.25 M2.75 8 H1 M12.95 3.05 L11.7 4.3 M4.3 11.7 L3.05 12.95 M12.95 12.95 L11.7 11.7 M4.3 4.3 L3.05 3.05</Geometry>
+
+    <!-- Sidebar items grow slightly and brighten on hover, and go bold + full-contrast
+         when selected. They are RadioButtons so selection is mutually exclusive and
+         IsChecked drives the active look directly; they still raise Click for wiring.
+         The stock template is replaced outright; its hover state paints a light system
+         highlight rectangle that is both off-theme and covers the gradient pill sliding
+         behind it. Growth is anchored to the left edge so the list doesn't shift. -->
+    <Style x:Key="SidebarItemStyle" TargetType="RadioButton">
         <Setter Property="Background" Value="Transparent"/>
-        <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
         <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
         <Setter Property="FontSize" Value="13.5"/>
-        <Setter Property="HorizontalContentAlignment" Value="Left"/>
-        <Setter Property="Padding" Value="14,10"/>
+        <Setter Property="Padding" Value="16,11"/>
         <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Chrome" Background="Transparent"
+                            Padding="{TemplateBinding Padding}"
+                            RenderTransformOrigin="0,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1"/>
+                        </Border.RenderTransform>
+                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource BrushTextPrimary}"/>
+                        </Trigger>
+                        <!-- After the hover trigger so selection wins when both apply. -->
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter Property="Foreground" Value="#FFF8EC"/>
+                            <Setter Property="FontWeight" Value="Bold"/>
+                        </Trigger>
+                        <EventTrigger RoutedEvent="UIElement.MouseEnter">
+                            <BeginStoryboard>
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                                     To="1.06" Duration="0:0:0.18">
+                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                                     To="1.06" Duration="0:0:0.18">
+                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                        <EventTrigger RoutedEvent="UIElement.MouseLeave">
+                            <BeginStoryboard>
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                                     To="1" Duration="0:0:0.22">
+                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                                     To="1" Duration="0:0:0.22">
+                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                    </DoubleAnimation>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Icon inside a nav item: stroke follows the item's Foreground so it tracks the
+         hover and selected triggers above. -->
+    <Style x:Key="NavIconStyle" TargetType="Path">
+        <Setter Property="Width" Value="16"/>
+        <Setter Property="Height" Value="16"/>
+        <Setter Property="Stretch" Value="None"/>
+        <Setter Property="StrokeThickness" Value="1.4"/>
+        <Setter Property="StrokeLineJoin" Value="Round"/>
+        <Setter Property="StrokeStartLineCap" Value="Round"/>
+        <Setter Property="StrokeEndLineCap" Value="Round"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="0,0,12,0"/>
+        <Setter Property="Stroke"
+                Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type RadioButton}}}"/>
     </Style>
 
     <!-- The "Convert to MP4" nav entry is permanently disabled in v1 (same as the
          console menu). Stock disabled chrome would grey it with system colors, so it
          gets its own muted-but-on-theme treatment. -->
-    <Style x:Key="SidebarItemDisabledStyle" TargetType="Button" BasedOn="{StaticResource SidebarItemStyle}">
-        <Setter Property="Foreground" Value="#4A4F68"/>
-        <Setter Property="FontSize" Value="12"/>
-        <Setter Property="FontStyle" Value="Italic"/>
+    <Style x:Key="SidebarItemDisabledStyle" TargetType="Button">
+        <Setter Property="Foreground" Value="#565C78"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Padding" Value="16,11"/>
         <Setter Property="Cursor" Value="Arrow"/>
         <Setter Property="IsHitTestVisible" Value="False"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border Background="Transparent" Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
                     </Border>
                 </ControlTemplate>
             </Setter.Value>
@@ -368,13 +452,97 @@
         </Setter>
     </Style>
 
+    <!-- Frosted glass. WPF has no backdrop-filter, and a VisualBrush of the layer behind
+         would gain nothing here anyway: the background it would sample is a smooth
+         gradient mesh, so blurring it returns very nearly the same pixels. The frosted
+         read comes instead from the things a blur alone never gives you: a translucent
+         fill that lets the mesh through, a white sheen falling top-to-bottom, and a
+         light-catching top edge (the gradient BorderBrush below, bright at the top and
+         fading to gold at the bottom), plus the drop shadow that lifts it off the page. -->
+    <LinearGradientBrush x:Key="BrushGlassFill" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#38FFFFFF" Offset="0"/>
+        <GradientStop Color="#17FFFFFF" Offset="0.4"/>
+        <GradientStop Color="#0DFFFFFF" Offset="0.75"/>
+        <GradientStop Color="#14101B30" Offset="1"/>
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="BrushGlassEdge" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#8FFFFFFF" Offset="0"/>
+        <GradientStop Color="#2ED3A24C" Offset="0.45"/>
+        <GradientStop Color="#1FD3A24C" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Specular top edge: a hairline of near-white along the very top of the glass,
+         brightest at the left where the corner glow sits. This is the cue that most
+         reads as "a pane of glass catching light" rather than a tinted rectangle. -->
+    <LinearGradientBrush x:Key="BrushGlassSpecular" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#00FFFFFF" Offset="0"/>
+        <GradientStop Color="#A6FFFFFF" Offset="0.22"/>
+        <GradientStop Color="#40FFFFFF" Offset="0.6"/>
+        <GradientStop Color="#00FFFFFF" Offset="1"/>
+    </LinearGradientBrush>
+
     <Style x:Key="DropzoneBorderStyle" TargetType="Border">
-        <Setter Property="Background" Value="{StaticResource BrushDropzoneFill}"/>
-        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="Background" Value="{StaticResource BrushGlassFill}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushGlassEdge}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="CornerRadius" Value="14"/>
         <Setter Property="Padding" Value="26,22"/>
         <Setter Property="Effect" Value="{StaticResource EffectCardLift}"/>
+    </Style>
+
+    <!-- Preset options are RadioButtons, not Buttons: selection is mutually exclusive and
+         IsChecked drives the selected visual for free. They still raise Click, so the
+         planned Task 10 wiring is unaffected. -->
+    <Style x:Key="PresetCardStyle" TargetType="RadioButton">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Grid>
+                        <Border x:Name="Card" CornerRadius="11" BorderThickness="1"
+                                BorderBrush="{StaticResource BrushBorderGold}"
+                                Background="{StaticResource BrushCardBackground}"/>
+                        <Border x:Name="SelectedFill" CornerRadius="11" Opacity="0">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                                    <GradientStop Color="#4CD3A24C" Offset="0"/>
+                                    <GradientStop Color="#141F3F7A" Offset="0.55"/>
+                                    <GradientStop Color="#000C1626" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                        <ContentPresenter Margin="18,16"/>
+                        <Grid x:Name="CheckBadge" Width="20" Height="20" Opacity="0"
+                              HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,0">
+                            <Ellipse>
+                                <Ellipse.Fill>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                        <GradientStop Color="#F0C87A" Offset="0"/>
+                                        <GradientStop Color="#D3A24C" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Ellipse.Fill>
+                            </Ellipse>
+                            <Path Data="M 0 3.5 L 3 6.5 L 8.5 1" Stroke="#0A0E1A" StrokeThickness="2"
+                                  StrokeEndLineCap="Round" StrokeStartLineCap="Round"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BrushAccentGradient}"/>
+                            <Setter TargetName="Card" Property="BorderThickness" Value="1.4"/>
+                            <Setter TargetName="SelectedFill" Property="Opacity" Value="1"/>
+                            <Setter TargetName="CheckBadge" Property="Opacity" Value="1"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
 </ResourceDictionary>
