@@ -27,6 +27,20 @@ Describe "ConvertFrom-FfmpegVersionString" {
     It "does not mistake a longer digit run for a date" {
         ConvertFrom-FfmpegVersionString -Line "ffmpeg version N-2026053112-gabcdef" | Should BeNullOrEmpty
     }
+
+    It "parses an ffprobe dated build the same way" {
+        $line = "ffprobe version N-124716-g054dffd133-20260531 Copyright (c) 2000-2026 the FFmpeg developers"
+        $result = ConvertFrom-FfmpegVersionString -Line $line
+        $result | Should Be ([datetime]::new(2026, 5, 31))
+    }
+
+    It "returns null for an ffprobe dateless release build" {
+        ConvertFrom-FfmpegVersionString -Line "ffprobe version 7.1.1-full_build-www.gyan.dev" | Should BeNullOrEmpty
+    }
+
+    It "returns null for a tool name that is neither ffmpeg nor ffprobe" {
+        ConvertFrom-FfmpegVersionString -Line "ffplay version N-124716-g054dffd133-20260531" | Should BeNullOrEmpty
+    }
 }
 
 Describe "ConvertFrom-YtDlpVersionString" {
