@@ -433,25 +433,106 @@
 
                     <TextBlock Text="TOOLS" Style="{StaticResource SectionLabelStyle}"/>
                     <Border Style="{StaticResource OptionCardBorderStyle}">
-                        <StackPanel>
-                            <Grid Margin="0,0,0,8">
-                                <TextBlock Text="ffmpeg" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
-                                           Foreground="{StaticResource BrushTextBody}" HorizontalAlignment="Left"/>
-                                <TextBlock x:Name="TextToolPathFfmpeg" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
-                                           Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                        <!-- IsSharedSizeScope keeps the name/version/action columns aligned across the
+                             three independent row Grids, whatever length version string a tool reports. -->
+                        <StackPanel Grid.IsSharedSizeScope="True">
+                            <TextBlock Text="ffmpeg and yt-dlp do the actual work. Keeping yt-dlp current is what stops YouTube links from failing."
+                                       FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                       FontFamily="{StaticResource FontChrome}" TextWrapping="Wrap"
+                                       Margin="0,0,0,18" MaxWidth="560" HorizontalAlignment="Left"/>
+
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolName"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolVersion"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolAction"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="ffmpeg" VerticalAlignment="Center" MinWidth="76"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextBody}"/>
+                                <TextBlock Grid.Column="1" x:Name="TextToolVersionFfmpeg" Text="&#8212;"
+                                           VerticalAlignment="Center" MinWidth="150" MaxWidth="260" Margin="0,0,18,0"
+                                           FontFamily="{StaticResource FontData}" FontSize="11"
+                                           Foreground="{StaticResource BrushTextPrimary}"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <Button Grid.Column="2" x:Name="ButtonUpdateFfmpeg" Content="Checking&#8230;"
+                                        Style="{StaticResource PrimaryButtonStyle}"
+                                        MinWidth="164" IsEnabled="False" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="3" x:Name="TextToolPathFfmpeg" Text="&#8212;"
+                                           VerticalAlignment="Center" Margin="22,0,0,0"
+                                           HorizontalAlignment="Left" MaxWidth="430"
+                                           FontFamily="{StaticResource FontData}" FontSize="10.5"
+                                           Foreground="{StaticResource BrushTextMuted}"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                             </Grid>
-                            <Grid Margin="0,0,0,8">
-                                <TextBlock Text="ffprobe" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
-                                           Foreground="{StaticResource BrushTextBody}" HorizontalAlignment="Left"/>
-                                <TextBlock x:Name="TextToolPathFfprobe" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
-                                           Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolName"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolVersion"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolAction"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="ffprobe" VerticalAlignment="Center" MinWidth="76"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextBody}"/>
+                                <TextBlock Grid.Column="1" x:Name="TextToolVersionFfprobe" Text="&#8212;"
+                                           VerticalAlignment="Center" MinWidth="150" MaxWidth="260" Margin="0,0,18,0"
+                                           FontFamily="{StaticResource FontData}" FontSize="11"
+                                           Foreground="{StaticResource BrushTextPrimary}"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <!-- No button by design: ffprobe is extracted from the same archive, so the
+                                     ffmpeg button updates both. The label says so rather than leaving a gap. -->
+                                <TextBlock Grid.Column="2" Text="ships with ffmpeg" VerticalAlignment="Center"
+                                           HorizontalAlignment="Center"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="11" FontStyle="Italic"
+                                           Foreground="{StaticResource BrushTextMuted}"/>
+                                <TextBlock Grid.Column="3" x:Name="TextToolPathFfprobe" Text="&#8212;"
+                                           VerticalAlignment="Center" Margin="22,0,0,0"
+                                           HorizontalAlignment="Left" MaxWidth="430"
+                                           FontFamily="{StaticResource FontData}" FontSize="10.5"
+                                           Foreground="{StaticResource BrushTextMuted}"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                             </Grid>
+
                             <Grid>
-                                <TextBlock Text="yt-dlp" FontFamily="{StaticResource FontChrome}" FontSize="12.5"
-                                           Foreground="{StaticResource BrushTextBody}" HorizontalAlignment="Left"/>
-                                <TextBlock x:Name="TextToolPathYtDlp" Text="&#8212;" FontFamily="{StaticResource FontData}" FontSize="11"
-                                           Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolName"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolVersion"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="ToolAction"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="yt-dlp" VerticalAlignment="Center" MinWidth="76"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12.5"
+                                           Foreground="{StaticResource BrushTextBody}"/>
+                                <TextBlock Grid.Column="1" x:Name="TextToolVersionYtDlp" Text="&#8212;"
+                                           VerticalAlignment="Center" MinWidth="150" MaxWidth="260" Margin="0,0,18,0"
+                                           FontFamily="{StaticResource FontData}" FontSize="11"
+                                           Foreground="{StaticResource BrushTextPrimary}"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <Button Grid.Column="2" x:Name="ButtonUpdateYtDlp" Content="Checking&#8230;"
+                                        Style="{StaticResource PrimaryButtonStyle}"
+                                        MinWidth="164" IsEnabled="False" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="3" x:Name="TextToolPathYtDlp" Text="&#8212;"
+                                           VerticalAlignment="Center" Margin="22,0,0,0"
+                                           HorizontalAlignment="Left" MaxWidth="430"
+                                           FontFamily="{StaticResource FontData}" FontSize="10.5"
+                                           Foreground="{StaticResource BrushTextMuted}"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
                             </Grid>
+
+                            <ProgressBar x:Name="ProgressBarTools" Style="{StaticResource ProgressBarStyle}"
+                                         Margin="0,18,0,0" Value="0" Visibility="Collapsed"/>
+                            <Button x:Name="ButtonToolsCancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}"
+                                    HorizontalAlignment="Left" Width="100" Margin="0,12,0,0"
+                                    Visibility="Collapsed" IsEnabled="False"/>
+                            <TextBlock x:Name="TextToolsStatus" Text="" FontSize="11.5" Margin="0,12,0,0"
+                                       FontFamily="{StaticResource FontChrome}"
+                                       Foreground="{StaticResource BrushTextMuted}" TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
                 </StackPanel>
