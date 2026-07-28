@@ -74,15 +74,16 @@
         <Setter Property="FontSize" Value="13.5"/>
         <Setter Property="Padding" Value="16,11"/>
         <Setter Property="Cursor" Value="Hand"/>
+        <!-- Scaling is applied to the control itself, animated from Initialize-MainWindow
+             rather than by a template EventTrigger. The hover effect is a dock-style
+             magnification where the neighbours above and below shrink, and a template
+             can only ever see the one item the mouse is actually over. -->
+        <Setter Property="RenderTransformOrigin" Value="0,0.5"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
                     <Border x:Name="Chrome" Background="Transparent"
-                            Padding="{TemplateBinding Padding}"
-                            RenderTransformOrigin="0,0.5">
-                        <Border.RenderTransform>
-                            <ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1"/>
-                        </Border.RenderTransform>
+                            Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -94,34 +95,6 @@
                             <Setter Property="Foreground" Value="#FFF8EC"/>
                             <Setter Property="FontWeight" Value="Bold"/>
                         </Trigger>
-                        <EventTrigger RoutedEvent="UIElement.MouseEnter">
-                            <BeginStoryboard>
-                                <Storyboard>
-                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
-                                                     To="1.06" Duration="0:0:0.18">
-                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
-                                    </DoubleAnimation>
-                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
-                                                     To="1.06" Duration="0:0:0.18">
-                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
-                                    </DoubleAnimation>
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
-                        <EventTrigger RoutedEvent="UIElement.MouseLeave">
-                            <BeginStoryboard>
-                                <Storyboard>
-                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
-                                                     To="1" Duration="0:0:0.22">
-                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
-                                    </DoubleAnimation>
-                                    <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
-                                                     To="1" Duration="0:0:0.22">
-                                        <DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
-                                    </DoubleAnimation>
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -482,13 +455,57 @@
         <GradientStop Color="#00FFFFFF" Offset="1"/>
     </LinearGradientBrush>
 
-    <Style x:Key="DropzoneBorderStyle" TargetType="Border">
-        <Setter Property="Background" Value="{StaticResource BrushGlassFill}"/>
-        <Setter Property="BorderBrush" Value="{StaticResource BrushGlassEdge}"/>
+    <LinearGradientBrush x:Key="BrushGlassFillHover" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#4DFFFFFF" Offset="0"/>
+        <GradientStop Color="#24FFFFFF" Offset="0.4"/>
+        <GradientStop Color="#17FFFFFF" Offset="0.75"/>
+        <GradientStop Color="#1C101B30" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- The whole dropzone is the button, not just the "Browse" chip inside it: the
+         entire panel is the drop target, so the entire panel should be the click target
+         too. The chip is a plain Border here; a nested Button would only create a
+         smaller competing hit area inside its own parent. -->
+    <Style x:Key="DropzoneButtonStyle" TargetType="Button">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Glass" Background="{StaticResource BrushGlassFill}"
+                            BorderBrush="{StaticResource BrushGlassEdge}" BorderThickness="1"
+                            CornerRadius="14" Padding="26,22" ClipToBounds="True"
+                            Effect="{StaticResource EffectCardLift}">
+                        <Grid>
+                            <!-- Canvas reports no desired size, so the oversized glow
+                                 paints over the dropzone without inflating its height. -->
+                            <Canvas>
+                                <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-110" Canvas.Top="-150"/>
+                            </Canvas>
+                            <Rectangle Height="1" VerticalAlignment="Top" Margin="-26,-22,-26,0"
+                                       Fill="{StaticResource BrushGlassSpecular}" IsHitTestVisible="False"/>
+                            <ContentPresenter/>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Glass" Property="Background" Value="{StaticResource BrushGlassFillHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Looks like the button it used to be, but it is decoration now: the parent
+         dropzone handles the click. -->
+    <Style x:Key="DropzoneChipStyle" TargetType="Border">
+        <Setter Property="Background" Value="#101B30"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="CornerRadius" Value="14"/>
-        <Setter Property="Padding" Value="26,22"/>
-        <Setter Property="Effect" Value="{StaticResource EffectCardLift}"/>
+        <Setter Property="CornerRadius" Value="8"/>
+        <Setter Property="Padding" Value="18,10"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
     <!-- Preset options are RadioButtons, not Buttons: selection is mutually exclusive and
