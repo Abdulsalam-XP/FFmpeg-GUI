@@ -70,26 +70,56 @@ function Show-Panel {
         $Context.Panels[$key].Visibility = if ($key -eq $Name) { "Visible" } else { "Collapsed" }
     }
 
-    $targetTop = [array]::IndexOf(@("Compress", "MergeAudio", "Trim", "YouTubeMP3", "YouTubeMP4", "Settings"), $Name) * 46 + 60
+    $navButton = $Context.NavButtons[$Name]
+    if (-not $navButton) { return }
 
-    if (-not $global:ShowAnimations) {
-        # Clear any previously-active BeginAnimation clock on Canvas.Top first. Once a
-        # property has been driven by an AnimationClock, a plain SetTop call is silently
-        # ignored (the clock keeps holding its end value via the default HoldEnd fill
-        # behavior) -- without this, toggling ShowAnimations off mid-session after any
-        # animated move had happened would leave the pill permanently stuck in place.
-        $Context.Pill.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $null)
-        [System.Windows.Controls.Canvas]::SetTop($Context.Pill, $targetTop)
-        return
+    # Drives the nav item's active styling (bold + full-contrast label and icon).
+    $navButton.IsChecked = $true
+
+    # The pill is positioned by measuring where the nav button actually landed, rather
+    # than by arithmetic over a fixed row height. A hardcoded stride silently desyncs the
+    # moment anything about the list changes -- adding the separator and the disabled
+    # "Convert to MP4" entry was enough to leave the pill sitting a whole row off Settings.
+    $placePill = {
+        if ($navButton.ActualHeight -le 0) { return }
+
+        # The Canvas and the nav StackPanel are siblings filling the same sidebar Grid,
+        # so an offset measured against that Grid is already in Canvas coordinates.
+        $sidebar = $Context.PillCanvas.Parent
+        $offset = $navButton.TransformToAncestor($sidebar).Transform([System.Windows.Point]::new(0, 0))
+        $targetTop = $offset.Y
+
+        $Context.Pill.Height = $navButton.ActualHeight
+        $Context.Pill.Width = $navButton.ActualWidth
+
+        if (-not $global:ShowAnimations) {
+            # Clear any previously-active BeginAnimation clock on Canvas.Top first. Once a
+            # property has been driven by an AnimationClock, a plain SetTop call is silently
+            # ignored (the clock keeps holding its end value via the default HoldEnd fill
+            # behavior) -- without this, toggling ShowAnimations off mid-session after any
+            # animated move had happened would leave the pill permanently stuck in place.
+            $Context.Pill.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $null)
+            [System.Windows.Controls.Canvas]::SetTop($Context.Pill, $targetTop)
+            return
+        }
+
+        $animation = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $animation.To = $targetTop
+        $animation.Duration = [System.Windows.Duration]::new([timespan]::FromMilliseconds(280))
+        $animation.EasingFunction = New-Object System.Windows.Media.Animation.BackEase
+        $animation.EasingFunction.EasingMode = "EaseOut"
+
+        $Context.Pill.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $animation)
+    }.GetNewClosure()
+
+    if ($navButton.ActualHeight -gt 0) {
+        & $placePill
+    } else {
+        # Called before the window has laid out (the initial panel selection). Measuring
+        # now would read zeros, so defer until WPF has finished its first layout pass.
+        $Context.Window.Dispatcher.BeginInvoke(
+            [System.Windows.Threading.DispatcherPriority]::Loaded, [Action]$placePill) | Out-Null
     }
-
-    $animation = New-Object System.Windows.Media.Animation.DoubleAnimation
-    $animation.To = $targetTop
-    $animation.Duration = [System.Windows.Duration]::new([timespan]::FromMilliseconds(280))
-    $animation.EasingFunction = New-Object System.Windows.Media.Animation.BackEase
-    $animation.EasingFunction.EasingMode = "EaseOut"
-
-    $Context.Pill.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $animation)
 }
 
 if (-not ([System.Management.Automation.PSTypeName]'FFmpegGui.NamedPipePeek').Type) {
