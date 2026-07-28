@@ -24,3 +24,35 @@ ID  EXT  RESOLUTION FPS |  FILESIZE   TBR PROTO | VCODEC
         $heights[0] | Should BeExactly "360"
     }
 }
+
+Describe "ConvertFrom-YtDlpProgressLine" {
+    It "parses a progress line into percent and ETA" {
+        $result = ConvertFrom-YtDlpProgressLine -Line "5242880-10485760-NA-42"
+        $result.Percent | Should BeExactly 50
+        $result.EtaString | Should BeExactly "00:00:42"
+    }
+
+    It "falls back to the estimated total when the exact total is NA" {
+        # Streamed formats report no total_bytes, only total_bytes_estimate. Ignoring the
+        # estimate would leave the progress bar frozen at zero for the whole download.
+        $result = ConvertFrom-YtDlpProgressLine -Line "2000-NA-8000-10"
+        $result.Percent | Should BeExactly 25
+    }
+
+    It "reports an unknown ETA rather than a bogus time when eta is NA" {
+        $result = ConvertFrom-YtDlpProgressLine -Line "2000-8000-NA-NA"
+        $result.EtaString | Should BeExactly "--:--:--"
+    }
+
+    It "returns null when neither total is known, so percent is unknowable" {
+        ConvertFrom-YtDlpProgressLine -Line "2000-NA-NA-NA" | Should BeNullOrEmpty
+    }
+
+    It "returns null for yt-dlp's ordinary non-progress output" {
+        ConvertFrom-YtDlpProgressLine -Line "[youtube] Extracting URL: https://example.com" | Should BeNullOrEmpty
+    }
+
+    It "returns null for an empty line" {
+        ConvertFrom-YtDlpProgressLine -Line "" | Should BeNullOrEmpty
+    }
+}
