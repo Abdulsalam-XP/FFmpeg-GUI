@@ -108,10 +108,8 @@
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Compress Video" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                    <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="11.5"
-                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                    <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
                             <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
@@ -127,6 +125,14 @@
                             </Border>
                         </StackPanel>
                     </Button>
+
+                    <!-- Error text for an unreadable file still needs somewhere to go; it
+                         reuses this block, which is why it is not inside the card. -->
+                    <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="12"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
+                               Margin="0,0,0,14"/>
+                    <ContentControl x:Name="CardCompressVideo" Style="{StaticResource VideoCardStyle}"
+                                    Visibility="Collapsed" Margin="0,0,0,26"/>
 
                     <!-- Shown only when an NVIDIA card is detected, matching the console
                          version, which offered the NVENC choice on those machines only. -->
