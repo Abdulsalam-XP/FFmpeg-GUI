@@ -34,4 +34,57 @@ function ConvertFrom-FFmpegProgressLine {
     return @{ Percent = $percent; EtaString = $etaString }
 }
 
-Export-ModuleMember -Function ConvertFrom-FFmpegProgressLine
+# Presentation-only formatting for the selected-video card. Kept here with the other
+# pure helpers so it is unit-testable: everything that touches a window is not.
+function Format-VideoMetadata {
+    param([hashtable]$Properties)
+
+    $dash = "-"
+    $result = @{ Resolution = $dash; FrameRate = $dash; Length = $dash; Size = $dash }
+    if (-not $Properties) { return $result }
+
+    # ffprobe gives "2560x1440"; the card spaces it out for legibility.
+    if ($Properties.Resolution) {
+        $result.Resolution = ($Properties.Resolution -replace 'x', ' x ')
+    }
+
+    # ffprobe reports "N/A" rather than a number when the stream has no usable rate.
+    if ($null -ne $Properties.FrameRate -and $Properties.FrameRate -ne "N/A") {
+        $result.FrameRate = "$($Properties.FrameRate) fps"
+    }
+
+    if ($Properties.Duration -is [timespan]) {
+        $d = $Properties.Duration
+        # Floor, not [int]: a PowerShell int cast rounds to nearest, so 2 min 50 sec
+        # would otherwise present itself as "3 min 50 sec".
+        $result.Length = if ($d.TotalHours -ge 1) {
+            "{0} hr {1} min" -f [int][Math]::Floor($d.TotalHours), $d.Minutes
+        } elseif ($d.TotalMinutes -ge 1) {
+            "{0} min {1} sec" -f [int][Math]::Floor($d.TotalMinutes), $d.Seconds
+        } else {
+            "{0} sec" -f [int][Math]::Floor($d.TotalSeconds)
+        }
+    }
+
+    if ($null -ne $Properties.FileSizeBytes) {
+        $bytes = [double]$Properties.FileSizeBytes
+        $result.Size = if ($bytes -ge 1GB) {
+            "{0:N2} GB" -f ($bytes / 1GB)
+        } else {
+            "{0:N0} MB" -f ($bytes / 1MB)
+        }
+    }
+
+    return $result
+}
+
+# 5% in clears the black lead-in that screen recordings usually start with, while
+# scaling with length. Capped so a multi-hour file does not seek halfway across disk.
+function Get-ThumbnailSeconds {
+    param([timespan]$Duration)
+
+    if (-not $Duration -or $Duration.TotalSeconds -le 0) { return 0 }
+    return [Math]::Min([Math]::Round($Duration.TotalSeconds * 0.05, 2), 300)
+}
+
+Export-ModuleMember -Function ConvertFrom-FFmpegProgressLine, Format-VideoMetadata, Get-ThumbnailSeconds

@@ -118,7 +118,8 @@ function Get-VideoProperties {
                 else { "N/A" }
             }
             else { "N/A" }
-            FileSize   = [math]::Round((Get-Item -LiteralPath $inputFile).Length / 1GB, 2)
+            FileSize      = [math]::Round((Get-Item -LiteralPath $inputFile).Length / 1GB, 2)
+            FileSizeBytes = (Get-Item -LiteralPath $inputFile).Length
         }
 
         return $properties
