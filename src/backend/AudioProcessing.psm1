@@ -18,8 +18,7 @@ function Merge-AudioStreamsAsync {
     $videoInfo = & $ffprobe -v quiet -print_format json -show_streams -select_streams a $InputVideo 2>&1 | ConvertFrom-Json
     $audioStreams = $videoInfo.streams
 
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputVideo)
-    $outputFile = "$baseName-merged-audio.mp4"
+    $outputFile = Get-JobOutputPath -InputFile $InputVideo -Suffix "merged-audio"
 
     $filterComplex = ""
     for ($i = 0; $i -lt $audioStreams.Count; $i++) {

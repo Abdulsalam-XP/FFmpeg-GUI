@@ -16,17 +16,16 @@ function Split-VideoAsync {
 
     $videoProps = Get-VideoProperties -inputFile $InputFile
     $totalSeconds = if ($videoProps) { $videoProps.Duration.TotalSeconds } else { 0 }
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
     $cleanTimestamp = $Timestamp -replace ':', '-'
     $trimSeconds = [timespan]::Parse($Timestamp).TotalSeconds
     $targetSeconds = if ($Mode -eq "After") { $trimSeconds } elseif ($totalSeconds -gt 0) { $totalSeconds - $trimSeconds } else { 0 }
 
     $argList = @()
     if ($Mode -eq "Before") {
-        $outputFile = "$baseName-Trimmed-From-$cleanTimestamp.mp4"
+        $outputFile = Get-JobOutputPath -InputFile $InputFile -Suffix "Trimmed-From-$cleanTimestamp"
         $argList += "-ss", $Timestamp, "-i", "`"$InputFile`"", "-map", "0", "-c", "copy", "`"$outputFile`"", "-y"
     } else {
-        $outputFile = "$baseName-Trimmed-Until-$cleanTimestamp.mp4"
+        $outputFile = Get-JobOutputPath -InputFile $InputFile -Suffix "Trimmed-Until-$cleanTimestamp"
         $argList += "-i", "`"$InputFile`"", "-to", $Timestamp, "-map", "0", "-c", "copy", "`"$outputFile`"", "-y"
     }
 
