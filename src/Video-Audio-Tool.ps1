@@ -368,6 +368,13 @@ try {
 
     $cardCompress = $panelCompress.FindName("CardCompressVideo")
 
+    # No GetNewClosure() on these -OnFile blocks, deliberately. It looks harmless -- the
+    # handler does capture panel variables -- but it binds the scriptblock to a fresh
+    # dynamic module, and then "$script:CompressInputFile = $path" writes into THAT
+    # module's scope while the Compress button's own handler reads the real script scope.
+    # The button then silently does nothing on every click. Left unbound, the panel
+    # variables resolve through the caller's scope chain, which is how $textCompressMeta
+    # has always worked here.
     Register-Dropzone -Button $panelCompress.FindName("ButtonCompressBrowse") -OnFile {
         param($path)
         $props = Get-VideoProperties -inputFile $path
@@ -383,7 +390,7 @@ try {
         Show-PanelMessage -Block $textCompressMeta -Text ""
         Set-VideoCard -Card $cardCompress -Path $path -Properties $props -Context $ctx
         $buttonCompressStart.IsEnabled = $true
-    }.GetNewClosure()
+    }
 
     $buttonCompressStart.Add_Click({
         if (-not $script:CompressInputFile) { return }
@@ -408,10 +415,21 @@ try {
 
     # ---------------- Merge Audio ----------------
     $textMergeMeta = $panelMerge.FindName("TextMergeMeta")
+    $cardMerge = $panelMerge.FindName("CardMergeVideo")
     Register-Dropzone -Button $panelMerge.FindName("ButtonMergeBrowse") -OnFile {
         param($path)
+        # Reading the properties is new here: the card needs them. It also means an
+        # unreadable file is now caught at pick time rather than by ffmpeg mid-merge.
+        $props = Get-VideoProperties -inputFile $path
+        if (-not $props) {
+            Show-PanelMessage -Block $textMergeMeta -IsError `
+                -Text "Could not read that file. Is it a valid video?"
+            Hide-VideoCard -Card $cardMerge
+            return
+        }
         $script:MergeInputFile = $path
-        Show-PanelMessage -Block $textMergeMeta -Text ([System.IO.Path]::GetFileName($path))
+        Show-PanelMessage -Block $textMergeMeta -Text ""
+        Set-VideoCard -Card $cardMerge -Path $path -Properties $props -Context $ctx
     }
 
     $panelMerge.FindName("ButtonMergeStart").Add_Click({
@@ -429,13 +447,22 @@ try {
 
     # ---------------- Trim ----------------
     $textTrimMeta = $panelTrim.FindName("TextTrimMeta")
+    $cardTrim = $panelTrim.FindName("CardTrimVideo")
     Register-Dropzone -Button $panelTrim.FindName("ButtonTrimBrowse") -OnFile {
         param($path)
         $script:TrimInputFile = $path
         $props = Get-VideoProperties -inputFile $path
+        # Still set even when null: the timestamp validation reads it and treats a null
+        # total as "length unknown" rather than rejecting outright.
         $script:TrimTotalSeconds = if ($props) { $props.Duration.TotalSeconds } else { $null }
-        $lengthText = if ($props) { "  length " + $props.Duration.ToString("hh\:mm\:ss") } else { "" }
-        Show-PanelMessage -Block $textTrimMeta -Text ([System.IO.Path]::GetFileName($path) + $lengthText)
+        if (-not $props) {
+            Show-PanelMessage -Block $textTrimMeta -IsError `
+                -Text "Could not read that file. Is it a valid video?"
+            Hide-VideoCard -Card $cardTrim
+            return
+        }
+        Show-PanelMessage -Block $textTrimMeta -Text ""
+        Set-VideoCard -Card $cardTrim -Path $path -Properties $props -Context $ctx
     }
 
     $panelTrim.FindName("ButtonTrimStart").Add_Click({
