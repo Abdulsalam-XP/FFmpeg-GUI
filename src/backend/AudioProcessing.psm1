@@ -18,8 +18,7 @@ function Merge-AudioStreamsAsync {
     $videoInfo = & $ffprobe -v quiet -print_format json -show_streams -select_streams a $InputVideo 2>&1 | ConvertFrom-Json
     $audioStreams = $videoInfo.streams
 
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputVideo)
-    $outputFile = "$baseName-merged-audio.mp4"
+    $outputFile = Get-JobOutputPath -InputFile $InputVideo -Suffix "merged-audio"
 
     $filterComplex = ""
     for ($i = 0; $i -lt $audioStreams.Count; $i++) {
@@ -41,6 +40,10 @@ function Merge-AudioStreamsAsync {
     # Disabled for the duration of the run -- see Compress-VideoAsync: without this a
     # second click starts a parallel job sharing this panel's output and progress bar.
     $startButton = $panel.FindName("ButtonMergeStart")
+    # Locked alongside it -- see Compress-VideoAsync. AllowDrop must be cleared too:
+    # IsEnabled=False stops clicks but a drop still raises Drop on a disabled Button.
+    $dropzone = $panel.FindName("ButtonMergeBrowse")
+    $dropCaption = $panel.FindName("TextMergeDropCaption")
     $startTime = Get-Date
     $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
 
@@ -66,10 +69,14 @@ function Merge-AudioStreamsAsync {
             param($exitCode)
             $cancelButton.IsEnabled = $false
             if ($startButton) { $startButton.IsEnabled = $true }
+            if ($dropzone) { $dropzone.IsEnabled = $true; $dropzone.AllowDrop = $true }
+            if ($dropCaption) { $dropCaption.Text = "Drag and drop a multi-stream video here" }
             if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
         }.GetNewClosure()
 
     if ($startButton) { $startButton.IsEnabled = $false }
+    if ($dropzone) { $dropzone.IsEnabled = $false; $dropzone.AllowDrop = $false }
+    if ($dropCaption) { $dropCaption.Text = "Merging... cancel to pick a different video" }
     $cancelButton.IsEnabled = $true
     Set-CancelButtonTarget -Button $cancelButton -Process $process
     return $process

@@ -242,6 +242,124 @@ try {
         $Block.Foreground = if ($IsError) { $errorBrush } else { $mutedBrush }
     }
 
+    # Every transition in this app runs 320ms with a CubicEase EaseInOut, from here.
+    #
+    # Animating from code rather than with storyboards in Theme.xaml is forced: that
+    # dictionary is merged into Application.Resources, which freezes it, and a storyboard
+    # whose Duration is a DynamicResource cannot be frozen ("Cannot freeze this Storyboard
+    # timeline tree for use across threads" at startup). Code also gets to read
+    # $global:ShowAnimations directly, which a templated storyboard never can.
+    $script:MotionMs = 320
+
+    function Set-AnimatedDouble {
+        param($Target, $Property, [double]$To)
+
+        if (-not $global:ShowAnimations) {
+            # Clear the clock first: a held animation value silently overrides a plain
+            # property set, so without this the control would stay where it was.
+            # Established fix from the nav pill in UI-WPF.psm1.
+            $Target.BeginAnimation($Property, $null)
+            $Target.SetValue($Property, $To)
+            return
+        }
+
+        $ease = New-Object System.Windows.Media.Animation.CubicEase
+        $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseInOut
+        $anim = New-Object System.Windows.Media.Animation.DoubleAnimation $To, `
+            (New-Object System.Windows.Duration ([timespan]::FromMilliseconds($script:MotionMs)))
+        $anim.EasingFunction = $ease
+        $Target.BeginAnimation($Property, $anim)
+    }
+
+    # Slides a toggle switch's knob instead of letting it jump. Travel distance: the track
+    # is 48 wide with a 1px border, so the content area is 46; the knob is 19 wide starting
+    # at left edge 3, and the checked state puts its left edge at 46 - 3 - 19 = 24. So X
+    # runs 0 to 21.
+    function Register-ToggleSwitch {
+        param($Toggle)
+
+        $seat = {
+            $Toggle.ApplyTemplate() | Out-Null
+            $knob = $Toggle.Template.FindName("KnobShift", $Toggle)
+            if (-not $knob) { return }
+            # Seated without animating: a switch that starts checked must already be over
+            # to the right, not slide across on launch.
+            $knob.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
+            $knob.X = if ($Toggle.IsChecked) { 21 } else { 0 }
+        }.GetNewClosure()
+
+        & $seat
+        $Toggle.Add_Loaded($seat)
+
+        $move = {
+            $knob = $Toggle.Template.FindName("KnobShift", $Toggle)
+            if ($knob) { Set-AnimatedDouble -Target $knob -Property ([System.Windows.Media.TranslateTransform]::XProperty) -To $(if ($Toggle.IsChecked) { 21 } else { 0 }) }
+        }.GetNewClosure()
+
+        $Toggle.Add_Checked($move)
+        $Toggle.Add_Unchecked($move)
+    }
+
+    # Fills one video card. The card's children live inside a ControlTemplate, so they
+    # are reached through Template.FindName rather than the window's name scope --
+    # ApplyTemplate() first, because before the template is realised FindName returns
+    # $null and every assignment below would silently do nothing.
+    #
+    # The card's current temp frame is parked on its own Tag rather than in a script-scoped
+    # table: -OnReady is invoked from UI-WPF.psm1's module scope, so a $script: variable
+    # written there is a different variable from the one read here and the old jpg is never
+    # deleted (confirmed -- two files piled up in %TEMP% after two picks). A property on the
+    # captured element has no such ambiguity. Same class of trap as the note in
+    # VideoProcessing.psm1 about command lookup inside these callbacks.
+    function Set-VideoCard {
+        param($Card, [string]$Path, [hashtable]$Properties, $Context)
+
+        $Card.ApplyTemplate() | Out-Null
+        $text = Format-VideoMetadata -Properties $Properties
+
+        $Card.Template.FindName("PART_Name", $Card).Text       = [System.IO.Path]::GetFileName($Path)
+        $Card.Template.FindName("PART_Resolution", $Card).Text = $text.Resolution
+        $Card.Template.FindName("PART_FrameRate", $Card).Text  = $text.FrameRate
+        $Card.Template.FindName("PART_Length", $Card).Text     = $text.Length
+        $Card.Template.FindName("PART_Size", $Card).Text       = $text.Size
+
+        # Start from the placeholder every time: the previous file's frame must never
+        # linger next to a new file's details.
+        $image = $Card.Template.FindName("PART_Thumb", $Card)
+        $image.Source = $null
+        $image.Visibility = "Collapsed"
+        $Card.Template.FindName("PART_Placeholder", $Card).Visibility = "Visible"
+        $Card.Visibility = "Visible"
+
+        # Drop the previous temp frame for this card now that nothing displays it.
+        if ($Card.Tag) {
+            Remove-Item -LiteralPath $Card.Tag -Force -ErrorAction SilentlyContinue
+            $Card.Tag = $null
+        }
+
+        if ($Properties.Duration -is [timespan]) {
+            Start-VideoThumbnail -Context $Context -InputFile $Path -Duration $Properties.Duration -OnReady {
+                param($jpg)
+                # OnLoad copies the bytes into memory and releases the file, so the temp
+                # jpg can be deleted later instead of being locked for the session.
+                $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+                $bmp.BeginInit()
+                $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $bmp.UriSource = New-Object System.Uri($jpg)
+                $bmp.EndInit()
+                $image.Source = $bmp
+                $image.Visibility = "Visible"
+                $Card.Template.FindName("PART_Placeholder", $Card).Visibility = "Collapsed"
+                $Card.Tag = $jpg
+            }.GetNewClosure() | Out-Null
+        }
+    }
+
+    function Hide-VideoCard {
+        param($Card)
+        $Card.Visibility = "Collapsed"
+    }
+
     # The dropzones say "drag and drop", so they have to actually accept a drop, not just
     # a click. Both routes funnel into the same OnFile handler.
     function Register-Dropzone {
@@ -298,6 +416,58 @@ try {
         "Small Size"   = $panelCompress.FindName("TextPresetDetailSmall")
     }
 
+    $presetTravel = $panelCompress.FindName("PresetTravel")
+    $presetTravelShift = $panelCompress.FindName("PresetTravelShift")
+
+    # Slides the gold outline onto the chosen card and cross-fades that card's tint and
+    # check badge in, the previous card's out. The fade matters as much as the slide: with
+    # the outline alone, mid-transition it sits in the gutter between two cards and nothing
+    # on screen looks selected.
+    function Move-PresetHighlight {
+        param($Target)
+
+        if (-not $Target -or $Target.ActualWidth -le 0) { return }
+
+        foreach ($card in $presetControls.Values) {
+            $card.ApplyTemplate() | Out-Null
+            $fill  = $card.Template.FindName("SelectedFill", $card)
+            $badge = $card.Template.FindName("CheckBadge", $card)
+            $to = if ($card -eq $Target) { 1 } else { 0 }
+            if ($fill)  { Set-AnimatedDouble -Target $fill  -Property ([System.Windows.UIElement]::OpacityProperty) -To $to }
+            if ($badge) { Set-AnimatedDouble -Target $badge -Property ([System.Windows.UIElement]::OpacityProperty) -To $to }
+        }
+
+        # Measured against the shared parent every time rather than cached, so the outline
+        # still lands correctly after the window is resized and the columns change width.
+        $origin = $Target.TranslatePoint((New-Object System.Windows.Point 0, 0), $presetTravel.Parent)
+        $presetTravel.Height = $Target.ActualHeight
+        $presetTravel.Opacity = 1
+
+        Set-AnimatedDouble -Target $presetTravelShift -Property ([System.Windows.Media.TranslateTransform]::XProperty) -To $origin.X
+        Set-AnimatedDouble -Target $presetTravel -Property ([System.Windows.FrameworkElement]::WidthProperty) -To $Target.ActualWidth
+    }
+
+    foreach ($presetButton in $presetControls.Values) {
+        $presetButton.Add_Checked({ param($sender, $e) Move-PresetHighlight -Target $sender }.GetNewClosure())
+    }
+
+    # Puts the outline on the checked card without animating: used for the first paint, and
+    # again whenever the cards change width. The outline's width and offset are only
+    # recomputed when Move-PresetHighlight runs, so without the resize hook it keeps the
+    # geometry it was given and visibly no longer fits its card (confirmed: seated at the
+    # default window width, then maximizing left it 21px short of the card's right edge).
+    function Reset-PresetHighlight {
+        $checkedPreset = ($presetControls.Values | Where-Object { $_.IsChecked } | Select-Object -First 1)
+        if (-not $checkedPreset) { return }
+        $wasAnimated = $global:ShowAnimations
+        $global:ShowAnimations = $false
+        Move-PresetHighlight -Target $checkedPreset
+        $global:ShowAnimations = $wasAnimated
+    }
+
+    $panelCompress.Add_Loaded({ Reset-PresetHighlight }.GetNewClosure())
+    $presetTravel.Parent.Add_SizeChanged({ Reset-PresetHighlight }.GetNewClosure())
+
     # The detail line depends on the active codec, so it is refreshed rather than set once.
     function Update-PresetDetails {
         $details = Get-CompressionPresetDetails
@@ -306,20 +476,29 @@ try {
         }
     }
 
+    $cardCompress = $panelCompress.FindName("CardCompressVideo")
+
+    # No GetNewClosure() on these -OnFile blocks, deliberately. It looks harmless -- the
+    # handler does capture panel variables -- but it binds the scriptblock to a fresh
+    # dynamic module, and then "$script:CompressInputFile = $path" writes into THAT
+    # module's scope while the Compress button's own handler reads the real script scope.
+    # The button then silently does nothing on every click. Left unbound, the panel
+    # variables resolve through the caller's scope chain, which is how $textCompressMeta
+    # has always worked here.
     Register-Dropzone -Button $panelCompress.FindName("ButtonCompressBrowse") -OnFile {
         param($path)
         $props = Get-VideoProperties -inputFile $path
         if (-not $props) {
             Show-PanelMessage -Block $textCompressMeta -IsError `
                 -Text "Could not read that file. Is it a valid video?"
+            Hide-VideoCard -Card $cardCompress
             $buttonCompressStart.IsEnabled = $false
             return
         }
         $script:CompressInputFile = $path
         $script:CompressVideoProps = $props
-        Show-PanelMessage -Block $textCompressMeta -Text ("{0}  {1}  {2}  {3} GB" -f `
-            [System.IO.Path]::GetFileName($path), $props.Resolution,
-            $props.Duration.ToString("hh\:mm\:ss"), $props.FileSize)
+        Show-PanelMessage -Block $textCompressMeta -Text ""
+        Set-VideoCard -Card $cardCompress -Path $path -Properties $props -Context $ctx
         $buttonCompressStart.IsEnabled = $true
     }
 
@@ -337,6 +516,7 @@ try {
         $panelCompress.FindName("TextGpuName").Text = $systemSpecs.GPU.Name
         $panelCompress.FindName("CardGpuMode").Visibility = "Visible"
         $toggleGpu = $panelCompress.FindName("ToggleGpuMode")
+        Register-ToggleSwitch -Toggle $toggleGpu
         $toggleGpu.Add_Click({
             Set-CompressionMode -Mode $(if ($toggleGpu.IsChecked) { "NVIDIA" } else { "CPU" })
             Update-PresetDetails
@@ -346,10 +526,21 @@ try {
 
     # ---------------- Merge Audio ----------------
     $textMergeMeta = $panelMerge.FindName("TextMergeMeta")
+    $cardMerge = $panelMerge.FindName("CardMergeVideo")
     Register-Dropzone -Button $panelMerge.FindName("ButtonMergeBrowse") -OnFile {
         param($path)
+        # Reading the properties is new here: the card needs them. It also means an
+        # unreadable file is now caught at pick time rather than by ffmpeg mid-merge.
+        $props = Get-VideoProperties -inputFile $path
+        if (-not $props) {
+            Show-PanelMessage -Block $textMergeMeta -IsError `
+                -Text "Could not read that file. Is it a valid video?"
+            Hide-VideoCard -Card $cardMerge
+            return
+        }
         $script:MergeInputFile = $path
-        Show-PanelMessage -Block $textMergeMeta -Text ([System.IO.Path]::GetFileName($path))
+        Show-PanelMessage -Block $textMergeMeta -Text ""
+        Set-VideoCard -Card $cardMerge -Path $path -Properties $props -Context $ctx
     }
 
     $panelMerge.FindName("ButtonMergeStart").Add_Click({
@@ -367,13 +558,22 @@ try {
 
     # ---------------- Trim ----------------
     $textTrimMeta = $panelTrim.FindName("TextTrimMeta")
+    $cardTrim = $panelTrim.FindName("CardTrimVideo")
     Register-Dropzone -Button $panelTrim.FindName("ButtonTrimBrowse") -OnFile {
         param($path)
         $script:TrimInputFile = $path
         $props = Get-VideoProperties -inputFile $path
+        # Still set even when null: the timestamp validation reads it and treats a null
+        # total as "length unknown" rather than rejecting outright.
         $script:TrimTotalSeconds = if ($props) { $props.Duration.TotalSeconds } else { $null }
-        $lengthText = if ($props) { "  length " + $props.Duration.ToString("hh\:mm\:ss") } else { "" }
-        Show-PanelMessage -Block $textTrimMeta -Text ([System.IO.Path]::GetFileName($path) + $lengthText)
+        if (-not $props) {
+            Show-PanelMessage -Block $textTrimMeta -IsError `
+                -Text "Could not read that file. Is it a valid video?"
+            Hide-VideoCard -Card $cardTrim
+            return
+        }
+        Show-PanelMessage -Block $textTrimMeta -Text ""
+        Set-VideoCard -Card $cardTrim -Path $path -Properties $props -Context $ctx
     }
 
     $panelTrim.FindName("ButtonTrimStart").Add_Click({
@@ -467,6 +667,7 @@ try {
     # ---------------- Settings ----------------
     $checkAnimations = $panelSettings.FindName("CheckShowAnimations")
     $checkAnimations.IsChecked = [bool]$global:ShowAnimations
+    Register-ToggleSwitch -Toggle $checkAnimations
     $checkAnimations.Add_Click({
         $global:ShowAnimations = [bool]$checkAnimations.IsChecked
         Save-Settings

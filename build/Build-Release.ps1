@@ -7,7 +7,10 @@
     Launcher.exe at its root and the app ready to run. Excluded from src\:
     Tests (developer-only), .gitignore/.gitkeep (repo plumbing), and
     assets\settings.json (the developer's own preferences -- the app writes a
-    fresh one on first run).
+    fresh one on first run). The build also refuses to package video/audio
+    files: jobs write their output to the app's working directory, so a
+    debugging session easily leaves a large clip in src\, and src\.gitignore
+    keeps git status quiet about it.
 
     README.md, WHATS_NEW.txt and THIRD-PARTY-NOTICES.txt are added at the top
     level. src\bin\ must already hold ffmpeg.exe, ffprobe.exe and yt-dlp.exe:
@@ -81,6 +84,21 @@ foreach ($expected in @("Launcher.exe", "Video-Audio-Tool.ps1", "bin\ffmpeg.exe"
 }
 if (Test-Path (Join-Path $stage "backend\Tests")) { throw "Tests leaked into the package" }
 if (Test-Path (Join-Path $stage "assets\settings.json")) { throw "settings.json leaked into the package" }
+
+# Media never belongs in the package, and src\.gitignore hides exactly this class of file
+# from git status, so nothing else would catch it. A v2.1.0 build shipped a 111 MB gameplay
+# clip this way: a compressed test output left in src\ by a debugging session, which the
+# wholesale src\* copy picked up and no check questioned. Fails rather than stripping
+# silently, because a stray recording in src\ means the working tree needs cleaning.
+$mediaExtensions = @(".mp4", ".mkv", ".mov", ".mp3", ".m4a", ".webm", ".wav", ".avi")
+$strays = Get-ChildItem $stage -Recurse -File -Force |
+    Where-Object { $mediaExtensions -contains $_.Extension.ToLower() }
+if ($strays) {
+    $list = ($strays | ForEach-Object {
+        "  {0} ({1} MB)" -f $_.FullName.Substring($stage.Length + 1), [math]::Round($_.Length / 1MB, 1)
+    }) -join "`n"
+    throw "Media files would ship in the package. Remove them from src\ and rebuild:`n$list"
+}
 
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -CompressionLevel Optimal
 

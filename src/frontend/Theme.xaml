@@ -57,9 +57,15 @@
          brightens with its label on hover and selection. -->
     <Geometry x:Key="IconCompress">M8 1.5 L14.5 5 L8 8.5 L1.5 5 Z M1.5 8.5 L8 12 L14.5 8.5</Geometry>
     <Geometry x:Key="IconMergeAudio">M6 11.5 V2.5 L13.5 1 V10 M2.5 9.5 A1.9 1.9 0 1 0 2.5 13.3 A1.9 1.9 0 1 0 2.5 9.5 M10 8 A1.9 1.9 0 1 0 10 11.8 A1.9 1.9 0 1 0 10 8</Geometry>
-    <Geometry x:Key="IconTrim">M5 1.5 V14.5 M11 1.5 V14.5 M1.5 5 H8 M8 11 H14.5</Geometry>
+    <!-- Scissors: crossed blades over two finger loops. -->
+    <Geometry x:Key="IconTrim">M5.1 1.9 L10.6 10.1 M10.9 1.9 L5.4 10.1 M4.6 10.6 A1.85 1.85 0 1 0 4.6 14.3 A1.85 1.85 0 1 0 4.6 10.6 M11.4 10.6 A1.85 1.85 0 1 0 11.4 14.3 A1.85 1.85 0 1 0 11.4 10.6</Geometry>
+    <!-- Mixer faders: two channels at different levels. Replaces the music note on
+         Merge Audio, which moves to YouTube MP3. -->
+    <Geometry x:Key="IconMixer">M3.5 2 V14 M12.5 2 V14 M1.7 6.2 H5.3 M10.7 10.4 H14.3</Geometry>
     <Geometry x:Key="IconVideo">M1.5 4 H10 V12 H1.5 Z M10 8 L14.5 5 V11 Z</Geometry>
-    <Geometry x:Key="IconSettings">M8 5.75 A2.25 2.25 0 1 0 8 10.25 A2.25 2.25 0 1 0 8 5.75 M8 1 V2.75 M8 13.25 V15 M15 8 H13.25 M2.75 8 H1 M12.95 3.05 L11.7 4.3 M4.3 11.7 L3.05 12.95 M12.95 12.95 L11.7 11.7 M4.3 4.3 L3.05 3.05</Geometry>
+    <!-- A cog: toothed rim plus a hub ring. The old one was a hub with spokes radiating
+         out, which reads as a sun. -->
+    <Geometry x:Key="IconSettings">M8 5.9 A2.1 2.1 0 1 0 8 10.1 A2.1 2.1 0 1 0 8 5.9 M8 1.2 V2.9 M8 13.1 V14.8 M14.8 8 H13.1 M2.9 8 H1.2 M12.8 3.2 L11.6 4.4 M4.4 11.6 L3.2 12.8 M12.8 12.8 L11.6 11.6 M4.4 4.4 L3.2 3.2 M8 3.4 A4.6 4.6 0 0 1 12.6 8 A4.6 4.6 0 0 1 8 12.6 A4.6 4.6 0 0 1 3.4 8 A4.6 4.6 0 0 1 8 3.4</Geometry>
 
     <!-- Sidebar items grow slightly and brighten on hover, and go bold + full-contrast
          when selected. They are RadioButtons so selection is mutually exclusive and
@@ -494,12 +500,24 @@
                                 <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-60" Canvas.Top="-130"/>
                             </Canvas>
                         </Grid>
-                        <ContentPresenter Margin="26,24"/>
+                        <ContentPresenter x:Name="DropContent" Margin="26,24"/>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Glass" Property="Fill" Value="{StaticResource BrushGlassFillHover}"/>
                             <Setter TargetName="Glass" Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                        <!-- Without this a locked dropzone looks identical to a live one,
+                             so the only clue it is refusing input is that nothing happens.
+                             The content is dimmed as well as the panel behind it: the gold
+                             "Browse Files" chip sits on top and, left at full strength, goes
+                             on reading as the most clickable thing on the screen while the
+                             dropzone silently swallows every click. -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Glass" Property="Opacity" Value="0.4"/>
+                            <Setter TargetName="Glass" Property="Stroke" Value="{StaticResource BrushTextMuted}"/>
+                            <Setter TargetName="DropContent" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -581,16 +599,28 @@
                     <StackPanel Orientation="Horizontal" Background="Transparent">
                         <Border x:Name="Track" Width="48" Height="27" CornerRadius="13.5"
                                 Background="#0D1526" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1">
+                            <!-- The knob is positioned by a transform, not by swapping
+                                 HorizontalAlignment/Margin on check: neither of those is
+                                 animatable, which is why it used to jump. -->
                             <Ellipse x:Name="Knob" Width="19" Height="19" HorizontalAlignment="Left"
-                                     Margin="3,0,0,0" Fill="{StaticResource BrushTextMuted}"/>
+                                     Margin="3,0,0,0" Fill="{StaticResource BrushTextMuted}">
+                                <Ellipse.RenderTransform>
+                                    <TranslateTransform x:Name="KnobShift" X="0"/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
                         </Border>
                         <ContentPresenter VerticalAlignment="Center" Margin="14,0,0,0"/>
                     </StackPanel>
                     <ControlTemplate.Triggers>
+                        <!-- Only the colours change here. The knob's travel is animated from
+                             code (Register-ToggleSwitch in Video-Audio-Tool.ps1), not by a
+                             storyboard in this trigger: this dictionary gets merged into
+                             Application.Resources, which freezes it, and a storyboard whose
+                             Duration is a DynamicResource cannot be frozen. Driving it from
+                             code also lets it read the Animations setting directly, the same
+                             way the nav pill already works. -->
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Track" Property="Background" Value="{StaticResource BrushAccentGradient}"/>
-                            <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
-                            <Setter TargetName="Knob" Property="Margin" Value="0,0,3,0"/>
                             <Setter TargetName="Knob" Property="Fill" Value="#FFF8EC"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -695,13 +725,115 @@
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
                         </Trigger>
+                        <!-- SelectedFill and CheckBadge are faded from code
+                             (Move-PresetHighlight in Video-Audio-Tool.ps1) rather than
+                             snapped here, for the same reason the toggle knob is: a
+                             storyboard in this dictionary cannot be frozen once it is
+                             merged into Application.Resources, and it could not read the
+                             Animations setting anyway. The card's own border is left off
+                             the checked state entirely, because the travelling outline in
+                             MainWindow.xaml draws it; having both would put two gold
+                             outlines on screen during every transition. -->
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BrushAccentGradient}"/>
-                            <Setter TargetName="Card" Property="BorderThickness" Value="1.4"/>
-                            <Setter TargetName="SelectedFill" Property="Opacity" Value="1"/>
-                            <Setter TargetName="CheckBadge" Property="Opacity" Value="1"/>
+                            <Setter TargetName="Card" Property="BorderBrush" Value="Transparent"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- The selected-video card: thumbnail left, labelled rows right. One template
+         shared by Compress, Merge Audio and Trim; the panels supply only a name.
+         Populated from code via Template.FindName, so every child that code touches
+         carries a PART_ name. -->
+    <Style x:Key="VideoCardStyle" TargetType="ContentControl">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContentControl">
+                    <Border CornerRadius="10" BorderThickness="1"
+                            BorderBrush="{StaticResource BrushBorderGold}"
+                            Background="{StaticResource BrushCardBackground}"
+                            Padding="14">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="16"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Grid.Column="0" Width="168" Height="95">
+                                <Border x:Name="PART_Placeholder" CornerRadius="8"
+                                        Background="#101B30" BorderThickness="1"
+                                        BorderBrush="{StaticResource BrushBorderGold}">
+                                    <Path Data="{StaticResource IconVideo}" Stretch="Uniform"
+                                          Width="26" Height="26" Opacity="0.35"
+                                          Stroke="{StaticResource BrushTextMuted}" StrokeThickness="1.2"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <!-- Clipped to the same radius as the placeholder so the
+                                     photo does not sit in a square hole in a rounded card.
+                                     An explicit geometry, not a rounded Border: a Border's
+                                     CornerRadius does not clip its child, and ClipToBounds
+                                     clips to the square bounds, so both leave hard corners.
+                                     The rect is safe to hardcode because the slot around it
+                                     is a fixed 168x95. -->
+                                <Image x:Name="PART_Thumb" Stretch="UniformToFill" Visibility="Collapsed">
+                                    <Image.Clip>
+                                        <RectangleGeometry Rect="0,0,168,95" RadiusX="8" RadiusY="8"/>
+                                    </Image.Clip>
+                                </Image>
+                            </Grid>
+
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                <TextBlock x:Name="PART_Name" FontSize="14.5" FontWeight="SemiBold"
+                                           FontFamily="{StaticResource FontChrome}"
+                                           Foreground="{StaticResource BrushTextPrimary}"
+                                           TextTrimming="CharacterEllipsis" Margin="0,0,0,10"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="18"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Resolution" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,4"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="2" x:Name="PART_Resolution" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}" Margin="0,0,0,4"/>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Frame rate" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,4"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="2" x:Name="PART_FrameRate" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}" Margin="0,0,0,4"/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Length" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,4"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="2" x:Name="PART_Length" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}" Margin="0,0,0,4"/>
+
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Size" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="2" x:Name="PART_Size" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}"/>
+                                </Grid>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

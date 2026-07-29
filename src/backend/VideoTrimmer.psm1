@@ -16,17 +16,16 @@ function Split-VideoAsync {
 
     $videoProps = Get-VideoProperties -inputFile $InputFile
     $totalSeconds = if ($videoProps) { $videoProps.Duration.TotalSeconds } else { 0 }
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
     $cleanTimestamp = $Timestamp -replace ':', '-'
     $trimSeconds = [timespan]::Parse($Timestamp).TotalSeconds
     $targetSeconds = if ($Mode -eq "After") { $trimSeconds } elseif ($totalSeconds -gt 0) { $totalSeconds - $trimSeconds } else { 0 }
 
     $argList = @()
     if ($Mode -eq "Before") {
-        $outputFile = "$baseName-Trimmed-From-$cleanTimestamp.mp4"
+        $outputFile = Get-JobOutputPath -InputFile $InputFile -Suffix "Trimmed-From-$cleanTimestamp"
         $argList += "-ss", $Timestamp, "-i", "`"$InputFile`"", "-map", "0", "-c", "copy", "`"$outputFile`"", "-y"
     } else {
-        $outputFile = "$baseName-Trimmed-Until-$cleanTimestamp.mp4"
+        $outputFile = Get-JobOutputPath -InputFile $InputFile -Suffix "Trimmed-Until-$cleanTimestamp"
         $argList += "-i", "`"$InputFile`"", "-to", $Timestamp, "-map", "0", "-c", "copy", "`"$outputFile`"", "-y"
     }
 
@@ -38,6 +37,10 @@ function Split-VideoAsync {
     # Disabled for the duration of the run -- see Compress-VideoAsync: without this a
     # second click starts a parallel job sharing this panel's output and progress bar.
     $startButton = $panel.FindName("ButtonTrimStart")
+    # Locked alongside it -- see Compress-VideoAsync. AllowDrop must be cleared too:
+    # IsEnabled=False stops clicks but a drop still raises Drop on a disabled Button.
+    $dropzone = $panel.FindName("ButtonTrimBrowse")
+    $dropCaption = $panel.FindName("TextTrimDropCaption")
     $startTime = Get-Date
     $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
 
@@ -63,10 +66,14 @@ function Split-VideoAsync {
             param($exitCode)
             $cancelButton.IsEnabled = $false
             if ($startButton) { $startButton.IsEnabled = $true }
+            if ($dropzone) { $dropzone.IsEnabled = $true; $dropzone.AllowDrop = $true }
+            if ($dropCaption) { $dropCaption.Text = "Drag and drop your video here" }
             if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
         }.GetNewClosure()
 
     if ($startButton) { $startButton.IsEnabled = $false }
+    if ($dropzone) { $dropzone.IsEnabled = $false; $dropzone.AllowDrop = $false }
+    if ($dropCaption) { $dropCaption.Text = "Trimming... cancel to pick a different video" }
     $cancelButton.IsEnabled = $true
     Set-CancelButtonTarget -Button $cancelButton -Process $process
     return $process
