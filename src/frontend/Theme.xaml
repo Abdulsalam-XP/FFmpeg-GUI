@@ -707,4 +707,100 @@
         </Setter>
     </Style>
 
+    <!-- The selected-video card: thumbnail left, labelled rows right. One template
+         shared by Compress, Merge Audio and Trim; the panels supply only a name.
+         Populated from code via Template.FindName, so every child that code touches
+         carries a PART_ name. -->
+    <Style x:Key="VideoCardStyle" TargetType="ContentControl">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContentControl">
+                    <Border CornerRadius="10" BorderThickness="1"
+                            BorderBrush="{StaticResource BrushBorderGold}"
+                            Background="{StaticResource BrushCardBackground}"
+                            Padding="14">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="16"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Grid.Column="0" Width="168" Height="95">
+                                <Border x:Name="PART_Placeholder" CornerRadius="8"
+                                        Background="#101B30" BorderThickness="1"
+                                        BorderBrush="{StaticResource BrushBorderGold}">
+                                    <Path Data="{StaticResource IconVideo}" Stretch="Uniform"
+                                          Width="26" Height="26" Opacity="0.35"
+                                          Stroke="{StaticResource BrushTextMuted}" StrokeThickness="1.2"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <!-- Clipped to the same radius as the placeholder so the
+                                     photo does not sit in a square hole in a rounded card.
+                                     An explicit geometry, not a rounded Border: a Border's
+                                     CornerRadius does not clip its child, and ClipToBounds
+                                     clips to the square bounds, so both leave hard corners.
+                                     The rect is safe to hardcode because the slot around it
+                                     is a fixed 168x95. -->
+                                <Image x:Name="PART_Thumb" Stretch="UniformToFill" Visibility="Collapsed">
+                                    <Image.Clip>
+                                        <RectangleGeometry Rect="0,0,168,95" RadiusX="8" RadiusY="8"/>
+                                    </Image.Clip>
+                                </Image>
+                            </Grid>
+
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                <TextBlock x:Name="PART_Name" FontSize="14.5" FontWeight="SemiBold"
+                                           FontFamily="{StaticResource FontChrome}"
+                                           Foreground="{StaticResource BrushTextPrimary}"
+                                           TextTrimming="CharacterEllipsis" Margin="0,0,0,10"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="18"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Resolution" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,4"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="2" x:Name="PART_Resolution" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}" Margin="0,0,0,4"/>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Frame rate" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,4"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="2" x:Name="PART_FrameRate" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}" Margin="0,0,0,4"/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Length" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}" Margin="0,0,0,4"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="2" x:Name="PART_Length" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}" Margin="0,0,0,4"/>
+
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Size" FontSize="11"
+                                               FontFamily="{StaticResource FontChrome}"
+                                               Foreground="{StaticResource BrushTextMuted}"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="2" x:Name="PART_Size" FontSize="12.5"
+                                               FontFamily="{StaticResource FontData}"
+                                               Foreground="{StaticResource BrushTextPrimary}"/>
+                                </Grid>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>
