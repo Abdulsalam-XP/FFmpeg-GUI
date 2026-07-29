@@ -202,8 +202,7 @@ function Compress-VideoAsync {
     if (-not $VideoProps) { $VideoProps = Get-VideoProperties -inputFile $InputFile }
     $totalSeconds = $VideoProps.Duration.TotalSeconds
     $selectedPreset = $script:CompressionPresets[$Preset]
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
-    $outputFile = "$baseName-$($Preset.ToLower().Replace(' ', '-')).mp4"
+    $outputFile = Get-JobOutputPath -InputFile $InputFile -Suffix $Preset.ToLower().Replace(' ', '-')
 
     $argList = @("-i", "`"$InputFile`"")
     if ($selectedPreset.MapAll) { $argList += "-map", "0" }

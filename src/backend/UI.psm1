@@ -78,6 +78,27 @@ function Format-VideoMetadata {
     return $result
 }
 
+# Where a finished job goes: beside the video it came from.
+#
+# Every job used to name its output with the bare file name and no directory, which ffmpeg
+# resolves against its working directory -- so compressing D:\RECORDINGS\clip.mp4 dropped
+# clip-balanced.mp4 into the app's own folder, with nothing in the UI saying where it went.
+# For anyone who unzipped into Program Files that write also fails outright.
+function Get-JobOutputPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        [Parameter(Mandatory = $true)][string]$Suffix
+    )
+
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
+    $directory = [System.IO.Path]::GetDirectoryName($InputFile)
+    $name = "$base-$Suffix.mp4"
+
+    # A bare file name has no directory to sit beside, so keep it relative as before.
+    if ([string]::IsNullOrEmpty($directory)) { return $name }
+    return (Join-Path $directory $name)
+}
+
 # 5% in clears the black lead-in that screen recordings usually start with, while
 # scaling with length. Capped so a multi-hour file does not seek halfway across disk.
 function Get-ThumbnailSeconds {
@@ -87,4 +108,4 @@ function Get-ThumbnailSeconds {
     return [Math]::Min([Math]::Round($Duration.TotalSeconds * 0.05, 2), 300)
 }
 
-Export-ModuleMember -Function ConvertFrom-FFmpegProgressLine, Format-VideoMetadata, Get-ThumbnailSeconds
+Export-ModuleMember -Function ConvertFrom-FFmpegProgressLine, Format-VideoMetadata, Get-ThumbnailSeconds, Get-JobOutputPath

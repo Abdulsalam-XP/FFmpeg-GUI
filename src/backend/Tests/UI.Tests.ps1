@@ -56,6 +56,32 @@ Describe "Format-VideoMetadata" {
     }
 }
 
+Describe "Get-JobOutputPath" {
+    It "writes the result beside the source video, not into the app's folder" {
+        Get-JobOutputPath -InputFile "D:\RECORDINGS\Counter-strike 2\clip.mp4" -Suffix "balanced" |
+            Should Be "D:\RECORDINGS\Counter-strike 2\clip-balanced.mp4"
+    }
+
+    It "keeps spaces in the source name" {
+        Get-JobOutputPath -InputFile "D:\vids\Counter-strike 2 2026.07.29 - 15.11.05.mp4" -Suffix "merged-audio" |
+            Should Be "D:\vids\Counter-strike 2 2026.07.29 - 15.11.05-merged-audio.mp4"
+    }
+
+    It "keeps only the last extension when the name contains dots" {
+        Get-JobOutputPath -InputFile "D:\vids\clip.2026.07.29.DVR.mp4" -Suffix "small-size" |
+            Should Be "D:\vids\clip.2026.07.29.DVR-small-size.mp4"
+    }
+
+    It "falls back to a bare relative name when the input has no directory" {
+        Get-JobOutputPath -InputFile "clip.mp4" -Suffix "balanced" | Should Be "clip-balanced.mp4"
+    }
+
+    It "handles a trim suffix carrying a timestamp" {
+        Get-JobOutputPath -InputFile "D:\vids\clip.mp4" -Suffix "Trimmed-From-00-00-30" |
+            Should Be "D:\vids\clip-Trimmed-From-00-00-30.mp4"
+    }
+}
+
 Describe "Get-ThumbnailSeconds" {
     It "picks 5 percent of the way in" {
         Get-ThumbnailSeconds -Duration ([timespan]::FromSeconds(200)) | Should Be 10
