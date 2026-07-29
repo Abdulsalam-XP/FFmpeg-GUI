@@ -262,4 +262,47 @@ function Compress-VideoAsync {
     return $process
 }
 
-Export-ModuleMember -Function Get-VideoProperties, Get-SystemSpecs, Get-CompressionPresetDetails, Set-CompressionMode, Compress-VideoAsync
+# Grabs one frame for the selected-video card.
+#
+# Runs through Start-TrackedProcess so the UI thread never blocks: on a 1.6 GB source
+# this still takes a moment, and the card is supposed to appear instantly with the
+# picture arriving after. Deliberately NOT registered with Register-Job -- it is not a
+# user job and must not make the Settings screen think a job is running.
+#
+# -ss BEFORE -i is an input seek: ffmpeg jumps straight to the keyframe instead of
+# decoding from the start, which is the difference between instant and ten seconds.
+function Start-VideoThumbnail {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        [Parameter(Mandatory = $true)][timespan]$Duration,
+        [Parameter(Mandatory = $true)][scriptblock]$OnReady
+    )
+
+    $seconds = Get-ThumbnailSeconds -Duration $Duration
+    $outputPath = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-thumb-{0}.jpg" -f ([guid]::NewGuid().ToString("N")))
+    $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+
+    # scale=-2 keeps the height even, which the jpeg encoder requires.
+    $argList = @(
+        "-ss", $seconds, "-i", "`"$InputFile`"", "-frames:v", "1",
+        "-vf", "scale=336:-2", "-q:v", "3", "`"$outputPath`"", "-y"
+    )
+
+    try {
+        return Start-TrackedProcess -Context $Context -FileName $ffmpegPath -Arguments ($argList -join " ") -ReadStream Error `
+            -OnLine { param($line) } `
+            -OnExit {
+                param($exitCode)
+                # A missing preview must never block compressing, so failure is silent
+                # and the card keeps its placeholder.
+                if ($exitCode -eq 0 -and (Test-Path -LiteralPath $outputPath)) {
+                    & $OnReady $outputPath
+                }
+            }.GetNewClosure()
+    } catch {
+        return $null
+    }
+}
+
+Export-ModuleMember -Function Get-VideoProperties, Get-SystemSpecs, Get-CompressionPresetDetails, Set-CompressionMode, Compress-VideoAsync, Start-VideoThumbnail
