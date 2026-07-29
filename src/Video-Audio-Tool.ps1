@@ -416,6 +416,58 @@ try {
         "Small Size"   = $panelCompress.FindName("TextPresetDetailSmall")
     }
 
+    $presetTravel = $panelCompress.FindName("PresetTravel")
+    $presetTravelShift = $panelCompress.FindName("PresetTravelShift")
+
+    # Slides the gold outline onto the chosen card and cross-fades that card's tint and
+    # check badge in, the previous card's out. The fade matters as much as the slide: with
+    # the outline alone, mid-transition it sits in the gutter between two cards and nothing
+    # on screen looks selected.
+    function Move-PresetHighlight {
+        param($Target)
+
+        if (-not $Target -or $Target.ActualWidth -le 0) { return }
+
+        foreach ($card in $presetControls.Values) {
+            $card.ApplyTemplate() | Out-Null
+            $fill  = $card.Template.FindName("SelectedFill", $card)
+            $badge = $card.Template.FindName("CheckBadge", $card)
+            $to = if ($card -eq $Target) { 1 } else { 0 }
+            if ($fill)  { Set-AnimatedDouble -Target $fill  -Property ([System.Windows.UIElement]::OpacityProperty) -To $to }
+            if ($badge) { Set-AnimatedDouble -Target $badge -Property ([System.Windows.UIElement]::OpacityProperty) -To $to }
+        }
+
+        # Measured against the shared parent every time rather than cached, so the outline
+        # still lands correctly after the window is resized and the columns change width.
+        $origin = $Target.TranslatePoint((New-Object System.Windows.Point 0, 0), $presetTravel.Parent)
+        $presetTravel.Height = $Target.ActualHeight
+        $presetTravel.Opacity = 1
+
+        Set-AnimatedDouble -Target $presetTravelShift -Property ([System.Windows.Media.TranslateTransform]::XProperty) -To $origin.X
+        Set-AnimatedDouble -Target $presetTravel -Property ([System.Windows.FrameworkElement]::WidthProperty) -To $Target.ActualWidth
+    }
+
+    foreach ($presetButton in $presetControls.Values) {
+        $presetButton.Add_Checked({ param($sender, $e) Move-PresetHighlight -Target $sender }.GetNewClosure())
+    }
+
+    # Puts the outline on the checked card without animating: used for the first paint, and
+    # again whenever the cards change width. The outline's width and offset are only
+    # recomputed when Move-PresetHighlight runs, so without the resize hook it keeps the
+    # geometry it was given and visibly no longer fits its card (confirmed: seated at the
+    # default window width, then maximizing left it 21px short of the card's right edge).
+    function Reset-PresetHighlight {
+        $checkedPreset = ($presetControls.Values | Where-Object { $_.IsChecked } | Select-Object -First 1)
+        if (-not $checkedPreset) { return }
+        $wasAnimated = $global:ShowAnimations
+        $global:ShowAnimations = $false
+        Move-PresetHighlight -Target $checkedPreset
+        $global:ShowAnimations = $wasAnimated
+    }
+
+    $panelCompress.Add_Loaded({ Reset-PresetHighlight }.GetNewClosure())
+    $presetTravel.Parent.Add_SizeChanged({ Reset-PresetHighlight }.GetNewClosure())
+
     # The detail line depends on the active codec, so it is refreshed rather than set once.
     function Update-PresetDetails {
         $details = Get-CompressionPresetDetails

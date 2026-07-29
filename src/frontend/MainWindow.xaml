@@ -212,6 +212,21 @@
                                 </Grid>
                             </StackPanel>
                         </RadioButton>
+
+                        <!-- The selected-preset outline, drawn once and slid between cards
+                             by Move-PresetHighlight. Last child and spanning every column
+                             so it paints OVER the cards: their backgrounds are opaque, and
+                             an outline underneath them would simply be hidden. -->
+                        <Border x:Name="PresetTravel" Grid.Column="0" Grid.ColumnSpan="5"
+                                CornerRadius="11" BorderThickness="1.4"
+                                BorderBrush="{StaticResource BrushAccentGradient}"
+                                Background="Transparent" IsHitTestVisible="False"
+                                HorizontalAlignment="Left" VerticalAlignment="Stretch"
+                                Width="0" Opacity="0">
+                            <Border.RenderTransform>
+                                <TranslateTransform x:Name="PresetTravelShift" X="0"/>
+                            </Border.RenderTransform>
+                        </Border>
                     </Grid>
 
                     <!-- Selecting a preset only selects it; starting a multi-minute encode
