@@ -239,10 +239,8 @@
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Merge Audio Streams" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                    <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="11.5"
-                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                    <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
                             <TextBlock Text="Drag and drop a multi-stream video here" FontSize="16" FontWeight="Bold"
@@ -258,6 +256,12 @@
                             </Border>
                         </StackPanel>
                     </Button>
+
+                    <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="12"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
+                               Margin="0,0,0,14"/>
+                    <ContentControl x:Name="CardMergeVideo" Style="{StaticResource VideoCardStyle}"
+                                    Visibility="Collapsed" Margin="0,0,0,26"/>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <StackPanel Orientation="Horizontal">
@@ -290,10 +294,8 @@
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Trim Video" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                    <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="11.5"
-                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                    <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
                             <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
@@ -309,6 +311,12 @@
                             </Border>
                         </StackPanel>
                     </Button>
+
+                    <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="12"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
+                               Margin="0,0,0,14"/>
+                    <ContentControl x:Name="CardTrimVideo" Style="{StaticResource VideoCardStyle}"
+                                    Visibility="Collapsed" Margin="0,0,0,26"/>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <StackPanel>
