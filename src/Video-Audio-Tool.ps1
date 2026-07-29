@@ -242,6 +242,64 @@ try {
         $Block.Foreground = if ($IsError) { $errorBrush } else { $mutedBrush }
     }
 
+    # Every transition in this app runs 320ms with a CubicEase EaseInOut, from here.
+    #
+    # Animating from code rather than with storyboards in Theme.xaml is forced: that
+    # dictionary is merged into Application.Resources, which freezes it, and a storyboard
+    # whose Duration is a DynamicResource cannot be frozen ("Cannot freeze this Storyboard
+    # timeline tree for use across threads" at startup). Code also gets to read
+    # $global:ShowAnimations directly, which a templated storyboard never can.
+    $script:MotionMs = 320
+
+    function Set-AnimatedDouble {
+        param($Target, $Property, [double]$To)
+
+        if (-not $global:ShowAnimations) {
+            # Clear the clock first: a held animation value silently overrides a plain
+            # property set, so without this the control would stay where it was.
+            # Established fix from the nav pill in UI-WPF.psm1.
+            $Target.BeginAnimation($Property, $null)
+            $Target.SetValue($Property, $To)
+            return
+        }
+
+        $ease = New-Object System.Windows.Media.Animation.CubicEase
+        $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseInOut
+        $anim = New-Object System.Windows.Media.Animation.DoubleAnimation $To, `
+            (New-Object System.Windows.Duration ([timespan]::FromMilliseconds($script:MotionMs)))
+        $anim.EasingFunction = $ease
+        $Target.BeginAnimation($Property, $anim)
+    }
+
+    # Slides a toggle switch's knob instead of letting it jump. Travel distance: the track
+    # is 48 wide with a 1px border, so the content area is 46; the knob is 19 wide starting
+    # at left edge 3, and the checked state puts its left edge at 46 - 3 - 19 = 24. So X
+    # runs 0 to 21.
+    function Register-ToggleSwitch {
+        param($Toggle)
+
+        $seat = {
+            $Toggle.ApplyTemplate() | Out-Null
+            $knob = $Toggle.Template.FindName("KnobShift", $Toggle)
+            if (-not $knob) { return }
+            # Seated without animating: a switch that starts checked must already be over
+            # to the right, not slide across on launch.
+            $knob.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
+            $knob.X = if ($Toggle.IsChecked) { 21 } else { 0 }
+        }.GetNewClosure()
+
+        & $seat
+        $Toggle.Add_Loaded($seat)
+
+        $move = {
+            $knob = $Toggle.Template.FindName("KnobShift", $Toggle)
+            if ($knob) { Set-AnimatedDouble -Target $knob -Property ([System.Windows.Media.TranslateTransform]::XProperty) -To $(if ($Toggle.IsChecked) { 21 } else { 0 }) }
+        }.GetNewClosure()
+
+        $Toggle.Add_Checked($move)
+        $Toggle.Add_Unchecked($move)
+    }
+
     # Fills one video card. The card's children live inside a ControlTemplate, so they
     # are reached through Template.FindName rather than the window's name scope --
     # ApplyTemplate() first, because before the template is realised FindName returns
@@ -406,6 +464,7 @@ try {
         $panelCompress.FindName("TextGpuName").Text = $systemSpecs.GPU.Name
         $panelCompress.FindName("CardGpuMode").Visibility = "Visible"
         $toggleGpu = $panelCompress.FindName("ToggleGpuMode")
+        Register-ToggleSwitch -Toggle $toggleGpu
         $toggleGpu.Add_Click({
             Set-CompressionMode -Mode $(if ($toggleGpu.IsChecked) { "NVIDIA" } else { "CPU" })
             Update-PresetDetails
@@ -556,6 +615,7 @@ try {
     # ---------------- Settings ----------------
     $checkAnimations = $panelSettings.FindName("CheckShowAnimations")
     $checkAnimations.IsChecked = [bool]$global:ShowAnimations
+    Register-ToggleSwitch -Toggle $checkAnimations
     $checkAnimations.Add_Click({
         $global:ShowAnimations = [bool]$checkAnimations.IsChecked
         Save-Settings
