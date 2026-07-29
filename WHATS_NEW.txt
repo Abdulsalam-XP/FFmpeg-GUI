@@ -11,6 +11,13 @@ fixes worth updating for on their own.
   always the reason.
 • The check is remembered for an hour, so reopening Settings is instant instead of
   going to the network every time.
+• The video you pick is now shown as a card with a thumbnail from the clip itself,
+  plus resolution, frame rate, length and size - instead of a faint line of grey
+  text above the drop area.
+• The GPU switch and the preset highlight now move instead of snapping, and the
+  card that spots your graphics card says so plainly.
+• New icons for Trim, Merge Audio and Settings, and the two YouTube screens no
+  longer share the same one.
 
 Fixed:
 
