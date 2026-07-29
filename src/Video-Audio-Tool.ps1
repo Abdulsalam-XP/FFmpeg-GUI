@@ -242,6 +242,66 @@ try {
         $Block.Foreground = if ($IsError) { $errorBrush } else { $mutedBrush }
     }
 
+    # Fills one video card. The card's children live inside a ControlTemplate, so they
+    # are reached through Template.FindName rather than the window's name scope --
+    # ApplyTemplate() first, because before the template is realised FindName returns
+    # $null and every assignment below would silently do nothing.
+    #
+    # The card's current temp frame is parked on its own Tag rather than in a script-scoped
+    # table: -OnReady is invoked from UI-WPF.psm1's module scope, so a $script: variable
+    # written there is a different variable from the one read here and the old jpg is never
+    # deleted (confirmed -- two files piled up in %TEMP% after two picks). A property on the
+    # captured element has no such ambiguity. Same class of trap as the note in
+    # VideoProcessing.psm1 about command lookup inside these callbacks.
+    function Set-VideoCard {
+        param($Card, [string]$Path, [hashtable]$Properties, $Context)
+
+        $Card.ApplyTemplate() | Out-Null
+        $text = Format-VideoMetadata -Properties $Properties
+
+        $Card.Template.FindName("PART_Name", $Card).Text       = [System.IO.Path]::GetFileName($Path)
+        $Card.Template.FindName("PART_Resolution", $Card).Text = $text.Resolution
+        $Card.Template.FindName("PART_FrameRate", $Card).Text  = $text.FrameRate
+        $Card.Template.FindName("PART_Length", $Card).Text     = $text.Length
+        $Card.Template.FindName("PART_Size", $Card).Text       = $text.Size
+
+        # Start from the placeholder every time: the previous file's frame must never
+        # linger next to a new file's details.
+        $image = $Card.Template.FindName("PART_Thumb", $Card)
+        $image.Source = $null
+        $image.Visibility = "Collapsed"
+        $Card.Template.FindName("PART_Placeholder", $Card).Visibility = "Visible"
+        $Card.Visibility = "Visible"
+
+        # Drop the previous temp frame for this card now that nothing displays it.
+        if ($Card.Tag) {
+            Remove-Item -LiteralPath $Card.Tag -Force -ErrorAction SilentlyContinue
+            $Card.Tag = $null
+        }
+
+        if ($Properties.Duration -is [timespan]) {
+            Start-VideoThumbnail -Context $Context -InputFile $Path -Duration $Properties.Duration -OnReady {
+                param($jpg)
+                # OnLoad copies the bytes into memory and releases the file, so the temp
+                # jpg can be deleted later instead of being locked for the session.
+                $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+                $bmp.BeginInit()
+                $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $bmp.UriSource = New-Object System.Uri($jpg)
+                $bmp.EndInit()
+                $image.Source = $bmp
+                $image.Visibility = "Visible"
+                $Card.Template.FindName("PART_Placeholder", $Card).Visibility = "Collapsed"
+                $Card.Tag = $jpg
+            }.GetNewClosure() | Out-Null
+        }
+    }
+
+    function Hide-VideoCard {
+        param($Card)
+        $Card.Visibility = "Collapsed"
+    }
+
     # The dropzones say "drag and drop", so they have to actually accept a drop, not just
     # a click. Both routes funnel into the same OnFile handler.
     function Register-Dropzone {
@@ -306,22 +366,24 @@ try {
         }
     }
 
+    $cardCompress = $panelCompress.FindName("CardCompressVideo")
+
     Register-Dropzone -Button $panelCompress.FindName("ButtonCompressBrowse") -OnFile {
         param($path)
         $props = Get-VideoProperties -inputFile $path
         if (-not $props) {
             Show-PanelMessage -Block $textCompressMeta -IsError `
                 -Text "Could not read that file. Is it a valid video?"
+            Hide-VideoCard -Card $cardCompress
             $buttonCompressStart.IsEnabled = $false
             return
         }
         $script:CompressInputFile = $path
         $script:CompressVideoProps = $props
-        Show-PanelMessage -Block $textCompressMeta -Text ("{0}  {1}  {2}  {3} GB" -f `
-            [System.IO.Path]::GetFileName($path), $props.Resolution,
-            $props.Duration.ToString("hh\:mm\:ss"), $props.FileSize)
+        Show-PanelMessage -Block $textCompressMeta -Text ""
+        Set-VideoCard -Card $cardCompress -Path $path -Properties $props -Context $ctx
         $buttonCompressStart.IsEnabled = $true
-    }
+    }.GetNewClosure()
 
     $buttonCompressStart.Add_Click({
         if (-not $script:CompressInputFile) { return }
