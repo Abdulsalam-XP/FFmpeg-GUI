@@ -719,11 +719,17 @@
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
                         </Trigger>
+                        <!-- SelectedFill and CheckBadge are faded from code
+                             (Move-PresetHighlight in Video-Audio-Tool.ps1) rather than
+                             snapped here, for the same reason the toggle knob is: a
+                             storyboard in this dictionary cannot be frozen once it is
+                             merged into Application.Resources, and it could not read the
+                             Animations setting anyway. The card's own border is left off
+                             the checked state entirely, because the travelling outline in
+                             MainWindow.xaml draws it; having both would put two gold
+                             outlines on screen during every transition. -->
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource BrushAccentGradient}"/>
-                            <Setter TargetName="Card" Property="BorderThickness" Value="1.4"/>
-                            <Setter TargetName="SelectedFill" Property="Opacity" Value="1"/>
-                            <Setter TargetName="CheckBadge" Property="Opacity" Value="1"/>
+                            <Setter TargetName="Card" Property="BorderBrush" Value="Transparent"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
