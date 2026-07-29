@@ -593,16 +593,28 @@
                     <StackPanel Orientation="Horizontal" Background="Transparent">
                         <Border x:Name="Track" Width="48" Height="27" CornerRadius="13.5"
                                 Background="#0D1526" BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1">
+                            <!-- The knob is positioned by a transform, not by swapping
+                                 HorizontalAlignment/Margin on check: neither of those is
+                                 animatable, which is why it used to jump. -->
                             <Ellipse x:Name="Knob" Width="19" Height="19" HorizontalAlignment="Left"
-                                     Margin="3,0,0,0" Fill="{StaticResource BrushTextMuted}"/>
+                                     Margin="3,0,0,0" Fill="{StaticResource BrushTextMuted}">
+                                <Ellipse.RenderTransform>
+                                    <TranslateTransform x:Name="KnobShift" X="0"/>
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
                         </Border>
                         <ContentPresenter VerticalAlignment="Center" Margin="14,0,0,0"/>
                     </StackPanel>
                     <ControlTemplate.Triggers>
+                        <!-- Only the colours change here. The knob's travel is animated from
+                             code (Register-ToggleSwitch in Video-Audio-Tool.ps1), not by a
+                             storyboard in this trigger: this dictionary gets merged into
+                             Application.Resources, which freezes it, and a storyboard whose
+                             Duration is a DynamicResource cannot be frozen. Driving it from
+                             code also lets it read the Animations setting directly, the same
+                             way the nav pill already works. -->
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Track" Property="Background" Value="{StaticResource BrushAccentGradient}"/>
-                            <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
-                            <Setter TargetName="Knob" Property="Margin" Value="0,0,3,0"/>
                             <Setter TargetName="Knob" Property="Fill" Value="#FFF8EC"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
