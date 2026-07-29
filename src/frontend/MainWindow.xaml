@@ -60,7 +60,7 @@
                 </RadioButton>
                 <RadioButton x:Name="NavMergeAudio" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="MergeAudio">
                     <StackPanel Orientation="Horizontal">
-                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconMergeAudio}"/>
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconMixer}"/>
                         <TextBlock Text="Merge Audio" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
@@ -72,7 +72,7 @@
                 </RadioButton>
                 <RadioButton x:Name="NavYouTubeMP3" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP3">
                     <StackPanel Orientation="Horizontal">
-                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconVideo}"/>
+                        <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconMergeAudio}"/>
                         <TextBlock Text="YouTube MP3" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
@@ -108,13 +108,11 @@
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Compress Video" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                    <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="11.5"
-                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                    <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
-                            <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
+                            <TextBlock x:Name="TextCompressDropCaption" Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
                             <TextBlock Text="MP4 &#183; MKV &#183; MOV" FontSize="11.5" FontFamily="{StaticResource FontData}"
@@ -128,14 +126,34 @@
                         </StackPanel>
                     </Button>
 
+                    <!-- Error text for an unreadable file still needs somewhere to go; it
+                         reuses this block, which is why it is not inside the card. -->
+                    <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="12"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
+                               Margin="0,0,0,14"/>
+                    <ContentControl x:Name="CardCompressVideo" Style="{StaticResource VideoCardStyle}"
+                                    Visibility="Collapsed" Margin="0,0,0,26"/>
+
                     <!-- Shown only when an NVIDIA card is detected, matching the console
                          version, which offered the NVENC choice on those machines only. -->
                     <Border x:Name="CardGpuMode" Style="{StaticResource OptionCardBorderStyle}"
                             Margin="0,0,0,26" Visibility="Collapsed">
                         <DockPanel LastChildFill="False">
                             <StackPanel DockPanel.Dock="Left">
-                                <TextBlock x:Name="TextGpuName" Text="NVIDIA GPU detected" FontSize="14" FontWeight="SemiBold"
-                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock x:Name="TextGpuName" Text="NVIDIA GPU detected" FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
+                                               VerticalAlignment="Center"/>
+                                    <Border Background="#1A3FCF7F" BorderBrush="#5C4FD67F" BorderThickness="1"
+                                            CornerRadius="9" Padding="7,1.5" Margin="10,0,0,0" VerticalAlignment="Center">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Ellipse Width="6" Height="6" Fill="#4FD67F" VerticalAlignment="Center"/>
+                                            <TextBlock Text="DETECTED" FontSize="9.5" FontWeight="SemiBold" Margin="6,0,0,0"
+                                                       Foreground="#7FE0A4" FontFamily="{StaticResource FontChrome}"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
                                 <TextBlock Text="Encode with NVENC: far faster, slightly larger files than CPU at the same quality."
                                            FontSize="12" Foreground="{StaticResource BrushTextBody}" FontFamily="{StaticResource FontChrome}"
                                            Margin="0,5,0,0" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left"/>
@@ -206,6 +224,21 @@
                                 </Grid>
                             </StackPanel>
                         </RadioButton>
+
+                        <!-- The selected-preset outline, drawn once and slid between cards
+                             by Move-PresetHighlight. Last child and spanning every column
+                             so it paints OVER the cards: their backgrounds are opaque, and
+                             an outline underneath them would simply be hidden. -->
+                        <Border x:Name="PresetTravel" Grid.Column="0" Grid.ColumnSpan="5"
+                                CornerRadius="11" BorderThickness="1.4"
+                                BorderBrush="{StaticResource BrushAccentGradient}"
+                                Background="Transparent" IsHitTestVisible="False"
+                                HorizontalAlignment="Left" VerticalAlignment="Stretch"
+                                Width="0" Opacity="0">
+                            <Border.RenderTransform>
+                                <TranslateTransform x:Name="PresetTravelShift" X="0"/>
+                            </Border.RenderTransform>
+                        </Border>
                     </Grid>
 
                     <!-- Selecting a preset only selects it; starting a multi-minute encode
@@ -233,13 +266,11 @@
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Merge Audio Streams" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                    <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="11.5"
-                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                    <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
-                            <TextBlock Text="Drag and drop a multi-stream video here" FontSize="16" FontWeight="Bold"
+                            <TextBlock x:Name="TextMergeDropCaption" Text="Drag and drop a multi-stream video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
                             <TextBlock Text="System and mic audio get mixed into one track" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
@@ -252,6 +283,12 @@
                             </Border>
                         </StackPanel>
                     </Button>
+
+                    <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="12"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
+                               Margin="0,0,0,14"/>
+                    <ContentControl x:Name="CardMergeVideo" Style="{StaticResource VideoCardStyle}"
+                                    Visibility="Collapsed" Margin="0,0,0,26"/>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <StackPanel Orientation="Horizontal">
@@ -284,13 +321,11 @@
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
                     <TextBlock Text="Trim Video" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
-                    <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="11.5"
-                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}" Margin="0,4,0,22"/>
 
-                    <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,0,0,26">
+                    <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
-                            <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
+                            <TextBlock x:Name="TextTrimDropCaption" Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
                             <TextBlock Text="Cut before or after a timestamp, no re-encode" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
@@ -303,6 +338,12 @@
                             </Border>
                         </StackPanel>
                     </Button>
+
+                    <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="12"
+                               Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
+                               Margin="0,0,0,14"/>
+                    <ContentControl x:Name="CardTrimVideo" Style="{StaticResource VideoCardStyle}"
+                                    Visibility="Collapsed" Margin="0,0,0,26"/>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <StackPanel>
