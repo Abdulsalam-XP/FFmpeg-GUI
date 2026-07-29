@@ -222,6 +222,12 @@ function Compress-VideoAsync {
     # Held so the run can disable it: nothing else stops a second click from launching a
     # parallel ffmpeg that writes the same output file and the same progress controls.
     $startButton = $panel.FindName("ButtonCompressStart")
+    # Locked for the duration of the run: swapping the source file out from under a
+    # running encode leaves the output half-written from two different inputs.
+    # AllowDrop must be cleared too -- IsEnabled=False stops clicks but a drop still
+    # raises Drop on a disabled Button.
+    $dropzone = $panel.FindName("ButtonCompressBrowse")
+    $dropCaption = $panel.FindName("TextCompressDropCaption")
     $startTime = Get-Date
 
     $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
@@ -252,10 +258,14 @@ function Compress-VideoAsync {
             param($exitCode)
             $cancelButton.IsEnabled = $false
             if ($startButton) { $startButton.IsEnabled = $true }
+            if ($dropzone) { $dropzone.IsEnabled = $true; $dropzone.AllowDrop = $true }
+            if ($dropCaption) { $dropCaption.Text = "Drag and drop your video here" }
             if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
         }.GetNewClosure()
 
     if ($startButton) { $startButton.IsEnabled = $false }
+    if ($dropzone) { $dropzone.IsEnabled = $false; $dropzone.AllowDrop = $false }
+    if ($dropCaption) { $dropCaption.Text = "Compressing... cancel to pick a different video" }
     $cancelButton.IsEnabled = $true
     Set-CancelButtonTarget -Button $cancelButton -Process $process
 

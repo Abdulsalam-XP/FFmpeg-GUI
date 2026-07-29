@@ -112,7 +112,7 @@
                     <Button x:Name="ButtonCompressBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
-                            <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
+                            <TextBlock x:Name="TextCompressDropCaption" Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
                             <TextBlock Text="MP4 &#183; MKV &#183; MOV" FontSize="11.5" FontFamily="{StaticResource FontData}"
@@ -243,7 +243,7 @@
                     <Button x:Name="ButtonMergeBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
-                            <TextBlock Text="Drag and drop a multi-stream video here" FontSize="16" FontWeight="Bold"
+                            <TextBlock x:Name="TextMergeDropCaption" Text="Drag and drop a multi-stream video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
                             <TextBlock Text="System and mic audio get mixed into one track" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
@@ -298,7 +298,7 @@
                     <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <Path Style="{StaticResource DropCloudIconStyle}" Data="{StaticResource IconDropCloud}"/>
-                            <TextBlock Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
+                            <TextBlock x:Name="TextTrimDropCaption" Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
                             <TextBlock Text="Cut before or after a timestamp, no re-encode" FontSize="11.5" FontFamily="{StaticResource FontChrome}"

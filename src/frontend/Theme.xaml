@@ -494,12 +494,24 @@
                                 <Ellipse Style="{StaticResource DropzoneGlowStyle}" Canvas.Left="-60" Canvas.Top="-130"/>
                             </Canvas>
                         </Grid>
-                        <ContentPresenter Margin="26,24"/>
+                        <ContentPresenter x:Name="DropContent" Margin="26,24"/>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Glass" Property="Fill" Value="{StaticResource BrushGlassFillHover}"/>
                             <Setter TargetName="Glass" Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                        <!-- Without this a locked dropzone looks identical to a live one,
+                             so the only clue it is refusing input is that nothing happens.
+                             The content is dimmed as well as the panel behind it: the gold
+                             "Browse Files" chip sits on top and, left at full strength, goes
+                             on reading as the most clickable thing on the screen while the
+                             dropzone silently swallows every click. -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Glass" Property="Opacity" Value="0.4"/>
+                            <Setter TargetName="Glass" Property="Stroke" Value="{StaticResource BrushTextMuted}"/>
+                            <Setter TargetName="DropContent" Property="Opacity" Value="0.45"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
