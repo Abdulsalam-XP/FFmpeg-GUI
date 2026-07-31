@@ -52,6 +52,15 @@ $requiredModules = @(
     "backend\VideoTrimmer.psm1"
 )
 
+# The window's markup, not a .psm1, so it lives outside $requiredModules -- but it
+# is loaded by path (Initialize-MainWindow) exactly like a module, needs the same
+# missing-file self-heal on a partial install, and needs the same refresh from the
+# self-updater so code and markup never drift apart (see Test-ScriptUpdates below).
+$requiredXamlFiles = @(
+    "frontend\MainWindow.xaml",
+    "frontend\Theme.xaml"
+)
+
 foreach ($mod in $requiredModules) {
     $localModPath = Join-Path $scriptRoot $mod
     if (-not (Test-Path $localModPath)) {
@@ -65,6 +74,23 @@ foreach ($mod in $requiredModules) {
         }
         catch {
             Write-Host "Failed to download $mod. Please check your internet connection." -ForegroundColor Red
+        }
+    }
+}
+
+foreach ($xamlFile in $requiredXamlFiles) {
+    $localXamlPath = Join-Path $scriptRoot $xamlFile
+    if (-not (Test-Path $localXamlPath)) {
+        Write-Host "Detected missing UI file: $xamlFile. Downloading..." -ForegroundColor Cyan
+        try {
+            $xamlParent = Split-Path $localXamlPath -Parent
+            if (-not (Test-Path $xamlParent)) { New-Item -ItemType Directory -Path $xamlParent | Out-Null }
+            # Same forward-slash rule as the module loop above.
+            $xamlUrl = "https://raw.githubusercontent.com/$repoOwner/$repoName/$branch/src/$($xamlFile -replace '\\', '/')"
+            Invoke-RestMethod -Uri $xamlUrl -OutFile $localXamlPath
+        }
+        catch {
+            Write-Host "Failed to download $xamlFile. Please check your internet connection." -ForegroundColor Red
         }
     }
 }
@@ -158,6 +184,24 @@ function Test-ScriptUpdates {
                             Invoke-RestMethod -Uri $modUri -OutFile $target -ErrorAction Stop
                         } catch {
                             Write-Host "Warning: Could not update module $mod" -ForegroundColor Yellow
+                        }
+                    }
+
+                    Write-Host "Updating UI definitions..." -ForegroundColor Cyan
+                    # New script code can reference XAML elements ($requiredModules alone
+                    # never updates these two) that don't exist in an old MainWindow.xaml/
+                    # Theme.xaml -- that mismatch is exactly what took startup down before
+                    # Update-RecentList grew its null guard. Refresh them the same way, on
+                    # the same restart, so code and markup move together.
+                    foreach ($xamlFile in $requiredXamlFiles) {
+                        try {
+                            $target = Join-Path $scriptRoot $xamlFile
+                            $targetParent = Split-Path $target -Parent
+                            if (-not (Test-Path $targetParent)) { New-Item -ItemType Directory -Path $targetParent | Out-Null }
+                            $xamlUri = "$modulesUrlBase/$($xamlFile -replace '\\', '/')"
+                            Invoke-RestMethod -Uri $xamlUri -OutFile $target -ErrorAction Stop
+                        } catch {
+                            Write-Host "Warning: Could not update $xamlFile" -ForegroundColor Yellow
                         }
                     }
 
@@ -367,6 +411,13 @@ try {
     function Update-RecentList {
         param($Card, $Container, [scriptblock]$OnFile, $MessageBlock)
 
+        # An install updated in place can have new code against old XAML: the
+        # self-updater refreshes this script and the modules, but a window built
+        # from a stale MainWindow.xaml has no CardRecent*/PanelRecent* elements to
+        # find, so FindName returns $null here. Bail out quietly instead of
+        # dereferencing null and taking the whole startup down with it.
+        if (-not $Card -or -not $Container) { return }
+
         $Container.Children.Clear()
         $entries = @(Get-RecentFiles)
 
@@ -382,6 +433,12 @@ try {
         $isFirst = $true
 
         foreach ($entry in $entries) {
+            # A hand-edited settings.json can produce an entry with no Path (or a
+            # "RecentFiles": "garbage" string value, which @(...) turns into a
+            # one-element string array with no .Path at all). Skip it rather than
+            # building a nameless row whose click later throws.
+            if (-not $entry -or [string]::IsNullOrWhiteSpace($entry.Path)) { continue }
+
             $row = New-Object System.Windows.Controls.Button
             $row.Style = $ctx.Window.FindResource("RecentRowButtonStyle")
 
@@ -401,7 +458,7 @@ try {
             $name.FontFamily = $ctx.Window.FindResource("FontChrome")
             $name.FontSize = 12.5
             $name.FontWeight = "SemiBold"
-            # A long filename must not push the LATEST pill off the card.
+            # A long filename must not push the MOST RECENT pill off the card.
             $name.TextTrimming = "CharacterEllipsis"
             $stack.Children.Add($name) | Out-Null
 
@@ -517,10 +574,14 @@ try {
     # Both the source and the output are recorded, as separate rows: the two common
     # follow-ups are running a different job on the same original, and chaining a
     # second job onto the result. Order matters -- the output is added last so it
-    # lands on top with the LATEST pill.
+    # lands on top with the MOST RECENT pill.
     $recordJob = {
         param($JobName, $SourcePath, $OutputPath)
-        Add-RecentFile -Path $SourcePath -Job $JobName
+        # -NoSave on the source: two Save-Settings calls per finished job means two
+        # disk writes right as the UI thread would otherwise be busy redrawing, and
+        # Save-Settings' failure handler can block the window for seconds. Adding
+        # the output without -NoSave saves once, after both entries are recorded.
+        Add-RecentFile -Path $SourcePath -Job $JobName -NoSave
         Add-RecentFile -Path $OutputPath -Job $JobName
         Update-AllRecentLists
     }
