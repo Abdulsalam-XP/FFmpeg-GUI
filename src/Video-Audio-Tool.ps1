@@ -367,7 +367,7 @@ try {
 
         $Button.AllowDrop = $true
         $Button.Add_DragOver({
-            param($sender, $e)
+            param($eventSource, $e)
             $e.Effects = if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
                 [System.Windows.DragDropEffects]::Copy
             } else {
@@ -376,7 +376,7 @@ try {
             $e.Handled = $true
         })
         $Button.Add_Drop({
-            param($sender, $e)
+            param($eventSource, $e)
             if (-not $e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { return }
             $paths = @($e.Data.GetData([System.Windows.DataFormats]::FileDrop))
             if ($paths.Count -gt 0) { & $OnFile $paths[0] }
@@ -448,7 +448,7 @@ try {
     }
 
     foreach ($presetButton in $presetControls.Values) {
-        $presetButton.Add_Checked({ param($sender, $e) Move-PresetHighlight -Target $sender }.GetNewClosure())
+        $presetButton.Add_Checked({ param($eventSource, $e) Move-PresetHighlight -Target $eventSource }.GetNewClosure())
     }
 
     # Puts the outline on the checked card without animating: used for the first paint, and
