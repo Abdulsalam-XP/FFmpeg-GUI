@@ -23,15 +23,26 @@ function Import-Config {
             } else {
                 $global:ToolCheckCache = $null
             }
+
+            # Same shape of check as ToolCheckCache above, for the same reason: the key
+            # is absent on first run and in every settings.json written before this
+            # feature existed.
+            if ($null -ne $config.RecentFiles) {
+                $global:RecentFiles = @($config.RecentFiles)
+            } else {
+                $global:RecentFiles = @()
+            }
         }
         catch {
             $global:ShowAnimations = $true
             $global:ToolCheckCache = $null
+            $global:RecentFiles = @()
             Save-Settings
         }
     } else {
         $global:ShowAnimations = $true
         $global:ToolCheckCache = $null
+        $global:RecentFiles = @()
         Save-Settings
     }
 }
@@ -45,6 +56,7 @@ function Save-Settings {
         $settingsObj = @{
             ShowAnimations = $global:ShowAnimations
             ToolCheckCache = $global:ToolCheckCache
+            RecentFiles    = $global:RecentFiles
         }
         # Depth 6 because the cache is nested three levels and ConvertTo-Json truncates at
         # depth 2 by default -- without this the cache round-trips as the literal string
