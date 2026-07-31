@@ -47,7 +47,17 @@ function Remove-CutPiece {
     )
 
     $all = @($List)
+    # A $null -List binds through the typed [object[]] parameter as a genuine $null
+    # rather than an empty array, so @($List) above can come back $null too. Left
+    # unguarded, "return ,$all" below would then hand back $null instead of the empty
+    # array this function promises callers -- normalize here rather than let that
+    # leak out.
+    if ($null -eq $all) { $all = @() }
     if ($Index -lt 0 -or $Index -ge $all.Count) { return ,$all }
+    # IndexOf compares by reference, not value: safe only because every piece is a
+    # distinct PSCustomObject instance. If a caller ever reuses the same instance
+    # across two slots in the list (e.g. an undo snapshot holding onto old references),
+    # this would find the first match only and could drop the wrong one.
     return ,@($all | Where-Object { $all.IndexOf($_) -ne $Index })
 }
 
@@ -59,8 +69,15 @@ function Find-NearestKeyframe {
         [Parameter(Mandatory = $true)][double]$Seconds
     )
 
-    $frames = @($Keyframes)
+    # -Keyframes is not Mandatory, so it may be omitted or passed as $null. @($null) is
+    # a one-element array holding $null, not an empty array, so $frames.Count alone
+    # would not catch that case -- check for $null explicitly first. (Deliberately not
+    # "-not $Keyframes": PowerShell's array-to-bool conversion for a single-element
+    # array evaluates the truthiness of that one element, so a real one-keyframe list
+    # containing exactly 0.0 would read as falsy and wrongly skip snapping.)
     # No keyframe list yet (still being read) means no snapping rather than no cutting.
+    if ($null -eq $Keyframes) { return $Seconds }
+    $frames = @($Keyframes)
     if ($frames.Count -eq 0) { return $Seconds }
 
     $best = $frames[0]

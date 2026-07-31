@@ -77,6 +77,12 @@ Describe "Remove-CutPiece" {
     It "ignores an index that is not there" {
         (Remove-CutPiece -List (New-CutList -Duration 60) -Index 7).Count | Should Be 1
     }
+
+    It "returns an empty array, not null, when -List is `$null" {
+        $list = Remove-CutPiece -List $null -Index 0
+        @($list).Count | Should Be 0
+        ($null -eq $list) | Should Be $false
+    }
 }
 
 Describe "Find-NearestKeyframe" {
@@ -104,5 +110,13 @@ Describe "Find-NearestKeyframe" {
 
     It "returns the requested time unchanged when there are no keyframes" {
         Find-NearestKeyframe -Keyframes @() -Seconds 4.2 | Should Be 4.2
+    }
+
+    It "returns the requested time unchanged when -Keyframes is `$null" {
+        Find-NearestKeyframe -Keyframes $null -Seconds 4.2 | Should Be 4.2
+    }
+
+    It "returns the requested time unchanged when -Keyframes is omitted" {
+        Find-NearestKeyframe -Seconds 4.2 | Should Be 4.2
     }
 }
