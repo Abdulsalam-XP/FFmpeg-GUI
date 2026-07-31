@@ -361,6 +361,114 @@ try {
         $Card.Visibility = "Collapsed"
     }
 
+    # Draws the recent-files rows for one panel. Rebuilt from scratch on every call
+    # rather than diffed: the list is three items long, and rebuilding means there is
+    # no stale-row state to get wrong.
+    function Update-RecentList {
+        param($Card, $Container, [scriptblock]$OnFile, $MessageBlock)
+
+        $Container.Children.Clear()
+        $entries = @(Get-RecentFiles)
+
+        # Nothing recorded yet: the whole card goes away so a first run looks exactly
+        # like the app did before this feature.
+        if ($entries.Count -eq 0) {
+            $Card.Visibility = "Collapsed"
+            return
+        }
+        $Card.Visibility = "Visible"
+
+        $now = Get-Date
+        $isFirst = $true
+
+        foreach ($entry in $entries) {
+            $row = New-Object System.Windows.Controls.Button
+            $row.Style = $ctx.Window.FindResource("RecentRowButtonStyle")
+
+            $grid = New-Object System.Windows.Controls.Grid
+            $textColumn = New-Object System.Windows.Controls.ColumnDefinition
+            $textColumn.Width = New-Object System.Windows.GridLength 1, ([System.Windows.GridUnitType]::Star)
+            $pillColumn = New-Object System.Windows.Controls.ColumnDefinition
+            $pillColumn.Width = [System.Windows.GridLength]::Auto
+            $grid.ColumnDefinitions.Add($textColumn)
+            $grid.ColumnDefinitions.Add($pillColumn)
+
+            $stack = New-Object System.Windows.Controls.StackPanel
+
+            $name = New-Object System.Windows.Controls.TextBlock
+            $name.Text = [System.IO.Path]::GetFileName($entry.Path)
+            $name.Foreground = $ctx.Window.FindResource("BrushTextPrimary")
+            $name.FontFamily = $ctx.Window.FindResource("FontChrome")
+            $name.FontSize = 12.5
+            $name.FontWeight = "SemiBold"
+            # A long filename must not push the LATEST pill off the card.
+            $name.TextTrimming = "CharacterEllipsis"
+            $stack.Children.Add($name) | Out-Null
+
+            # A When that will not parse (hand-edited settings.json) must not take the
+            # whole list down with it -- the row is still useful without an age.
+            $age = ""
+            try { $age = " " + [char]0xB7 + " " + (Format-RecentAge -When ([datetime]::Parse($entry.When)) -Now $now) } catch { }
+
+            $sub = New-Object System.Windows.Controls.TextBlock
+            $sub.Text = "$($entry.Job)$age"
+            $sub.Foreground = $ctx.Window.FindResource("BrushTextMuted")
+            $sub.FontFamily = $ctx.Window.FindResource("FontData")
+            $sub.FontSize = 10
+            $sub.Margin = New-Object System.Windows.Thickness 0, 1, 0, 0
+            $stack.Children.Add($sub) | Out-Null
+
+            [System.Windows.Controls.Grid]::SetColumn($stack, 0)
+            $grid.Children.Add($stack) | Out-Null
+
+            if ($isFirst) {
+                $pill = New-Object System.Windows.Controls.Border
+                $pill.Style = $ctx.Window.FindResource("RecentPillStyle")
+                $pillText = New-Object System.Windows.Controls.TextBlock
+                $pillText.Text = "LATEST"
+                $pillText.Foreground = $ctx.Window.FindResource("BrushShellBase")
+                $pillText.FontFamily = $ctx.Window.FindResource("FontChrome")
+                $pillText.FontSize = 8.5
+                $pillText.FontWeight = "Bold"
+                $pill.Child = $pillText
+                [System.Windows.Controls.Grid]::SetColumn($pill, 1)
+                $grid.Children.Add($pill) | Out-Null
+                $isFirst = $false
+            }
+
+            $row.Content = $grid
+
+            # GetNewClosure() is required here and safe: unlike the -OnFile blocks this
+            # writes no $script: variables, and without it every row would capture the
+            # loop variable's final value and all three would open the same file.
+            $rowPath = $entry.Path
+            $row.Add_Click({
+                # No up-front existence check by design -- the list draws instantly from
+                # settings.json. A file that has since moved fails here instead.
+                if (-not (Test-Path -LiteralPath $rowPath)) {
+                    Show-PanelMessage -Block $MessageBlock -IsError -Text "That file is no longer there."
+                    Remove-RecentFile -Path $rowPath
+                    Update-AllRecentLists
+                    return
+                }
+                if ((& $OnFile $rowPath) -eq $false) {
+                    Remove-RecentFile -Path $rowPath
+                    Update-AllRecentLists
+                }
+            }.GetNewClosure())
+
+            $Container.Children.Add($row) | Out-Null
+        }
+    }
+
+    # All three panels share one list, so a change on any of them redraws all of them.
+    # Cheap enough to do unconditionally: three rows, no disk or ffmpeg work.
+    function Update-AllRecentLists {
+        Update-RecentList -Card $cardRecentCompress -Container $panelRecentCompress -OnFile $onCompressFile -MessageBlock $textCompressMeta
+        Update-RecentList -Card $cardRecentMerge -Container $panelRecentMerge -OnFile $onMergeFile -MessageBlock $textMergeMeta
+        Update-RecentList -Card $cardRecentTrim -Container $panelRecentTrim -OnFile $onTrimFile -MessageBlock $textTrimMeta
+    }
+
     # The dropzones say "drag and drop", so they have to actually accept a drop, not just
     # a click. Both routes funnel into the same OnFile handler.
     function Register-Dropzone {
@@ -400,6 +508,7 @@ try {
             # itself stays generic -- it is shared by all six screens and must not learn
             # about tool updates.
             if ($panelName -eq "Settings") { Update-ToolsCard }
+            if ($panelName -in @("Compress", "MergeAudio", "Trim")) { Update-AllRecentLists }
         }.GetNewClosure())
     }
 
@@ -486,7 +595,10 @@ try {
     # The button then silently does nothing on every click. Left unbound, the panel
     # variables resolve through the caller's scope chain, which is how $textCompressMeta
     # has always worked here.
-    Register-Dropzone -Button $panelCompress.FindName("ButtonCompressBrowse") -OnFile {
+    # Extracted to a variable so the recent-files rows can invoke the identical
+    # handler. Still no GetNewClosure() -- see the note above about $script: writes
+    # landing in a dynamic module and silently disabling the start button.
+    $onCompressFile = {
         param($path)
         $props = Get-VideoProperties -inputFile $path
         if (-not $props) {
@@ -494,14 +606,17 @@ try {
                 -Text "Could not read that file. Is it a valid video?"
             Hide-VideoCard -Card $cardCompress
             $buttonCompressStart.IsEnabled = $false
-            return
+            return $false
         }
         $script:CompressInputFile = $path
         $script:CompressVideoProps = $props
         Show-PanelMessage -Block $textCompressMeta -Text ""
         Set-VideoCard -Card $cardCompress -Path $path -Properties $props -Context $ctx
         $buttonCompressStart.IsEnabled = $true
+        return $true
     }
+
+    Register-Dropzone -Button $panelCompress.FindName("ButtonCompressBrowse") -OnFile $onCompressFile
 
     $buttonCompressStart.Add_Click({
         if (-not $script:CompressInputFile) { return }
@@ -528,7 +643,10 @@ try {
     # ---------------- Merge Audio ----------------
     $textMergeMeta = $panelMerge.FindName("TextMergeMeta")
     $cardMerge = $panelMerge.FindName("CardMergeVideo")
-    Register-Dropzone -Button $panelMerge.FindName("ButtonMergeBrowse") -OnFile {
+    # Extracted to a variable so the recent-files rows can invoke the identical
+    # handler. Still no GetNewClosure() -- see the note above about $script: writes
+    # landing in a dynamic module and silently disabling the start button.
+    $onMergeFile = {
         param($path)
         # Reading the properties is new here: the card needs them. It also means an
         # unreadable file is now caught at pick time rather than by ffmpeg mid-merge.
@@ -537,12 +655,15 @@ try {
             Show-PanelMessage -Block $textMergeMeta -IsError `
                 -Text "Could not read that file. Is it a valid video?"
             Hide-VideoCard -Card $cardMerge
-            return
+            return $false
         }
         $script:MergeInputFile = $path
         Show-PanelMessage -Block $textMergeMeta -Text ""
         Set-VideoCard -Card $cardMerge -Path $path -Properties $props -Context $ctx
+        return $true
     }
+
+    Register-Dropzone -Button $panelMerge.FindName("ButtonMergeBrowse") -OnFile $onMergeFile
 
     $panelMerge.FindName("ButtonMergeStart").Add_Click({
         if (-not $script:MergeInputFile) {
@@ -560,7 +681,10 @@ try {
     # ---------------- Trim ----------------
     $textTrimMeta = $panelTrim.FindName("TextTrimMeta")
     $cardTrim = $panelTrim.FindName("CardTrimVideo")
-    Register-Dropzone -Button $panelTrim.FindName("ButtonTrimBrowse") -OnFile {
+    # Extracted to a variable so the recent-files rows can invoke the identical
+    # handler. Still no GetNewClosure() -- see the note above about $script: writes
+    # landing in a dynamic module and silently disabling the start button.
+    $onTrimFile = {
         param($path)
         $script:TrimInputFile = $path
         $props = Get-VideoProperties -inputFile $path
@@ -571,11 +695,23 @@ try {
             Show-PanelMessage -Block $textTrimMeta -IsError `
                 -Text "Could not read that file. Is it a valid video?"
             Hide-VideoCard -Card $cardTrim
-            return
+            return $false
         }
         Show-PanelMessage -Block $textTrimMeta -Text ""
         Set-VideoCard -Card $cardTrim -Path $path -Properties $props -Context $ctx
+        return $true
     }
+
+    Register-Dropzone -Button $panelTrim.FindName("ButtonTrimBrowse") -OnFile $onTrimFile
+
+    $cardRecentCompress = $panelCompress.FindName("CardRecentCompress")
+    $panelRecentCompress = $panelCompress.FindName("PanelRecentCompress")
+    $cardRecentMerge = $panelMerge.FindName("CardRecentMerge")
+    $panelRecentMerge = $panelMerge.FindName("PanelRecentMerge")
+    $cardRecentTrim = $panelTrim.FindName("CardRecentTrim")
+    $panelRecentTrim = $panelTrim.FindName("PanelRecentTrim")
+
+    Update-AllRecentLists
 
     $panelTrim.FindName("ButtonTrimStart").Add_Click({
         if (-not $script:TrimInputFile) {
