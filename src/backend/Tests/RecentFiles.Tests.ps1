@@ -98,17 +98,32 @@ Describe "Get-RecentFiles" {
         $global:RecentFiles = $originalRecentFiles
     }
 
-    It "returns an empty array, not null, when the global is unset" {
+    # These assert the caller idiom @(Get-RecentFiles) rather than the bare
+    # call, because that is the contract every consumer (Update-RecentList
+    # included) actually depends on. Get-RecentFiles emits its elements
+    # normally rather than as one pre-wrapped object -- wrapping the bare
+    # call a second time here would defeat exactly the case (two-plus
+    # entries) that a `,@(...)` return breaks: @(Get-RecentFiles) on such
+    # a return double-wraps into a one-element array holding the whole list.
+
+    It "returns an empty array when the global is unset" {
         $global:RecentFiles = $null
-        $result = Get-RecentFiles
-        ($null -eq $result) | Should Be $false
-        @($result).Count | Should Be 0
+        @(Get-RecentFiles).Count | Should Be 0
     }
 
     It "returns a one-element array for a single-entry global" {
         $global:RecentFiles = Add-RecentEntry -Entries @() -Path "C:\a.mp4" -Job "Trim" -When $when
-        $result = Get-RecentFiles
+        $result = @(Get-RecentFiles)
         $result.Count | Should Be 1
         $result[0].Path | Should Be "C:\a.mp4"
+    }
+
+    It "returns a distinct entry per item for a two-entry global, not one merged row" {
+        $list = Add-RecentEntry -Entries @() -Path "C:\a.mp4" -Job "Trim" -When $when
+        $global:RecentFiles = Add-RecentEntry -Entries $list -Path "C:\b.mp4" -Job "Compress" -When $when
+        $result = @(Get-RecentFiles)
+        $result.Count | Should Be 2
+        $result[0].Job | Should Be "Compress"
+        $result[1].Job | Should Be "Trim"
     }
 }
