@@ -1,3 +1,7 @@
+# No -Force: it would demote the globally imported Settings module to a nested one,
+# hiding Save-Settings/Import-Config from the main script and the other modules
+Import-Module (Join-Path $PSScriptRoot "Settings.psm1")
+
 # The list shown under the dropzone on Compress, Merge Audio and Trim. Split in two
 # deliberately: the *-RecentEntry functions are pure array transforms with no global
 # or disk access, which is what the Pester tests exercise, while the *-RecentFile
@@ -76,10 +80,16 @@ function Get-RecentFiles {
 function Add-RecentFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Job
+        [Parameter(Mandatory = $true)][string]$Job,
+        # Lets a caller recording several entries in one go (e.g. a finished job's
+        # source and output) defer the disk write to its own final call, instead of
+        # paying for a Save-Settings per entry. Save-Settings' failure handler blocks
+        # the UI thread for several seconds, so halving the writes on this hot path
+        # halves the worst-case freeze too.
+        [switch]$NoSave
     )
     $global:RecentFiles = Add-RecentEntry -Entries (Get-RecentFiles) -Path $Path -Job $Job -When (Get-Date)
-    Save-Settings
+    if (-not $NoSave) { Save-Settings }
 }
 
 function Remove-RecentFile {

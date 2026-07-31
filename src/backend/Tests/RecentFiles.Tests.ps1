@@ -127,3 +127,60 @@ Describe "Get-RecentFiles" {
         $result[1].Job | Should Be "Trim"
     }
 }
+
+Describe "Add-RecentFile and Remove-RecentFile" {
+    # Save/restore so these tests cannot leak $global:RecentFiles state into the
+    # other Describe blocks (or into a real session running the suite).
+    $originalRecentFiles = $global:RecentFiles
+
+    AfterEach {
+        $global:RecentFiles = $originalRecentFiles
+    }
+
+    # Both functions call Save-Settings, which writes the developer's real
+    # settings.json. Mocking it inside RecentFiles' module scope stops that
+    # write from ever happening while still letting us assert it was (or was
+    # not) called.
+    Mock -ModuleName RecentFiles -CommandName Save-Settings -MockWith { }
+
+    It "puts the entry in `$global:RecentFiles" {
+        $global:RecentFiles = @()
+        Add-RecentFile -Path "C:\a.mp4" -Job "Trim"
+        $global:RecentFiles.Count | Should Be 1
+        $global:RecentFiles[0].Path | Should Be "C:\a.mp4"
+    }
+
+    It "moves an existing path to the top instead of duplicating it on a second add" {
+        $global:RecentFiles = @()
+        Add-RecentFile -Path "C:\a.mp4" -Job "Trim"
+        Add-RecentFile -Path "C:\b.mp4" -Job "Trim"
+        Add-RecentFile -Path "C:\a.mp4" -Job "Compress"
+        $global:RecentFiles.Count | Should Be 2
+        $global:RecentFiles[0].Path | Should Be "C:\a.mp4"
+        $global:RecentFiles[0].Job | Should Be "Compress"
+    }
+
+    It "drops the named entry on Remove-RecentFile" {
+        $global:RecentFiles = @()
+        Add-RecentFile -Path "C:\a.mp4" -Job "Trim"
+        Add-RecentFile -Path "C:\b.mp4" -Job "Trim"
+        Remove-RecentFile -Path "C:\a.mp4"
+        $global:RecentFiles.Count | Should Be 1
+        $global:RecentFiles[0].Path | Should Be "C:\b.mp4"
+    }
+
+    It "does not call Save-Settings when -NoSave is passed" {
+        $global:RecentFiles = @()
+        Add-RecentFile -Path "C:\a.mp4" -Job "Trim" -NoSave
+        # -Scope It: without it, Assert-MockCalled counts every call made anywhere
+        # in this Describe block, including the plain (non -NoSave) adds in the
+        # earlier It blocks above.
+        Assert-MockCalled -ModuleName RecentFiles -CommandName Save-Settings -Times 0 -Scope It
+    }
+
+    It "calls Save-Settings when -NoSave is not passed" {
+        $global:RecentFiles = @()
+        Add-RecentFile -Path "C:\a.mp4" -Job "Trim"
+        Assert-MockCalled -ModuleName RecentFiles -CommandName Save-Settings -Times 1 -Scope It
+    }
+}
