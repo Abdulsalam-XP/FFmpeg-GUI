@@ -514,6 +514,17 @@ try {
         }.GetNewClosure())
     }
 
+    # Both the source and the output are recorded, as separate rows: the two common
+    # follow-ups are running a different job on the same original, and chaining a
+    # second job onto the result. Order matters -- the output is added last so it
+    # lands on top with the LATEST pill.
+    $recordJob = {
+        param($JobName, $SourcePath, $OutputPath)
+        Add-RecentFile -Path $SourcePath -Job $JobName
+        Add-RecentFile -Path $OutputPath -Job $JobName
+        Update-AllRecentLists
+    }
+
     # ---------------- Compress ----------------
     $textCompressMeta = $panelCompress.FindName("TextCompressMeta")
     $buttonCompressStart = $panelCompress.FindName("ButtonCompressStart")
@@ -625,7 +636,8 @@ try {
         $selected = ($presetControls.GetEnumerator() | Where-Object { $_.Value.IsChecked } | Select-Object -First 1)
         if (-not $selected) { return }
         Register-Job (Compress-VideoAsync -Context $ctx -InputFile $script:CompressInputFile `
-            -Preset $selected.Key -VideoProps $script:CompressVideoProps)
+            -Preset $selected.Key -VideoProps $script:CompressVideoProps `
+            -OnFinished { param($src, $out) & $recordJob "Compress" $src $out }.GetNewClosure())
     })
 
     # GPU mode is offered only where it can actually be used, same as the console version.
@@ -677,7 +689,8 @@ try {
         $sysIndex = [Math]::Max(0, $panelMerge.FindName("ComboSystemVolume").SelectedIndex)
         $micIndex = [Math]::Max(0, $panelMerge.FindName("ComboMicVolume").SelectedIndex)
         Register-Job (Merge-AudioStreamsAsync -Context $ctx -InputVideo $script:MergeInputFile `
-            -SystemVolume $volumeMap[$sysIndex] -MicVolume $volumeMap[$micIndex])
+            -SystemVolume $volumeMap[$sysIndex] -MicVolume $volumeMap[$micIndex] `
+            -OnFinished { param($src, $out) & $recordJob "Merge Audio" $src $out }.GetNewClosure())
     })
 
     # ---------------- Trim ----------------
@@ -742,7 +755,8 @@ try {
         }
 
         $mode = if ($panelTrim.FindName("RadioTrimBefore").IsChecked) { "Before" } else { "After" }
-        Register-Job (Split-VideoAsync -Context $ctx -InputFile $script:TrimInputFile -Mode $mode -Timestamp $timestamp)
+        Register-Job (Split-VideoAsync -Context $ctx -InputFile $script:TrimInputFile -Mode $mode -Timestamp $timestamp `
+            -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
     })
 
     # ---------------- YouTube MP3 ----------------

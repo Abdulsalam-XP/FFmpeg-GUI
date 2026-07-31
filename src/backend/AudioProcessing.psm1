@@ -10,7 +10,13 @@ function Merge-AudioStreamsAsync {
         [Parameter(Mandatory = $true)][hashtable]$Context,
         [Parameter(Mandatory = $true)][string]$InputVideo,
         [double]$SystemVolume = 1.0,
-        [double]$MicVolume = 1.0
+        [double]$MicVolume = 1.0,
+        # Invoked with the source and output paths after a successful run. A caller
+        # scriptblock rather than a call to Add-RecentFile by name: this runs from
+        # UI-WPF.psm1's module scope, where an unqualified call would not resolve --
+        # the same trap documented for ConvertFrom-FFmpegProgressLine below. A
+        # scriptblock carries its own session state and sidesteps it.
+        [scriptblock]$OnFinished = $null
     )
 
     $durationOutput = & $ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $InputVideo 2>&1
@@ -71,7 +77,10 @@ function Merge-AudioStreamsAsync {
             if ($startButton) { $startButton.IsEnabled = $true }
             if ($dropzone) { $dropzone.IsEnabled = $true; $dropzone.AllowDrop = $true }
             if ($dropCaption) { $dropCaption.Text = "Drag and drop a multi-stream video here" }
-            if ($exitCode -eq 0) { $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00" }
+            if ($exitCode -eq 0) {
+                $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00"
+                if ($OnFinished) { & $OnFinished $InputVideo $outputFile }
+            }
         }.GetNewClosure()
 
     if ($startButton) { $startButton.IsEnabled = $false }
