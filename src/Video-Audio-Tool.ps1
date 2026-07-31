@@ -45,6 +45,7 @@ $requiredModules = @(
     "backend\UI.psm1",
     "frontend\UI-WPF.psm1",
     "backend\Settings.psm1",
+    "backend\RecentFiles.psm1",
     "backend\VideoProcessing.psm1",
     "backend\AudioProcessing.psm1",
     "backend\YouTubeDownload.psm1",
