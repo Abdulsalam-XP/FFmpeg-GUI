@@ -126,6 +126,14 @@
                         </StackPanel>
                     </Button>
 
+                    <Border x:Name="CardRecentCompress" Style="{StaticResource RecentCardStyle}"
+                            Visibility="Collapsed" Margin="0,0,0,26">
+                        <StackPanel>
+                            <TextBlock Text="OR PICK A RECENT FILE" Style="{StaticResource RecentLabelStyle}"/>
+                            <StackPanel x:Name="PanelRecentCompress"/>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Error text for an unreadable file still needs somewhere to go; it
                          reuses this block, which is why it is not inside the card. -->
                     <TextBlock x:Name="TextCompressMeta" Text="No file selected" FontSize="12"
@@ -284,6 +292,14 @@
                         </StackPanel>
                     </Button>
 
+                    <Border x:Name="CardRecentMerge" Style="{StaticResource RecentCardStyle}"
+                            Visibility="Collapsed" Margin="0,0,0,26">
+                        <StackPanel>
+                            <TextBlock Text="OR PICK A RECENT FILE" Style="{StaticResource RecentLabelStyle}"/>
+                            <StackPanel x:Name="PanelRecentMerge"/>
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock x:Name="TextMergeMeta" Text="No file selected" FontSize="12"
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
                                Margin="0,0,0,14"/>
@@ -338,6 +354,14 @@
                             </Border>
                         </StackPanel>
                     </Button>
+
+                    <Border x:Name="CardRecentTrim" Style="{StaticResource RecentCardStyle}"
+                            Visibility="Collapsed" Margin="0,0,0,26">
+                        <StackPanel>
+                            <TextBlock Text="OR PICK A RECENT FILE" Style="{StaticResource RecentLabelStyle}"/>
+                            <StackPanel x:Name="PanelRecentTrim"/>
+                        </StackPanel>
+                    </Border>
 
                     <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="12"
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
