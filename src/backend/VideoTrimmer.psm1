@@ -6,6 +6,36 @@ Import-Module "$PSScriptRoot/UI.psm1"
 Import-Module "$PSScriptRoot/VideoProcessing.psm1"
 Import-Module "$PSScriptRoot/ToolPaths.psm1"
 
+# Keyframe times for the trim timeline. Cuts can only start on a keyframe without
+# re-encoding, so the timeline snaps to these and the panel reports their spacing --
+# on the NVIDIA DVR recordings this app is used with, that spacing is 0.25s, which is
+# why the editor re-encodes nothing at all.
+function ConvertFrom-KeyframeOutput {
+    param([string[]]$Lines)
+
+    $times = @()
+    foreach ($line in @($Lines)) {
+        if (-not $line) { continue }
+        # csv=p=0 emits "12.345000," with a trailing comma; stderr noise can be
+        # interleaved because ffprobe writes warnings to the same captured stream.
+        $text = ($line -replace ',', '').Trim()
+        if ($text -notmatch '^\d+(\.\d+)?$') { continue }
+        $times += [double]$text
+    }
+    return ,@($times | Sort-Object)
+}
+
+function Get-KeyframeTimes {
+    param([Parameter(Mandatory = $true)][string]$InputFile)
+
+    $ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    # -skip_frame nokey decodes only keyframes. pts_time, NOT pkt_pts_time: the latter
+    # was removed in the bundled ffprobe build and silently returns nothing.
+    $raw = & $ffprobe -v error -select_streams v:0 -skip_frame nokey `
+        -show_entries frame=pts_time -of csv=p=0 $InputFile 2>&1
+    return ,(ConvertFrom-KeyframeOutput -Lines @($raw | ForEach-Object { "$_" }))
+}
+
 function Split-VideoAsync {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Context,
@@ -88,4 +118,4 @@ function Split-VideoAsync {
     return $process
 }
 
-Export-ModuleMember -Function Split-VideoAsync
+Export-ModuleMember -Function Split-VideoAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes
