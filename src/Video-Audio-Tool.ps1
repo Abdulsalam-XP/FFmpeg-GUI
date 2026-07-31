@@ -758,24 +758,158 @@ try {
     # ---------------- Trim ----------------
     $textTrimMeta = $panelTrim.FindName("TextTrimMeta")
     $cardTrim = $panelTrim.FindName("CardTrimVideo")
+
+    $cardTrimEditor      = $panelTrim.FindName("CardTrimEditor")
+    $mediaTrimPreview    = $panelTrim.FindName("MediaTrimPreview")
+    $buttonTrimPlay      = $panelTrim.FindName("ButtonTrimPlay")
+    $textTrimPosition    = $panelTrim.FindName("TextTrimPosition")
+    $canvasTrimTimeline  = $panelTrim.FindName("CanvasTrimTimeline")
+    $textTrimPieces      = $panelTrim.FindName("TextTrimPieces")
+    $textTrimSelection   = $panelTrim.FindName("TextTrimSelection")
+    $textTrimAccuracy    = $panelTrim.FindName("TextTrimAccuracy")
+    $buttonTrimSplit     = $panelTrim.FindName("ButtonTrimSplit")
+    $buttonTrimDelete    = $panelTrim.FindName("ButtonTrimDelete")
+    $buttonTrimUndo      = $panelTrim.FindName("ButtonTrimUndo")
+    $buttonTrimExport    = $panelTrim.FindName("ButtonTrimExport")
+
+    # An install updated in place can run new code against old XAML, in which case every
+    # lookup above is $null and the first handler to fire takes the app down. Same guard
+    # as Update-RecentList carries, for the same reason.
+    $script:TrimEditorReady = ($null -ne $cardTrimEditor -and $null -ne $canvasTrimTimeline -and $null -ne $mediaTrimPreview)
+
+    # Replaced in full by Task 6.
+    function Update-TrimTimeline { if (-not $script:TrimEditorReady) { return } }
+
+    function Format-TrimTime {
+        param([double]$Seconds)
+        $ts = [timespan]::FromSeconds([math]::Max(0, $Seconds))
+        return ("{0:D2}:{1:D2}.{2:D3}" -f $ts.Minutes, $ts.Seconds, $ts.Milliseconds)
+    }
+
+    function Update-TrimPosition {
+        $textTrimPosition.Text = "$(Format-TrimTime $script:TrimPlayhead) / $(Format-TrimTime $script:TrimDuration)"
+    }
+
+    # Small write-through so the async-read tick handler below never assigns $script:
+    # directly from inside its own GetNewClosure()'d block. GetNewClosure() rebinds bare
+    # $script: writes into that block's own private dynamic module -- the same failure
+    # mode as the -OnFile note above -- so a plain top-level function is what actually
+    # makes the write visible to Update-TrimTimeline and the rest of the panel.
+    function Set-TrimKeyframes {
+        param([double[]]$Keyframes)
+        $script:TrimKeyframes = $Keyframes
+    }
+
+    # Reads keyframes off the UI thread: on a long recording this decodes the whole index
+    # and would otherwise freeze the window. Until it lands, snapping is inactive and the
+    # accuracy line stays blank -- the editor is usable throughout.
+    function Start-TrimKeyframeRead {
+        param([string]$Path)
+
+        $textTrimAccuracy.Text = "reading keyframes..."
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $file)
+            Import-Module $modulePath -Force
+            Get-KeyframeTimes -InputFile $file
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($Path) | Out-Null
+
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(250)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            # Kept as a local rather than re-read from $script: afterwards -- inside this
+            # closure $script: writes and reads both resolve against GetNewClosure()'s own
+            # private module, not the real script scope, so re-reading here would risk
+            # picking up that private copy instead of what Set-TrimKeyframes just wrote.
+            $keyframes = try { @($ps.EndInvoke($handle)) } catch { @() }
+            $ps.Dispose()
+            Set-TrimKeyframes -Keyframes $keyframes
+            if ($keyframes.Count -gt 1) {
+                $gaps = for ($i = 1; $i -lt $keyframes.Count; $i++) {
+                    $keyframes[$i] - $keyframes[$i-1]
+                }
+                $avg = ($gaps | Measure-Object -Average).Average
+                $textTrimAccuracy.Text = ("cuts land on the nearest keyframe, every {0:N2}s in this file" -f $avg)
+            } else {
+                $textTrimAccuracy.Text = "keyframes unknown; cuts may shift"
+            }
+        }.GetNewClosure())
+        $watcher.Start()
+    }
+
+    # Drives the playhead while playing. A timer rather than a MediaElement event because
+    # MediaElement raises nothing per frame -- Position must be polled.
+    #
+    # No GetNewClosure() here, deliberately -- same reasoning as the tool-install
+    # OnComplete block below: this writes $script:TrimPlayhead directly, and a closure
+    # would rebind that write into its own private module where Update-TrimPosition (a
+    # real top-level function) would never see it. Nothing here needs closure capture
+    # anyway: this block is defined at the top-level try scope, which outlives the app,
+    # so $mediaTrimPreview and friends resolve through the normal scope chain.
+    $script:TrimTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:TrimTimer.Interval = [timespan]::FromMilliseconds(50)
+    $script:TrimTimer.Add_Tick({
+        $script:TrimPlayhead = $mediaTrimPreview.Position.TotalSeconds
+        Update-TrimPosition
+        Update-TrimTimeline
+    })
+
+    $buttonTrimPlay.Add_Click({
+        if ($buttonTrimPlay.Content -eq "Play") {
+            $mediaTrimPreview.Play()
+            $buttonTrimPlay.Content = "Pause"
+            $script:TrimTimer.Start()
+        } else {
+            $mediaTrimPreview.Pause()
+            $buttonTrimPlay.Content = "Play"
+            $script:TrimTimer.Stop()
+        }
+    }.GetNewClosure())
+
+    $mediaTrimPreview.Add_MediaEnded({
+        $mediaTrimPreview.Pause()
+        $buttonTrimPlay.Content = "Play"
+        $script:TrimTimer.Stop()
+    }.GetNewClosure())
+
     # Extracted to a variable so the recent-files rows can invoke the identical
     # handler. Still no GetNewClosure() -- see the note above about $script: writes
     # landing in a dynamic module and silently disabling the start button.
     $onTrimFile = {
         param($path)
-        $script:TrimInputFile = $path
+        if (-not $script:TrimEditorReady) { return $false }
+
         $props = Get-VideoProperties -inputFile $path
-        # Still set even when null: the timestamp validation reads it and treats a null
-        # total as "length unknown" rather than rejecting outright.
-        $script:TrimTotalSeconds = if ($props) { $props.Duration.TotalSeconds } else { $null }
         if (-not $props) {
             Show-PanelMessage -Block $textTrimMeta -IsError `
                 -Text "Could not read that file. Is it a valid video?"
-            Hide-VideoCard -Card $cardTrim
+            $cardTrimEditor.Visibility = "Collapsed"
             return $false
         }
+
+        $script:TrimInputFile = $path
+        $script:TrimDuration = $props.Duration.TotalSeconds
+        $script:TrimCutList = New-CutList -Duration $script:TrimDuration
+        $script:TrimUndoStack = New-Object System.Collections.ArrayList
+        $script:TrimSelected = -1
+        $script:TrimPlayhead = 0.0
+        $script:TrimViewStart = 0.0
+        $script:TrimViewSpan = $script:TrimDuration
+        # Empty until the async read lands; Find-NearestKeyframe treats that as "no
+        # snapping" rather than "cannot cut".
+        $script:TrimKeyframes = @()
+
         Show-PanelMessage -Block $textTrimMeta -Text ""
-        Set-VideoCard -Card $cardTrim -Path $path -Properties $props -Context $ctx
+        $cardTrimEditor.Visibility = "Visible"
+        $mediaTrimPreview.Source = New-Object System.Uri($path)
+        $mediaTrimPreview.Pause()
+        $buttonTrimExport.IsEnabled = $true
+        Update-TrimPosition
+        Update-TrimTimeline
+        Start-TrimKeyframeRead -Path $path
         return $true
     }
 
