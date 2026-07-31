@@ -883,10 +883,16 @@
         </Setter>
     </Style>
 
+    <!-- Deliberately the same construction as the DETECTED chip on the GPU card
+         (MainWindow.xaml): tinted fill, hairline border, 9 radius, 7,1.5 padding.
+         A solid gold fill was tried first and read as a heavy blob next to the
+         muted row text, louder than anything else on the panel. -->
     <Style x:Key="RecentPillStyle" TargetType="Border">
-        <Setter Property="Background" Value="{StaticResource BrushGoldValue}"/>
-        <Setter Property="CornerRadius" Value="20"/>
-        <Setter Property="Padding" Value="7,2"/>
+        <Setter Property="Background" Value="#1AD3A24C"/>
+        <Setter Property="BorderBrush" Value="#5CD3A24C"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="9"/>
+        <Setter Property="Padding" Value="7,1.5"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 

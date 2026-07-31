@@ -425,11 +425,13 @@ try {
                 $pill = New-Object System.Windows.Controls.Border
                 $pill.Style = $ctx.Window.FindResource("RecentPillStyle")
                 $pillText = New-Object System.Windows.Controls.TextBlock
-                $pillText.Text = "LATEST"
-                $pillText.Foreground = $ctx.Window.FindResource("BrushShellBase")
+                $pillText.Text = "MOST RECENT"
+                # Gold text on a gold tint, matching the DETECTED chip, rather than dark
+                # text on solid gold: the filled version dominated the row it labels.
+                $pillText.Foreground = $ctx.Window.FindResource("BrushGoldValue")
                 $pillText.FontFamily = $ctx.Window.FindResource("FontChrome")
-                $pillText.FontSize = 8.5
-                $pillText.FontWeight = "Bold"
+                $pillText.FontSize = 9.5
+                $pillText.FontWeight = "SemiBold"
                 $pill.Child = $pillText
                 [System.Windows.Controls.Grid]::SetColumn($pill, 1)
                 $grid.Children.Add($pill) | Out-Null
