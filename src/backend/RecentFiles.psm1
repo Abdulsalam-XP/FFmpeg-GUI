@@ -63,10 +63,14 @@ function Format-RecentAge {
 function Get-RecentFiles {
     # Absent on first run and in every settings.json written before this feature,
     # same as ToolCheckCache -- a null here is normal rather than a fault.
-    # Unary comma here too: an unwrapped `return @()` still unrolls to $null,
-    # the same trap as Add-RecentEntry/Remove-RecentEntry above.
-    if (-not $global:RecentFiles) { return ,@() }
-    return ,@($global:RecentFiles)
+    # No unary comma here: every caller (Update-RecentList included) wraps this
+    # call in @(...) to get array semantics. A `,@(...)` return would emit the
+    # whole array as a single pipeline object, which @(...) at the call site
+    # then wraps *again* -- a one-element array whose only element is the
+    # entire list. Emitting elements normally is what lets @(Get-RecentFiles)
+    # do the right thing at every size, including zero and one.
+    if (-not $global:RecentFiles) { return @() }
+    return @($global:RecentFiles)
 }
 
 function Add-RecentFile {
