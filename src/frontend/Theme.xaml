@@ -839,4 +839,55 @@
         </Setter>
     </Style>
 
+    <!-- Recent files list. Sits under each dropzone as an alternative to browsing;
+         the rows themselves are built in Video-Audio-Tool.ps1 rather than declared,
+         so the design lives here in one place instead of nine times in MainWindow. -->
+    <Style x:Key="RecentCardStyle" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="12"/>
+        <Setter Property="Background" Value="{StaticResource BrushCardBackground}"/>
+        <Setter Property="Padding" Value="12,11"/>
+    </Style>
+
+    <Style x:Key="RecentLabelStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Margin" Value="4,0,0,8"/>
+    </Style>
+
+    <!-- Templated down to nothing so a row reads as a list item, not a button. The
+         hover tint is the only affordance, which is why Cursor is set as well. -->
+    <Style x:Key="RecentRowButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="7,6"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="RowFill" CornerRadius="8" Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="RowFill" Property="Background" Value="#1FD3A24C"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="RecentPillStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="CornerRadius" Value="20"/>
+        <Setter Property="Padding" Value="7,2"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
 </ResourceDictionary>
