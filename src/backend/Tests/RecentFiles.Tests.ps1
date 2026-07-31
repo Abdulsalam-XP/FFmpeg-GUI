@@ -88,3 +88,27 @@ Describe "Format-RecentAge" {
         Format-RecentAge -When $now.AddMinutes(5) -Now $now | Should Be "just now"
     }
 }
+
+Describe "Get-RecentFiles" {
+    # Save/restore so these tests cannot leak $global:RecentFiles state into
+    # the other Describe blocks (or into a real session running the suite).
+    $originalRecentFiles = $global:RecentFiles
+
+    AfterEach {
+        $global:RecentFiles = $originalRecentFiles
+    }
+
+    It "returns an empty array, not null, when the global is unset" {
+        $global:RecentFiles = $null
+        $result = Get-RecentFiles
+        ($null -eq $result) | Should Be $false
+        @($result).Count | Should Be 0
+    }
+
+    It "returns a one-element array for a single-entry global" {
+        $global:RecentFiles = Add-RecentEntry -Entries @() -Path "C:\a.mp4" -Job "Trim" -When $when
+        $result = Get-RecentFiles
+        $result.Count | Should Be 1
+        $result[0].Path | Should Be "C:\a.mp4"
+    }
+}

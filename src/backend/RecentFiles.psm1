@@ -63,7 +63,9 @@ function Format-RecentAge {
 function Get-RecentFiles {
     # Absent on first run and in every settings.json written before this feature,
     # same as ToolCheckCache -- a null here is normal rather than a fault.
-    if (-not $global:RecentFiles) { return @() }
+    # Unary comma here too: an unwrapped `return @()` still unrolls to $null,
+    # the same trap as Add-RecentEntry/Remove-RecentEntry above.
+    if (-not $global:RecentFiles) { return ,@() }
     return ,@($global:RecentFiles)
 }
 
