@@ -10,17 +10,28 @@ Import-Module "$PSScriptRoot/ToolPaths.psm1"
 # re-encoding, so the timeline snaps to these and the panel reports their spacing --
 # on the NVIDIA DVR recordings this app is used with, that spacing is 0.25s, which is
 # why the editor re-encodes nothing at all.
+#
+# Lines come from ffprobe's packet index (see Get-KeyframeTimes below), each shaped
+# "<pts_time>,<flags>" e.g. "0.249878,K__" -- the packet index already stores every
+# packet, not just keyframes, so a packet is only kept if its flags contain 'K'.
+# Filtering lives here rather than between the ffprobe call and this function so the
+# one place that is unit tested is the one place that decides what counts as a
+# keyframe -- Get-KeyframeTimes stays a thin, untested shell-out.
 function ConvertFrom-KeyframeOutput {
     param([string[]]$Lines)
 
     $times = @()
     foreach ($line in @($Lines)) {
         if (-not $line) { continue }
-        # csv=p=0 emits "12.345000," with a trailing comma; stderr noise can be
-        # interleaved because ffprobe writes warnings to the same captured stream.
-        $text = ($line -replace ',', '').Trim()
-        if ($text -notmatch '^\d+(\.\d+)?$') { continue }
-        $times += [double]$text
+        $text = $line.Trim()
+        if (-not $text) { continue }
+        $parts = $text -split ','
+        if ($parts.Count -lt 2) { continue }
+        $timeText = $parts[0].Trim()
+        $flags = $parts[1].Trim()
+        if ($flags -notmatch 'K') { continue }
+        if ($timeText -notmatch '^\d+(\.\d+)?$') { continue }
+        $times += [double]$timeText
     }
     return ,@($times | Sort-Object)
 }
@@ -29,10 +40,13 @@ function Get-KeyframeTimes {
     param([Parameter(Mandatory = $true)][string]$InputFile)
 
     $ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
-    # -skip_frame nokey decodes only keyframes. pts_time, NOT pkt_pts_time: the latter
-    # was removed in the bundled ffprobe build and silently returns nothing.
-    $raw = & $ffprobe -v error -select_streams v:0 -skip_frame nokey `
-        -show_entries frame=pts_time -of csv=p=0 $InputFile 2>&1
+    # Reads the container's packet index directly instead of decoding frames.
+    # -skip_frame nokey + frame=pts_time (the original approach) decodes every
+    # keyframe to report a timestamp the packet index already stores -- ~26x slower
+    # for identical values. packet=pts_time,flags returns every packet; flags
+    # contains 'K' for a keyframe packet, filtered out in ConvertFrom-KeyframeOutput.
+    $raw = & $ffprobe -v error -select_streams v:0 `
+        -show_entries packet=pts_time,flags -of csv=p=0 $InputFile 2>&1
     return ,(ConvertFrom-KeyframeOutput -Lines @($raw | ForEach-Object { "$_" }))
 }
 
