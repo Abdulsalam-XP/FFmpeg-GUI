@@ -757,7 +757,6 @@ try {
 
     # ---------------- Trim ----------------
     $textTrimMeta = $panelTrim.FindName("TextTrimMeta")
-    $cardTrim = $panelTrim.FindName("CardTrimVideo")
 
     $cardTrimEditor      = $panelTrim.FindName("CardTrimEditor")
     $mediaTrimPreview    = $panelTrim.FindName("MediaTrimPreview")
@@ -849,31 +848,37 @@ try {
     # real top-level function) would never see it. Nothing here needs closure capture
     # anyway: this block is defined at the top-level try scope, which outlives the app,
     # so $mediaTrimPreview and friends resolve through the normal scope chain.
-    $script:TrimTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $script:TrimTimer.Interval = [timespan]::FromMilliseconds(50)
-    $script:TrimTimer.Add_Tick({
-        $script:TrimPlayhead = $mediaTrimPreview.Position.TotalSeconds
-        Update-TrimPosition
-        Update-TrimTimeline
-    })
+    #
+    # Everything below is gated on $script:TrimEditorReady: on XAML that predates Task 4,
+    # $buttonTrimPlay and $mediaTrimPreview are $null, and .Add_Click()/.Add_MediaEnded()
+    # on a $null reference throws during startup, before the window ever shows.
+    if ($script:TrimEditorReady) {
+        $script:TrimTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:TrimTimer.Interval = [timespan]::FromMilliseconds(50)
+        $script:TrimTimer.Add_Tick({
+            $script:TrimPlayhead = $mediaTrimPreview.Position.TotalSeconds
+            Update-TrimPosition
+            Update-TrimTimeline
+        })
 
-    $buttonTrimPlay.Add_Click({
-        if ($buttonTrimPlay.Content -eq "Play") {
-            $mediaTrimPreview.Play()
-            $buttonTrimPlay.Content = "Pause"
-            $script:TrimTimer.Start()
-        } else {
+        $buttonTrimPlay.Add_Click({
+            if ($buttonTrimPlay.Content -eq "Play") {
+                $mediaTrimPreview.Play()
+                $buttonTrimPlay.Content = "Pause"
+                $script:TrimTimer.Start()
+            } else {
+                $mediaTrimPreview.Pause()
+                $buttonTrimPlay.Content = "Play"
+                $script:TrimTimer.Stop()
+            }
+        }.GetNewClosure())
+
+        $mediaTrimPreview.Add_MediaEnded({
             $mediaTrimPreview.Pause()
             $buttonTrimPlay.Content = "Play"
             $script:TrimTimer.Stop()
-        }
-    }.GetNewClosure())
-
-    $mediaTrimPreview.Add_MediaEnded({
-        $mediaTrimPreview.Pause()
-        $buttonTrimPlay.Content = "Play"
-        $script:TrimTimer.Stop()
-    }.GetNewClosure())
+        }.GetNewClosure())
+    }
 
     # Extracted to a variable so the recent-files rows can invoke the identical
     # handler. Still no GetNewClosure() -- see the note above about $script: writes
