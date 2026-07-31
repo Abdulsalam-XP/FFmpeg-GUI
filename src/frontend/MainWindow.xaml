@@ -366,20 +366,61 @@
                     <TextBlock x:Name="TextTrimMeta" Text="No file selected" FontSize="12"
                                Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontData}"
                                Margin="0,0,0,14"/>
-                    <ContentControl x:Name="CardTrimVideo" Style="{StaticResource VideoCardStyle}"
-                                    Visibility="Collapsed" Margin="0,0,0,26"/>
-
-                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
+                    <Border x:Name="CardTrimEditor" Style="{StaticResource CardBorderStyle}"
+                            Visibility="Collapsed" Margin="0,0,0,26">
                         <StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
-                                <RadioButton x:Name="RadioTrimBefore" Content="Remove content BEFORE timestamp" GroupName="TrimMode" IsChecked="True"
-                                             Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" FontSize="12.5" Margin="0,0,24,0"/>
-                                <RadioButton x:Name="RadioTrimAfter" Content="Remove content AFTER timestamp" GroupName="TrimMode"
-                                             Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" FontSize="12.5"/>
+                            <MediaElement x:Name="MediaTrimPreview" Height="300" Stretch="Uniform"
+                                          LoadedBehavior="Manual" UnloadedBehavior="Manual"
+                                          ScrubbingEnabled="True"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,14">
+                                <Button x:Name="ButtonTrimPlay" Content="Play" Style="{StaticResource PresetButtonStyle}" Width="90"/>
+                                <TextBlock x:Name="TextTrimPosition" Text="00:00.000 / 00:00.000"
+                                           FontFamily="{StaticResource FontData}" FontSize="11.5"
+                                           Foreground="{StaticResource BrushGoldValue}"
+                                           VerticalAlignment="Center" Margin="14,0,0,0"/>
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBox x:Name="TextTrimTimestamp" Width="140" Padding="8,6" HorizontalAlignment="Left" FontFamily="{StaticResource FontData}" Text="00:00:00"/>
-                                <Button x:Name="ButtonTrimStart" Content="Trim" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="16,0,0,0"/>
+
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="64" ClipToBounds="True">
+                                <Canvas x:Name="CanvasTrimTimeline" Background="Transparent"/>
+                            </Border>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock x:Name="TextTrimPieces" Text="1 piece"
+                                           FontFamily="{StaticResource FontData}" FontSize="10"
+                                           Foreground="{StaticResource BrushTextMuted}"/>
+                                <TextBlock x:Name="TextTrimSelection" Text="nothing selected"
+                                           FontFamily="{StaticResource FontData}" FontSize="10"
+                                           Foreground="{StaticResource BrushTextMuted}" Margin="16,0,0,0"/>
+                                <TextBlock x:Name="TextTrimAccuracy" Text=""
+                                           FontFamily="{StaticResource FontData}" FontSize="10"
+                                           Foreground="{StaticResource BrushTextMuted}" Margin="16,0,0,0"/>
+                                <TextBlock Text="ctrl + scroll to zoom" FontFamily="{StaticResource FontChrome}"
+                                           FontSize="9.5" FontStyle="Italic"
+                                           Foreground="{StaticResource BrushTextMuted}" Margin="16,0,0,0"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Split"/>
+                                        <TextBlock Text="C" Style="{StaticResource ShortcutHintStyle}"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimDelete" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="12,0,0,0" IsEnabled="False">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Delete"/>
+                                        <TextBlock Text="DEL" Style="{StaticResource ShortcutHintStyle}"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimUndo" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Undo"/>
+                                        <TextBlock Text="Ctrl+Z" Style="{StaticResource ShortcutHintStyle}"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimExport" Content="Export" Style="{StaticResource PrimaryButtonStyle}"
+                                        Width="130" Margin="24,0,0,0" IsEnabled="False"/>
                             </StackPanel>
                         </StackPanel>
                     </Border>

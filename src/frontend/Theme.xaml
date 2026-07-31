@@ -896,5 +896,44 @@
         <Setter Property="Margin" Value="10,0,0,0"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
+    <!-- Trim editor. The timeline is drawn in code from the cut list, so these styles
+         describe one piece, one cut line and the playhead rather than a whole control. -->
+    <Style x:Key="TimelineTrackStyle" TargetType="Border">
+        <Setter Property="Background" Value="#0A1120"/>
+        <Setter Property="CornerRadius" Value="6"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+
+    <Style x:Key="TimelinePieceStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="#1F3F7A"/>
+        <Setter Property="Stroke" Value="#2E2B4D95"/>
+        <Setter Property="StrokeThickness" Value="1"/>
+    </Style>
+
+    <Style x:Key="TimelinePieceSelectedStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="#3DD3A24C"/>
+        <Setter Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="StrokeThickness" Value="1.5"/>
+    </Style>
+
+    <Style x:Key="TimelineCutLineStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="Width" Value="2"/>
+    </Style>
+
+    <Style x:Key="TimelinePlayheadStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="{StaticResource BrushTextPrimary}"/>
+        <Setter Property="Width" Value="2"/>
+    </Style>
+
+    <!-- Greyed shortcut letter beside a button label. -->
+    <Style x:Key="ShortcutHintStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="9.5"/>
+        <Setter Property="Margin" Value="7,0,0,0"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
 
 </ResourceDictionary>
