@@ -249,7 +249,6 @@ try {
     $script:CompressVideoProps = $null
     $script:MergeInputFile = $null
     $script:TrimInputFile = $null
-    $script:TrimTotalSeconds = $null
     $script:YoutubeMP4Resolutions = @()
 
     # Tracks live child processes so the Settings screen can tell whether replacing a
@@ -763,6 +762,7 @@ try {
     $buttonTrimPlay      = $panelTrim.FindName("ButtonTrimPlay")
     $textTrimPosition    = $panelTrim.FindName("TextTrimPosition")
     $canvasTrimTimeline  = $panelTrim.FindName("CanvasTrimTimeline")
+    $canvasTrimRuler     = $panelTrim.FindName("CanvasTrimRuler")
     $textTrimPieces      = $panelTrim.FindName("TextTrimPieces")
     $textTrimSelection   = $panelTrim.FindName("TextTrimSelection")
     $textTrimAccuracy    = $panelTrim.FindName("TextTrimAccuracy")
@@ -776,17 +776,356 @@ try {
     # as Update-RecentList carries, for the same reason.
     $script:TrimEditorReady = ($null -ne $cardTrimEditor -and $null -ne $canvasTrimTimeline -and $null -ne $mediaTrimPreview)
 
-    # Replaced in full by Task 6.
-    function Update-TrimTimeline { if (-not $script:TrimEditorReady) { return } }
-
     function Format-TrimTime {
         param([double]$Seconds)
         $ts = [timespan]::FromSeconds([math]::Max(0, $Seconds))
         return ("{0:D2}:{1:D2}.{2:D3}" -f $ts.Minutes, $ts.Seconds, $ts.Milliseconds)
     }
 
+    # Compact ruler label -- the full MM:SS.mmm from Format-TrimTime is too busy repeated
+    # every tick. Sub-second intervals (deep zoom) keep one decimal; anything coarser drops
+    # the fraction entirely.
+    function Format-TrimRulerLabel {
+        param([double]$Seconds, [double]$Interval)
+        $ts = [timespan]::FromSeconds([math]::Max(0, $Seconds))
+        # Not [int]$ts.TotalMinutes: PowerShell's [int] cast on a double ROUNDS rather than
+        # truncates, so 45s (TotalMinutes 0.75) came out as "1:45" instead of "0:45".
+        # Hours*60 + Minutes is exact and needs no cast.
+        $totalMinutes = $ts.Hours * 60 + $ts.Minutes
+        if ($Interval -lt 1) {
+            return ("{0}:{1:D2}.{2}" -f $totalMinutes, $ts.Seconds, [int]($ts.Milliseconds / 100))
+        }
+        return ("{0}:{1:D2}" -f $totalMinutes, $ts.Seconds)
+    }
+
+    # Smallest "nice" interval that still keeps ruler labels legibly apart at the current
+    # zoom. $MinPixelGap is a target, not a guarantee -- the last tick before the view's
+    # right edge can land closer than that.
+    function Get-TrimRulerInterval {
+        param([double]$ViewSpanSeconds, [double]$CanvasWidth, [double]$MinPixelGap = 85)
+        $niceSteps = @(0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
+        if ($CanvasWidth -le 0 -or $ViewSpanSeconds -le 0) { return $niceSteps[0] }
+        $maxTicks = [math]::Max(1, $CanvasWidth / $MinPixelGap)
+        $rawInterval = $ViewSpanSeconds / $maxTicks
+        foreach ($step in $niceSteps) {
+            if ($step -ge $rawInterval) { return $step }
+        }
+        return $niceSteps[-1]
+    }
+
+    # Time and pixels are converted through the current view window, which is what zoom
+    # changes. Everything else in the panel works in seconds and never in pixels.
+    function Convert-TrimTimeToX {
+        param([double]$Seconds)
+        $w = $canvasTrimTimeline.ActualWidth
+        if ($script:TrimViewSpan -le 0 -or $w -le 0) { return 0 }
+        return (($Seconds - $script:TrimViewStart) / $script:TrimViewSpan) * $w
+    }
+
+    function Convert-TrimXToTime {
+        param([double]$X)
+        $w = $canvasTrimTimeline.ActualWidth
+        if ($w -le 0) { return 0 }
+        return $script:TrimViewStart + ($X / $w) * $script:TrimViewSpan
+    }
+
+    # The timeline is drawn compacted -- surviving pieces sit back-to-back with no gap,
+    # matching what Export actually produces, rather than at their real spread-out
+    # positions in the source file. These three converters are the seam between that
+    # compacted "timeline space" (what's drawn, zoomed, and clicked) and real "source
+    # space" (what Find-NearestKeyframe snaps against and what MediaElement.Position
+    # seeks). Everything in this panel that touches pixels works in timeline space now;
+    # everything that touches the actual file works in source space.
+    function Get-TrimTimelinePieces {
+        param([object[]]$Pieces)
+        $cursor = 0.0
+        $result = foreach ($p in @($Pieces)) {
+            $duration = $p.End - $p.Start
+            [PSCustomObject]@{
+                TimelineStart = $cursor
+                TimelineEnd   = $cursor + $duration
+                SourceStart   = $p.Start
+                SourceEnd     = $p.End
+            }
+            $cursor += $duration
+        }
+        return ,@($result)
+    }
+
+    # A source second that falls inside deleted footage (a "gap") snaps to the end of
+    # the nearest surviving piece before it -- there is no timeline position for footage
+    # that will not be in the export.
+    function Convert-TrimSourceToTimeline {
+        param([double]$SourceSeconds, [object[]]$TimelinePieces)
+        $pieces = @($TimelinePieces)
+        if ($pieces.Count -eq 0) { return 0 }
+        foreach ($p in $pieces) {
+            if ($SourceSeconds -ge $p.SourceStart -and $SourceSeconds -le $p.SourceEnd) {
+                return $p.TimelineStart + ($SourceSeconds - $p.SourceStart)
+            }
+        }
+        $before = @($pieces | Where-Object { $_.SourceEnd -le $SourceSeconds } | Select-Object -Last 1)
+        if ($before.Count -gt 0) { return $before[0].TimelineEnd }
+        return $pieces[0].TimelineStart
+    }
+
+    function Convert-TrimTimelineToSource {
+        param([double]$TimelineSeconds, [object[]]$TimelinePieces)
+        $pieces = @($TimelinePieces)
+        if ($pieces.Count -eq 0) { return 0 }
+        foreach ($p in $pieces) {
+            if ($TimelineSeconds -ge $p.TimelineStart -and $TimelineSeconds -le $p.TimelineEnd) {
+                return $p.SourceStart + ($TimelineSeconds - $p.TimelineStart)
+            }
+        }
+        # Timeline space has no gaps, so only clamping past either edge lands here.
+        if ($TimelineSeconds -lt $pieces[0].TimelineStart) { return $pieces[0].SourceStart }
+        return $pieces[-1].SourceEnd
+    }
+
+    # Single source of truth for "what are the pieces right now" -- every call site that
+    # used to read $script:TrimCutList directly now goes through this, so the @(...)
+    # unwrap guard (see the note in Update-TrimTimeline) and the timeline-space
+    # conversion only have to be right in one place.
+    function Get-TrimTimelineState {
+        $pieces = @(if ($null -eq $script:TrimCutList) { @() } else { @($script:TrimCutList) })
+        $timelinePieces = Get-TrimTimelinePieces -Pieces $pieces
+        $totalDuration = if ($timelinePieces.Count -gt 0) { $timelinePieces[-1].TimelineEnd } else { 0 }
+        return [PSCustomObject]@{
+            Pieces         = $pieces
+            TimelinePieces = $timelinePieces
+            TotalDuration  = $totalDuration
+        }
+    }
+
+    # Write-through helpers, for the same reason Set-TrimKeyframes exists: the handlers
+    # that call these are inside GetNewClosure()'d blocks (they must be -- they capture a
+    # per-piece $index), and a bare $script: write in there lands in the closure's own
+    # private module where the drawing code would never see it.
+    function Set-TrimSelection {
+        param([int]$Index)
+        $script:TrimSelected = $Index
+    }
+
+    function Set-TrimView {
+        param([double]$Start, [double]$Span)
+        $script:TrimViewStart = $Start
+        $script:TrimViewSpan = $Span
+    }
+
+    # Rebuilt from scratch on every change: a handful of pieces, so there is nothing to
+    # gain from diffing and no stale-element state to get wrong.
+    function Update-TrimTimeline {
+        if (-not $script:TrimEditorReady) { return }
+        $canvasTrimTimeline.Children.Clear()
+
+        $h = $canvasTrimTimeline.ActualHeight
+        if ($h -le 0) { $h = 62 }
+
+        # Not @($script:TrimCutList): before a file is picked that variable is $null, and
+        # @($null) is a ONE-element array holding $null, not an empty one. Without this the
+        # SizeChanged handler below -- which fires during first layout -- would draw a stray
+        # piece from a $null .Start/.End and the readout would claim "1 piece".
+        #
+        # Outer @(...) is load-bearing, not decorative: an if/else's output flows through
+        # the success stream, so a single-element array in either branch collapses back to
+        # a bare PSCustomObject on assignment -- then .Count is $null (PS 5.1 has no ETS
+        # Count on a scalar), the for-loop below never runs, and Export silently disables.
+        # Measured live: this was happening on every fresh file load, before any split.
+        $state = Get-TrimTimelineState
+        $pieces = $state.Pieces
+        $timelinePieces = $state.TimelinePieces
+
+        # A delete shrinks the total timeline duration. The view window (what zoom
+        # controls) does not shrink on its own, so without this the ruler and the empty
+        # canvas past the last piece would keep showing however much space the OLD,
+        # longer timeline used to span.
+        if ($state.TotalDuration -gt 0) {
+            if ($script:TrimViewSpan -gt $state.TotalDuration) { $script:TrimViewSpan = $state.TotalDuration }
+            if ($script:TrimViewStart + $script:TrimViewSpan -gt $state.TotalDuration) {
+                $script:TrimViewStart = [math]::Max(0, $state.TotalDuration - $script:TrimViewSpan)
+            }
+        }
+
+        for ($i = 0; $i -lt $pieces.Count; $i++) {
+            $tp = $timelinePieces[$i]
+            $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
+            $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
+            $width = [math]::Max(1, $x2 - $x1)
+
+            $rect = New-Object System.Windows.Shapes.Rectangle
+            $styleName = if ($i -eq $script:TrimSelected) { "TimelinePieceSelectedStyle" } else { "TimelinePieceStyle" }
+            $rect.Style = $ctx.Window.FindResource($styleName)
+            $rect.Width = $width
+            $rect.Height = $h - 8
+            $rect.RadiusX = 4; $rect.RadiusY = 4
+            [System.Windows.Controls.Canvas]::SetLeft($rect, $x1)
+            [System.Windows.Controls.Canvas]::SetTop($rect, 4)
+
+            # GetNewClosure is required: without it every piece captures the loop
+            # variable's final value and clicking any piece selects the last one. The
+            # selection write goes through Set-TrimSelection for the reason noted there.
+            #
+            # Deliberately NOT marking the event handled: the pieces cover the whole track,
+            # so swallowing it here would mean the canvas handler never runs and the track
+            # could not be scrubbed at all. A click both selects the piece and moves the
+            # playhead to where it landed.
+            $index = $i
+            $rect.Add_MouseLeftButtonDown({
+                Set-TrimSelection -Index $index
+                $buttonTrimDelete.IsEnabled = $true
+                Update-TrimSelectionText
+                Update-TrimTimeline
+            }.GetNewClosure())
+
+            $canvasTrimTimeline.Children.Add($rect) | Out-Null
+
+            # A cut line on every internal boundary.
+            if ($i -gt 0) {
+                $line = New-Object System.Windows.Shapes.Rectangle
+                $line.Style = $ctx.Window.FindResource("TimelineCutLineStyle")
+                $line.Height = $h
+                [System.Windows.Controls.Canvas]::SetLeft($line, $x1 - 1)
+                [System.Windows.Controls.Canvas]::SetTop($line, 0)
+                $canvasTrimTimeline.Children.Add($line) | Out-Null
+            }
+        }
+
+        $playheadTimeline = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $timelinePieces
+        $playX = Convert-TrimTimeToX -Seconds $playheadTimeline
+        if ($playX -ge 0 -and $playX -le $canvasTrimTimeline.ActualWidth) {
+            $head = New-Object System.Windows.Shapes.Rectangle
+            $head.Style = $ctx.Window.FindResource("TimelinePlayheadStyle")
+            $head.Height = $h
+            [System.Windows.Controls.Canvas]::SetLeft($head, $playX - 1)
+            [System.Windows.Controls.Canvas]::SetTop($head, 0)
+            $canvasTrimTimeline.Children.Add($head) | Out-Null
+        }
+
+        # Ruler: ticks + compact time labels below the track, the only way to read a
+        # position on the timeline without looking at the numeric readout above it.
+        # Redrawn from scratch alongside the track for the same reason the track is --
+        # a handful of ticks, nothing worth diffing.
+        if ($null -ne $canvasTrimRuler) {
+            $canvasTrimRuler.Children.Clear()
+            $rulerWidth = $canvasTrimTimeline.ActualWidth
+            if ($rulerWidth -gt 0 -and $script:TrimViewSpan -gt 0) {
+                $interval = Get-TrimRulerInterval -ViewSpanSeconds $script:TrimViewSpan -CanvasWidth $rulerWidth
+                $viewEnd = $script:TrimViewStart + $script:TrimViewSpan
+                $tickTime = [math]::Ceiling($script:TrimViewStart / $interval) * $interval
+                while ($tickTime -le $viewEnd) {
+                    $tx = Convert-TrimTimeToX -Seconds $tickTime
+                    if ($tx -ge 0 -and $tx -le $rulerWidth) {
+                        $tick = New-Object System.Windows.Shapes.Rectangle
+                        $tick.Style = $ctx.Window.FindResource("TimelineRulerTickStyle")
+                        [System.Windows.Controls.Canvas]::SetLeft($tick, $tx)
+                        [System.Windows.Controls.Canvas]::SetTop($tick, 0)
+                        $canvasTrimRuler.Children.Add($tick) | Out-Null
+
+                        $label = New-Object System.Windows.Controls.TextBlock
+                        $label.Text = Format-TrimRulerLabel -Seconds $tickTime -Interval $interval
+                        $label.FontFamily = $ctx.Window.FindResource("FontData")
+                        $label.FontSize = 11
+                        $label.Foreground = $ctx.Window.FindResource("BrushTextMuted")
+                        [System.Windows.Controls.Canvas]::SetLeft($label, $tx + 3)
+                        [System.Windows.Controls.Canvas]::SetTop($label, 7)
+                        $canvasTrimRuler.Children.Add($label) | Out-Null
+                    }
+                    $tickTime += $interval
+                }
+            }
+        }
+
+        $textTrimPieces.Text = if ($pieces.Count -eq 1) { "1 piece" } else { "$($pieces.Count) pieces" }
+        # The input-file test is not redundant with the count: it keeps Export disabled
+        # during the first layout pass, before anything has been picked.
+        $buttonTrimExport.IsEnabled = ($pieces.Count -gt 0 -and $null -ne $script:TrimInputFile)
+    }
+
+    function Update-TrimSelectionText {
+        if (-not $script:TrimEditorReady) { return }
+        $state = Get-TrimTimelineState
+        if ($script:TrimSelected -lt 0 -or $script:TrimSelected -ge $state.Pieces.Count) {
+            $textTrimSelection.Text = "nothing selected"
+            return
+        }
+        # Timeline-space bounds, matching the ruler and the drawn timeline (which are also
+        # timeline-space now) -- not the piece's real position in the source file.
+        $tp = $state.TimelinePieces[$script:TrimSelected]
+        $textTrimSelection.Text = ("selected {0} to {1} ({2:N2}s)" -f (Format-TrimTime $tp.TimelineStart), (Format-TrimTime $tp.TimelineEnd), ($tp.TimelineEnd - $tp.TimelineStart))
+    }
+
+    # Snapshot before every change. Cloning matters: the pieces are objects and a shallow
+    # copy of the array would let undo hand back a list whose contents were mutated.
+    function Push-TrimUndo {
+        $snapshot = @(@($script:TrimCutList) | ForEach-Object { [PSCustomObject]@{ Start = $_.Start; End = $_.End } })
+        [void]$script:TrimUndoStack.Add(@{ List = $snapshot; Selected = $script:TrimSelected })
+        $buttonTrimUndo.IsEnabled = $true
+    }
+
+    function Invoke-TrimSplit {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        # Snap first, so the cut line is drawn exactly where the file can be cut.
+        $at = Find-NearestKeyframe -Keyframes $script:TrimKeyframes -Seconds $script:TrimPlayhead
+        $before = @($script:TrimCutList).Count
+        $candidate = Split-CutList -List $script:TrimCutList -AtSeconds $at
+        # A split on an existing boundary or in a gap is a no-op; do not spend an undo
+        # slot on a keystroke that changed nothing.
+        if (@($candidate).Count -eq $before) { return }
+        Push-TrimUndo
+        $script:TrimCutList = $candidate
+        # The old selection indexed the pre-split list, so it now points at the wrong
+        # piece. Dropping it is the honest option -- silently keeping the index would
+        # arm Delete against footage the user never clicked.
+        $script:TrimSelected = -1
+        $buttonTrimDelete.IsEnabled = $false
+        Update-TrimSelectionText
+        Update-TrimTimeline
+    }
+
+    function Invoke-TrimDelete {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        if ($script:TrimSelected -lt 0) { return }
+        Push-TrimUndo
+        $script:TrimCutList = Remove-CutPiece -List $script:TrimCutList -Index $script:TrimSelected
+        $script:TrimSelected = -1
+        $buttonTrimDelete.IsEnabled = $false
+
+        # The playhead can now be sitting inside the footage that was just removed.
+        # Round-tripping it through timeline space snaps it onto the nearest surviving
+        # piece -- a no-op if it was already on one -- so the preview never shows a
+        # frame that will not be in the export.
+        $state = Get-TrimTimelineState
+        if ($state.TimelinePieces.Count -gt 0) {
+            $tl = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+            $script:TrimPlayhead = Convert-TrimTimelineToSource -TimelineSeconds $tl -TimelinePieces $state.TimelinePieces
+            $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
+            Update-TrimPosition
+        }
+
+        Update-TrimSelectionText
+        Update-TrimTimeline
+    }
+
+    function Invoke-TrimUndo {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        if ($script:TrimUndoStack.Count -eq 0) { return }
+        $last = $script:TrimUndoStack[$script:TrimUndoStack.Count - 1]
+        $script:TrimUndoStack.RemoveAt($script:TrimUndoStack.Count - 1)
+        $script:TrimCutList = @($last.List)
+        $script:TrimSelected = $last.Selected
+        $buttonTrimDelete.IsEnabled = ($script:TrimSelected -ge 0)
+        $buttonTrimUndo.IsEnabled = ($script:TrimUndoStack.Count -gt 0)
+        Update-TrimSelectionText
+        Update-TrimTimeline
+    }
+
     function Update-TrimPosition {
-        $textTrimPosition.Text = "$(Format-TrimTime $script:TrimPlayhead) / $(Format-TrimTime $script:TrimDuration)"
+        # Timeline-space, matching the ruler and the drawn track: how far into the
+        # assembled EXPORT the playhead is, not how far into the raw source file.
+        $state = Get-TrimTimelineState
+        $tl = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+        $textTrimPosition.Text = "$(Format-TrimTime $tl) / $(Format-TrimTime $state.TotalDuration)"
     }
 
     # Small write-through so the async-read tick handler below never assigns $script:
@@ -853,10 +1192,68 @@ try {
     # $buttonTrimPlay and $mediaTrimPreview are $null, and .Add_Click()/.Add_MediaEnded()
     # on a $null reference throws during startup, before the window ever shows.
     if ($script:TrimEditorReady) {
+        # Keeps the preview at exactly 16:9 (the source format) and full card width,
+        # instead of a fixed height that either letterboxes or crops depending on how
+        # wide the card ends up being. Fires on every layout pass, including window
+        # resize, so it never drifts back out of sync.
+        $mediaTrimPreview.Add_SizeChanged({
+            param($eventSource, $e)
+            if ($e.NewSize.Width -gt 0) {
+                $mediaTrimPreview.Height = $e.NewSize.Width * 9 / 16
+            }
+        })
+
+        # WPF MediaElement quirk, confirmed live: the very FIRST Play() after a fresh
+        # Source assignment always resumes from the start, ignoring any Position set
+        # beforehand -- even a plain scrub (no split/delete involved) to 1:43 then Play
+        # played from 0. LoadedBehavior="Manual" does not save it; Position while paused
+        # is only enough to render a single scrub-preview frame, not to seed the
+        # internal cursor real playback resumes from. Playing and immediately pausing
+        # once, the moment each file's media actually becomes ready, "warms up" that
+        # cursor so every Play() after this -- including the user's very first click --
+        # honors Position correctly. Fires once per file load, not once per app launch:
+        # a second file gets a fresh Source and needs its own warm-up.
+        $mediaTrimPreview.Add_MediaOpened({
+            $mediaTrimPreview.Play()
+            # A back-to-back Play()/Pause() with no real time between them does not
+            # reliably warm up the pipeline either -- gives the decoder a genuine 80ms
+            # to actually start producing frames first.
+            $warmup = New-Object System.Windows.Threading.DispatcherTimer
+            $warmup.Interval = [timespan]::FromMilliseconds(80)
+            $warmup.Add_Tick({
+                $warmup.Stop()
+                $mediaTrimPreview.Pause()
+                $mediaTrimPreview.Position = [timespan]::Zero
+            }.GetNewClosure())
+            $warmup.Start()
+        })
+
         $script:TrimTimer = New-Object System.Windows.Threading.DispatcherTimer
         $script:TrimTimer.Interval = [timespan]::FromMilliseconds(50)
         $script:TrimTimer.Add_Tick({
             $script:TrimPlayhead = $mediaTrimPreview.Position.TotalSeconds
+
+            # MediaElement plays the raw source file start to finish -- it has no idea
+            # a piece was deleted, so ordinary playback runs straight off the end of one
+            # surviving piece and into the deleted footage after it. Catch that here and
+            # jump to the next surviving piece (or stop, past the last one) so playback
+            # matches what Export will actually produce.
+            $state = Get-TrimTimelineState
+            $containing = @($state.TimelinePieces | Where-Object {
+                $script:TrimPlayhead -ge $_.SourceStart -and $script:TrimPlayhead -lt $_.SourceEnd
+            })
+            if ($containing.Count -eq 0 -and $state.TimelinePieces.Count -gt 0) {
+                $next = @($state.TimelinePieces | Where-Object { $_.SourceStart -gt $script:TrimPlayhead } | Select-Object -First 1)
+                if ($next.Count -gt 0) {
+                    $script:TrimPlayhead = $next[0].SourceStart
+                    $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
+                } else {
+                    $mediaTrimPreview.Pause()
+                    $buttonTrimPlay.Content = "Play"
+                    $script:TrimTimer.Stop()
+                }
+            }
+
             Update-TrimPosition
             Update-TrimTimeline
         })
@@ -878,6 +1275,79 @@ try {
             $buttonTrimPlay.Content = "Play"
             $script:TrimTimer.Stop()
         }.GetNewClosure())
+
+        # Scrubbing. A click on a piece bubbles down to here too, so one click both selects
+        # that piece and moves the playhead -- see the note on the piece handler.
+        #
+        # No GetNewClosure() on these two, same reason as the timer tick above: they write
+        # $script: state, which a closure would rebind into its own private module. Nothing
+        # here needs capture -- they are defined at the top-level try scope.
+        $canvasTrimTimeline.Add_MouseLeftButtonDown({
+            param($eventSource, $e)
+            if (-not $script:TrimInputFile) { return }
+            $state = Get-TrimTimelineState
+            $pos = $e.GetPosition($canvasTrimTimeline)
+            # The click lands in timeline (compacted) space; convert to a real source
+            # second before seeking, so a click can never target deleted footage.
+            $t = Convert-TrimXToTime -X $pos.X
+            $tClamped = [math]::Max(0, [math]::Min($state.TotalDuration, $t))
+            $script:TrimPlayhead = Convert-TrimTimelineToSource -TimelineSeconds $tClamped -TimelinePieces $state.TimelinePieces
+            $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
+            Update-TrimPosition
+            Update-TrimTimeline
+        })
+
+        # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
+        # still scrolls the way every other screen does.
+        $canvasTrimTimeline.Add_PreviewMouseWheel({
+            param($eventSource, $e)
+            if (([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -eq 0) { return }
+            if (-not $script:TrimInputFile) { return }
+            $state = Get-TrimTimelineState
+            if ($state.TotalDuration -le 0) { return }
+            $e.Handled = $true
+
+            # Anchor and span are both timeline (compacted) seconds -- zoom operates on
+            # the same space the ruler and track are drawn in.
+            $anchor = Convert-TrimXToTime -X ($e.GetPosition($canvasTrimTimeline)).X
+            $factor = if ($e.Delta -gt 0) { 0.8 } else { 1.25 }
+            # Floor of 0.5s: below that the pieces are narrower than their own borders.
+            $newSpan = [math]::Max(0.5, [math]::Min($state.TotalDuration, $script:TrimViewSpan * $factor))
+
+            $ratio = if ($script:TrimViewSpan -gt 0) { ($anchor - $script:TrimViewStart) / $script:TrimViewSpan } else { 0.5 }
+            # Keep the window inside the clip.
+            $newStart = [math]::Max(0, [math]::Min($state.TotalDuration - $newSpan, $anchor - ($ratio * $newSpan)))
+            Set-TrimView -Start $newStart -Span $newSpan
+            Update-TrimTimeline
+        })
+
+        # The canvas has no width until it is laid out, so the first paint must wait for it,
+        # and a resize invalidates every x already computed.
+        $canvasTrimTimeline.Add_SizeChanged({ Update-TrimTimeline })
+
+        $buttonTrimSplit.Add_Click({ Invoke-TrimSplit })
+        $buttonTrimDelete.Add_Click({ Invoke-TrimDelete })
+        $buttonTrimUndo.Add_Click({ Invoke-TrimUndo })
+
+        # Handled at the window, then filtered to the Trim panel: the Canvas cannot hold
+        # focus reliably and a panel-level handler would miss keys pressed over the preview.
+        # Guarded on TextBox focus so typing a URL on another screen never triggers a split.
+        $ctx.Window.Add_PreviewKeyDown({
+            param($eventSource, $e)
+            if ($ctx.Panels.Trim.Visibility -ne "Visible") { return }
+            if (-not $script:TrimInputFile) { return }
+            if ([System.Windows.Input.Keyboard]::FocusedElement -is [System.Windows.Controls.TextBox]) { return }
+
+            $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
+
+            if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Z) { Invoke-TrimUndo; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::S -and -not $ctrl) { Invoke-TrimSplit; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::Delete) { Invoke-TrimDelete; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::Space) {
+                $buttonTrimPlay.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+                $e.Handled = $true
+            }
+        })
     }
 
     # Extracted to a variable so the recent-files rows can invoke the identical
@@ -912,7 +1382,11 @@ try {
         $mediaTrimPreview.Source = New-Object System.Uri($path)
         $mediaTrimPreview.Pause()
         $buttonTrimExport.IsEnabled = $true
+        # Picking a second file must not leave the previous file's selection on screen,
+        # nor its Delete button live against an index into a cut list that is now gone.
+        $buttonTrimDelete.IsEnabled = $false
         Update-TrimPosition
+        Update-TrimSelectionText
         Update-TrimTimeline
         Start-TrimKeyframeRead -Path $path
         return $true
@@ -929,36 +1403,23 @@ try {
 
     Update-AllRecentLists
 
-    $panelTrim.FindName("ButtonTrimStart").Add_Click({
-        if (-not $script:TrimInputFile) {
-            Show-PanelMessage -Block $textTrimMeta -Text "Pick a video first." -IsError
-            return
-        }
-
-        # Same validation the console version did before handing the timestamp to ffmpeg:
-        # a malformed or out-of-range value otherwise produces an empty output file.
-        $timestamp = $panelTrim.FindName("TextTrimTimestamp").Text.Trim()
-        if ($timestamp -notmatch '^\d{2}:\d{2}:\d{2}$') {
-            Show-PanelMessage -Block $textTrimMeta -Text "Timestamp must look like HH:MM:SS." -IsError
-            return
-        }
-
-        $seconds = ([timespan]::Parse($timestamp)).TotalSeconds
-        if ($seconds -le 0) {
-            Show-PanelMessage -Block $textTrimMeta -Text "Timestamp must be later than 00:00:00." -IsError
-            return
-        }
-        if ($null -ne $script:TrimTotalSeconds -and $seconds -ge $script:TrimTotalSeconds) {
-            $total = [timespan]::FromSeconds($script:TrimTotalSeconds)
-            Show-PanelMessage -Block $textTrimMeta -IsError `
-                -Text ("Timestamp is past the end of the video (" + $total.ToString("hh\:mm\:ss") + ").")
-            return
-        }
-
-        $mode = if ($panelTrim.FindName("RadioTrimBefore").IsChecked) { "Before" } else { "After" }
-        Register-Job (Split-VideoAsync -Context $ctx -InputFile $script:TrimInputFile -Mode $mode -Timestamp $timestamp `
-            -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
-    })
+    if ($script:TrimEditorReady) {
+        $buttonTrimExport.Add_Click({
+            if (-not $script:TrimInputFile) {
+                Show-PanelMessage -Block $textTrimMeta -Text "Pick a video first." -IsError
+                return
+            }
+            $pieces = @($script:TrimCutList)
+            if ($pieces.Count -eq 0) {
+                Show-PanelMessage -Block $textTrimMeta -IsError `
+                    -Text "Nothing left to export -- every piece was deleted."
+                return
+            }
+            Show-PanelMessage -Block $textTrimMeta -Text ""
+            Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
+                -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
+        })
+    }
 
     # ---------------- YouTube MP3 ----------------
     $panelYtMp3.FindName("ButtonYoutubeMP3Start").Add_Click({
@@ -1069,84 +1530,163 @@ try {
 
     # Rendered from cache when the last check was under an hour ago, so reopening
     # Settings costs nothing. -Force is what the "Couldn't check" retry uses.
+    # Write-through for the same reason Set-TrimKeyframes exists: the tick handler below
+    # is a .GetNewClosure()'d block, and a bare `$script:InstalledVersionsChecked = $true`
+    # in there would land in that closure's own private module, invisible to every later
+    # call to Update-ToolsCard -- which would then re-spawn all three processes on every
+    # visit forever, exactly the bug this flag exists to prevent.
+    function Set-InstalledVersionsChecked {
+        $script:InstalledVersionsChecked = $true
+    }
+
+    # Write-through for the same reason: Update-ToolsCard's tick handler below is
+    # .GetNewClosure()'d, and a bare `$script:LatestReleases[$name] = ...` in there
+    # reads $script:LatestReleases against the closure's OWN private module -- which,
+    # unlike the real script scope, never had it initialized, so the read comes back
+    # $null and indexing into it throws "Cannot index into a null array". A plain
+    # top-level function's `$script:` always resolves against the real script scope
+    # regardless of who calls it, so routing the read through here and mutating the
+    # hashtable it returns (a reference, not a copy) reaches the real one.
+    function Set-LatestRelease {
+        param([string]$Name, $Release)
+        $script:LatestReleases[$Name] = $Release
+    }
+
+    function Get-LatestRelease {
+        param([string]$Name)
+        return $script:LatestReleases[$Name]
+    }
+
+    # Get-InstalledToolVersion actually launches ffmpeg/ffprobe/yt-dlp and waits for them
+    # to exit, and Get-LatestToolRelease is a real network call -- neither is a cheap
+    # file read. Both run on a background runspace (same shape as Start-TrimKeyframeRead)
+    # so opening Settings never blocks the window, not even on the very first visit:
+    # the panel shows "Checking…" instantly and the real values fill in a moment later.
+    # The installed-version check is additionally skipped entirely after the first visit
+    # each session (unless -Force, used right after an install completes, or when
+    # Start-ToolInstall finds no cached release to install) -- installed binaries do not
+    # change on their own mid-session, so there is nothing to re-spawn processes for.
     function Update-ToolsCard {
         param([switch]$Force)
 
         foreach ($name in @("ffmpeg", "ffprobe", "yt-dlp")) {
-            $installed = Get-InstalledToolVersion -Name $name -ScriptRoot $scriptRoot
-            $toolRows[$name].Installed = $installed
-            Set-ToolRow -Name $name -Installed $installed -ButtonText "Checking…" -ButtonEnabled $false
+            $placeholder = if ($toolRows[$name].Installed) { $toolRows[$name].Installed } `
+                           else { @{ Display = "checking…"; Source = "missing"; Path = $null } }
+            Set-ToolRow -Name $name -Installed $placeholder -ButtonText "Checking…" -ButtonEnabled $false
         }
 
         $useCache = (-not $Force) -and $global:ToolCheckCache -and `
                     (Test-ToolCacheFresh -Timestamp $global:ToolCheckCache.CheckedUtc -MaxAgeMinutes 60)
+        $needInstalled = $Force -or -not $script:InstalledVersionsChecked
+        $cachedTools = if ($global:ToolCheckCache) { $global:ToolCheckCache.Tools } else { $null }
 
-        foreach ($name in @("ffmpeg", "yt-dlp")) {
-            $latest = $null
-            $failed = $false
+        # Written into directly by the background script below, rather than returned
+        # through EndInvoke -- EndInvoke hands back a PSDataCollection wrapper, and
+        # accessing properties through it via PowerShell's single-item collection
+        # auto-forwarding proved genuinely unreliable live (one property on it read
+        # back fine, a second property on that exact same collection came back $null,
+        # and a third run hung rather than reporting either). A plain Hashtable that
+        # both runspaces hold the same reference to sidesteps that boundary completely:
+        # the background script fills it in directly, and nothing is read from it until
+        # $handle.IsCompleted is true, by which point that write has already happened.
+        $shared = [hashtable]::Synchronized(@{ Installed = @{}; Latest = @{} })
 
-            if ($useCache -and $global:ToolCheckCache.Tools.$name) {
-                $cached = $global:ToolCheckCache.Tools.$name
-                # Re-parse the timestamp exactly as Get-LatestToolRelease did, so the cached
-                # and freshly-fetched paths yield the identical value. A plain [datetime]
-                # cast would read ffmpeg's trailing "Z" and convert it to local time, leaving
-                # it hours ahead of the date-only installed build -- east of UTC that pins
-                # ffmpeg on "Update ->" forever, west of it hides a genuinely newer build.
-                $restored = [datetime]::MinValue
-                [void][datetime]::TryParse($cached.Version,
-                    [System.Globalization.CultureInfo]::InvariantCulture,
-                    [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
-                    [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$restored)
-                $latest = @{ Name = $name; Version = $restored.Date; Display = $cached.Display
-                             DownloadUrl = $cached.DownloadUrl; AssetName = $cached.AssetName }
-            } else {
-                # The window is unresponsive for the ~0.5s this takes. That is deliberate:
-                # a 58-82 KB request is far too small to justify a second async path, and
-                # the cursor change makes the pause legible.
-                $ctx.Window.Cursor = [System.Windows.Input.Cursors]::Wait
-                try { $latest = Get-LatestToolRelease -Name $name }
-                catch { $failed = $true }
-                finally { $ctx.Window.Cursor = $null }
-            }
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $scriptRoot, $needInstalled, $useCache, $cachedTools, $shared)
+            Import-Module $modulePath -Force
 
-            $script:LatestReleases[$name] = $latest
-
-            if ($failed) {
-                Set-ToolRow -Name $name -Installed $toolRows[$name].Installed `
-                    -ButtonText "Couldn't check" -ButtonEnabled $true
-                continue
-            }
-
-            $verdict = Test-ToolUpdate -Installed $toolRows[$name].Installed -Latest $latest
-            switch ($verdict.Status) {
-                "Current"   { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Up to date" -ButtonEnabled $false }
-                "Available" { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Update → $($latest.Display)" -ButtonEnabled $true }
-                default     { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Install" -ButtonEnabled $true }
-            }
-        }
-
-        if (-not $useCache) {
-            $tools = @{}
-            foreach ($name in @("ffmpeg", "yt-dlp")) {
-                $r = $script:LatestReleases[$name]
-                if ($r) {
-                    $tools[$name] = @{ Version = $r.Version.ToString("o"); Display = $r.Display
-                                       DownloadUrl = $r.DownloadUrl; AssetName = $r.AssetName }
+            if ($needInstalled) {
+                foreach ($name in @("ffmpeg", "ffprobe", "yt-dlp")) {
+                    $shared.Installed[$name] = Get-InstalledToolVersion -Name $name -ScriptRoot $scriptRoot
                 }
             }
-            if ($tools.Count -gt 0) {
-                $global:ToolCheckCache = @{ CheckedUtc = ([datetime]::UtcNow.ToString("o")); Tools = $tools }
-                Save-Settings
-            }
-        }
 
-        if (Test-AnyJobRunning) {
-            Show-PanelMessage -Block $toolsStatus -Text $script:JobGuardMessage
-        } elseif ($toolsStatus.Text -eq $script:JobGuardMessage) {
-            # The job has since finished. Clear only this warning -- an "Updated to ..."
-            # message set moments earlier by OnComplete must survive.
-            Show-PanelMessage -Block $toolsStatus -Text ""
-        }
+            foreach ($name in @("ffmpeg", "yt-dlp")) {
+                if ($useCache -and $cachedTools -and $cachedTools.$name) {
+                    $cached = $cachedTools.$name
+                    # Re-parse the timestamp exactly as Get-LatestToolRelease did, so the
+                    # cached and freshly-fetched paths yield the identical value. A plain
+                    # [datetime] cast would read ffmpeg's trailing "Z" and convert it to
+                    # local time, leaving it hours ahead of the date-only installed build
+                    # -- east of UTC that pins ffmpeg on "Update ->" forever, west of it
+                    # hides a genuinely newer build.
+                    $restored = [datetime]::MinValue
+                    [void][datetime]::TryParse($cached.Version,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                        [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$restored)
+                    $shared.Latest[$name] = @{ Name = $name; Version = $restored.Date; Display = $cached.Display
+                                                DownloadUrl = $cached.DownloadUrl; AssetName = $cached.AssetName }
+                } else {
+                    # No separate "did it fail" flag: a name simply absent from
+                    # $shared.Latest (never assigned, because this threw) means the
+                    # same thing.
+                    try { $shared.Latest[$name] = Get-LatestToolRelease -Name $name } catch { }
+                }
+            }
+        }).AddArgument((Join-Path $scriptRoot "backend\ToolUpdates.psm1")).AddArgument($scriptRoot).AddArgument($needInstalled).AddArgument($useCache).AddArgument($cachedTools).AddArgument($shared) | Out-Null
+
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(100)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            try { $ps.EndInvoke($handle) | Out-Null } catch { }
+            $ps.Dispose()
+
+            if ($needInstalled) {
+                foreach ($name in @("ffmpeg", "ffprobe", "yt-dlp")) {
+                    $installed = $shared.Installed[$name]
+                    $toolRows[$name].Installed = $installed
+                    Set-ToolRow -Name $name -Installed $installed -ButtonText "Checking…" -ButtonEnabled $false
+                }
+                Set-InstalledVersionsChecked
+            }
+
+            foreach ($name in @("ffmpeg", "yt-dlp")) {
+                $latest = $shared.Latest[$name]
+                Set-LatestRelease -Name $name -Release $latest
+
+                if (-not $latest) {
+                    Set-ToolRow -Name $name -Installed $toolRows[$name].Installed `
+                        -ButtonText "Couldn't check" -ButtonEnabled $true
+                    continue
+                }
+
+                $verdict = Test-ToolUpdate -Installed $toolRows[$name].Installed -Latest $latest
+                switch ($verdict.Status) {
+                    "Current"   { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Up to date" -ButtonEnabled $false }
+                    "Available" { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Update → $($latest.Display)" -ButtonEnabled $true }
+                    default     { Set-ToolRow -Name $name -Installed $verdict.Installed -ButtonText "Install" -ButtonEnabled $true }
+                }
+            }
+
+            if (-not $useCache) {
+                $tools = @{}
+                foreach ($name in @("ffmpeg", "yt-dlp")) {
+                    $r = Get-LatestRelease -Name $name
+                    if ($r) {
+                        $tools[$name] = @{ Version = $r.Version.ToString("o"); Display = $r.Display
+                                           DownloadUrl = $r.DownloadUrl; AssetName = $r.AssetName }
+                    }
+                }
+                if ($tools.Count -gt 0) {
+                    $global:ToolCheckCache = @{ CheckedUtc = ([datetime]::UtcNow.ToString("o")); Tools = $tools }
+                    Save-Settings
+                }
+            }
+
+            if (Test-AnyJobRunning) {
+                Show-PanelMessage -Block $toolsStatus -Text $script:JobGuardMessage
+            } elseif ($toolsStatus.Text -eq $script:JobGuardMessage) {
+                # The job has since finished. Clear only this warning -- an "Updated to
+                # ..." message set moments earlier by OnComplete must survive.
+                Show-PanelMessage -Block $toolsStatus -Text ""
+            }
+        }.GetNewClosure())
+        $watcher.Start()
     }
 
     function Start-ToolInstall {
@@ -1199,8 +1739,17 @@ try {
             }
     }
 
-    $toolRows["ffmpeg"].Button.Add_Click({ Start-ToolInstall -Name "ffmpeg" })
-    $toolRows["yt-dlp"].Button.Add_Click({ Start-ToolInstall -Name "yt-dlp" })
+    # Guarded for the same reason as Update-RecentList and $script:TrimEditorReady: an
+    # install updated in place can run this code against a MainWindow.xaml that predates
+    # these buttons, and Add_Click on a $null reference takes startup down before the
+    # window ever shows. ffprobe has no button by design, which is why $toolRows already
+    # tolerates a $null there.
+    if ($null -ne $toolRows["ffmpeg"].Button) {
+        $toolRows["ffmpeg"].Button.Add_Click({ Start-ToolInstall -Name "ffmpeg" })
+    }
+    if ($null -ne $toolRows["yt-dlp"].Button) {
+        $toolRows["yt-dlp"].Button.Add_Click({ Start-ToolInstall -Name "yt-dlp" })
+    }
 
     # Cancelling faults the in-flight copy; Install-ToolUpdate's next tick observes that,
     # deletes the partial file and calls OnComplete, so the reset all happens there.

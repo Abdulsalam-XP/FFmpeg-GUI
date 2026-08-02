@@ -917,14 +917,25 @@
         <Setter Property="StrokeThickness" Value="1.5"/>
     </Style>
 
+    <!-- Marks an existing cut boundary. Gold, matching the Split/selection accent
+         elsewhere in this panel, and deliberately thinner than the playhead so the two
+         are never mistaken for each other at a glance. -->
     <Style x:Key="TimelineCutLineStyle" TargetType="Rectangle">
         <Setter Property="Fill" Value="{StaticResource BrushGoldValue}"/>
-        <Setter Property="Width" Value="2"/>
+        <Setter Property="Width" Value="1.5"/>
     </Style>
 
+    <!-- Current position, and where S will cut. Bright cyan, not used anywhere
+         else in this panel, so it never reads as "just another gold cut line". -->
     <Style x:Key="TimelinePlayheadStyle" TargetType="Rectangle">
-        <Setter Property="Fill" Value="{StaticResource BrushTextPrimary}"/>
-        <Setter Property="Width" Value="2"/>
+        <Setter Property="Fill" Value="#6FD8FF"/>
+        <Setter Property="Width" Value="3"/>
+    </Style>
+
+    <Style x:Key="TimelineRulerTickStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="Width" Value="1"/>
+        <Setter Property="Height" Value="6"/>
     </Style>
 
     <!-- Greyed shortcut letter beside a button label. -->
