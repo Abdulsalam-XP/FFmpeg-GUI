@@ -93,6 +93,30 @@ function Export-CutListAsync {
     $chain.RunStep = {
         param([int]$StepIndex)
 
+        # Rebinds this closure's own module-scoped captures ($cleanup, $chain, $work,
+        # ...) as plain locals of THIS call. -OnLine/-OnExit below need their own
+        # .GetNewClosure() -- without it they can't see $StepIndex once the timer
+        # invokes them later, from a completely different call stack, after RunStep
+        # has already returned. But .GetNewClosure() called from inside an
+        # already-closured scriptblock only captures the IMMEDIATE local frame, not
+        # this closure's own module -- confirmed live: $cleanup and $chain came back
+        # $null inside -OnExit, so "& $cleanup" crashed the whole app the moment a
+        # step finished ("expression after '&' ... not valid"). Assigning each one to
+        # itself here makes it a genuine local of this call, which the inner
+        # .GetNewClosure() DOES pick up correctly.
+        $cleanup = $cleanup
+        $chain = $chain
+        $work = $work
+        $InputFile = $InputFile
+        $outputFile = $outputFile
+        $OnFinished = $OnFinished
+        $progressBar = $progressBar
+        $percentText = $percentText
+        $etaText = $etaText
+        $cancelButton = $cancelButton
+        $startButton = $startButton
+        $stepCount = $stepCount
+
         if ($StepIndex -lt $work.Count) {
             $piece = $work[$StepIndex]
             $duration = $piece.End - $piece.Start
