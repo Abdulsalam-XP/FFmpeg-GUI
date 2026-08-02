@@ -369,7 +369,12 @@
                     <Border x:Name="CardTrimEditor" Style="{StaticResource CardBorderStyle}"
                             Visibility="Collapsed" Margin="0,0,0,26">
                         <StackPanel>
-                            <MediaElement x:Name="MediaTrimPreview" Height="300" Stretch="Uniform"
+                            <!-- Height is set from code, not fixed here: the source is always
+                                 16:9, so pinning a height independent of the card's actual width
+                                 either letterboxes (box too wide) or crops (box too narrow).
+                                 Driving it off ActualWidth keeps it exactly 16:9 and full-width. -->
+                            <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform"
+                                          HorizontalAlignment="Stretch"
                                           LoadedBehavior="Manual" UnloadedBehavior="Manual"
                                           ScrubbingEnabled="True"/>
 
@@ -384,6 +389,8 @@
                             <Border Style="{StaticResource TimelineTrackStyle}" Height="64" ClipToBounds="True">
                                 <Canvas x:Name="CanvasTrimTimeline" Background="Transparent"/>
                             </Border>
+
+                            <Canvas x:Name="CanvasTrimRuler" Height="20" Background="Transparent" ClipToBounds="True"/>
 
                             <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                 <TextBlock x:Name="TextTrimPieces" Text="1 piece"
@@ -404,7 +411,7 @@
                                 <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Split"/>
-                                        <TextBlock Text="C" Style="{StaticResource ShortcutHintStyle}"/>
+                                        <TextBlock Text="S" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="ButtonTrimDelete" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="12,0,0,0" IsEnabled="False">
