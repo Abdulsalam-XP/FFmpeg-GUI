@@ -60,4 +60,37 @@ function Get-DefaultTrackStack {
     return ,@($stack)
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack
+function Get-TrimTimelineStarts {
+    param([object[]]$Pieces = @(), [double[]]$FadeLengths = @())
+    $starts = @()
+    $t = 0.0
+    for ($i = 0; $i -lt @($Pieces).Count; $i++) {
+        $starts += ,$t
+        $len = [double]$Pieces[$i].End - [double]$Pieces[$i].Start
+        $fade = if ($i -lt @($FadeLengths).Count) { [double]$FadeLengths[$i] } else { 0.0 }
+        $t += $len - $fade
+    }
+    return ,@($starts)
+}
+
+function Get-TrackTimelineSpan {
+    param([Parameter(Mandatory = $true)]$Track, [double]$SourceDuration = 0.0)
+    $inStart = [double]$Track.InStart
+    $inEnd = if ([double]$Track.InEnd -gt 0.0) { [double]$Track.InEnd } else { $SourceDuration }
+    $len = [math]::Max(0.0, $inEnd - $inStart)
+    return @{ Start = [double]$Track.Offset; End = ([double]$Track.Offset + $len) }
+}
+
+function Test-TrackStackTrivial {
+    param([object[]]$Tracks = @())
+    $mains = @(@($Tracks) | Where-Object { $_.Kind -eq "video-main" })
+    if ($mains.Count -ne 1) { return $false }
+    foreach ($t in @($Tracks)) {
+        if ($t.Kind -eq "audio-clip" -or $t.Kind -eq "video-clip") { return $false }
+        if ($t.Muted) { return $false }
+        if ([math]::Abs([double]$t.GainDb) -gt 0.0001) { return $false }
+    }
+    return $true
+}
+
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial

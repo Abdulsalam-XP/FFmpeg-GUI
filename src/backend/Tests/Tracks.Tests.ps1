@@ -61,3 +61,47 @@ Describe "Get-DefaultTrackStack" {
         $r.Count | Should Be 1
     }
 }
+
+Describe "Get-TrimTimelineStarts" {
+    It "accumulates piece lengths minus fade overlaps" {
+        $p = @([PSCustomObject]@{Start=0.0;End=10.0}, [PSCustomObject]@{Start=20.0;End=25.0}, [PSCustomObject]@{Start=30.0;End=40.0})
+        $r = Get-TrimTimelineStarts -Pieces $p -FadeLengths @(0.5, 0.0)
+        $r.Count | Should Be 3
+        $r[0] | Should Be 0.0
+        $r[1] | Should Be 9.5
+        $r[2] | Should Be 14.5
+    }
+    It "treats an omitted fade list as all hard cuts" {
+        (Get-TrimTimelineStarts -Pieces @([PSCustomObject]@{Start=0.0;End=5.0}, [PSCustomObject]@{Start=5.0;End=8.0}))[1] | Should Be 5.0
+    }
+}
+
+Describe "Get-TrackTimelineSpan" {
+    It "spans a full-length clip from its offset" {
+        $t = New-TrimTrack -Kind "audio-clip" -Path "m.mp3" -Offset 12.0
+        $s = Get-TrackTimelineSpan -Track $t -SourceDuration 30.0
+        $s.Start | Should Be 12.0
+        $s.End | Should Be 42.0
+    }
+    It "honours InStart/InEnd trims" {
+        $t = New-TrimTrack -Kind "video-clip" -Path "c.mp4" -Offset 5.0 -InStart 2.0 -InEnd 8.0
+        (Get-TrackTimelineSpan -Track $t -SourceDuration 60.0).End | Should Be 11.0
+    }
+}
+
+Describe "Test-TrackStackTrivial" {
+    $main = New-TrimTrack -Kind "video-main" -Path "a.mp4"
+    $src  = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 1
+    It "is trivial for untouched main + source tracks" {
+        Test-TrackStackTrivial -Tracks @($main, $src) | Should Be $true
+    }
+    It "is not trivial with a gain" {
+        $g = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 1 -GainDb -4.5
+        Test-TrackStackTrivial -Tracks @($main, $g) | Should Be $false
+    }
+    It "is not trivial with a mute, a clip, or a deleted video-main" {
+        Test-TrackStackTrivial -Tracks @($main, (New-TrimTrack -Kind "audio-source" -Path "a" -Muted $true)) | Should Be $false
+        Test-TrackStackTrivial -Tracks @($main, (New-TrimTrack -Kind "audio-clip" -Path "m.mp3")) | Should Be $false
+        Test-TrackStackTrivial -Tracks @($src) | Should Be $false
+    }
+}
