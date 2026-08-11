@@ -47,7 +47,6 @@ function ConvertFrom-AudioStreamProbe {
         $label = if ($parts.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($parts[1])) { $parts[1].Trim() } else { "Audio $ordinal" }
         $result += ,@{ StreamIdx = $idx; Label = $label }
     }
-    if ($result.Count -eq 0) { return @() }
     return ,@($result)
 }
 
