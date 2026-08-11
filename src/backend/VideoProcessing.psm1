@@ -256,7 +256,10 @@ function Compress-VideoAsync {
             if ($progress) {
                 $progressBar.Value = $progress.Percent
                 $percentText.Text = "{0:N1}%" -f $progress.Percent
-                $etaText.Text = $progress.EtaString
+                # ffmpeg keeps reporting progress at ~100% while it muxes and writes the
+                # moov atom, which on a large file is long enough that a frozen
+                # "00:00:00" ETA reads as a hang. Name the phase instead.
+                $etaText.Text = if ($progress.Percent -ge 99.5) { "finalizing..." } else { $progress.EtaString }
             }
         }.GetNewClosure() `
         -OnExit {
@@ -266,7 +269,8 @@ function Compress-VideoAsync {
             if ($dropzone) { $dropzone.IsEnabled = $true; $dropzone.AllowDrop = $true }
             if ($dropCaption) { $dropCaption.Text = "Drag and drop your video here" }
             if ($exitCode -eq 0) {
-                $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00"
+                # "done" rather than "00:00:00", which is also what an idle bar shows.
+                $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "done"
                 if ($OnFinished) { & $OnFinished $InputFile $outputFile }
             }
         }.GetNewClosure()

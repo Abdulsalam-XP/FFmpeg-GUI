@@ -9,8 +9,11 @@ function Merge-AudioStreamsAsync {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Context,
         [Parameter(Mandatory = $true)][string]$InputVideo,
-        [double]$SystemVolume = 1.0,
-        [double]$MicVolume = 1.0,
+        # Gain in decibels, not a linear multiplier: 0 means "leave this track alone",
+        # negative pulls a track down. ffmpeg's volume filter takes a dB suffix directly,
+        # so no conversion is needed on the way out.
+        [double]$SystemVolumeDb = 0,
+        [double]$MicVolumeDb = 0,
         # Invoked with the source and output paths after a successful run. A caller
         # scriptblock rather than a call to Add-RecentFile by name: this runs from
         # UI-WPF.psm1's module scope, where an unqualified call would not resolve --
@@ -28,9 +31,15 @@ function Merge-AudioStreamsAsync {
 
     $filterComplex = ""
     for ($i = 0; $i -lt $audioStreams.Count; $i++) {
-        $volume = if ($i -eq 0) { $SystemVolume } else { $MicVolume }
-        if ($volume -ne 1.0) { $filterComplex += "[0:a:$i]volume=$volume[a$i];" }
-        else { $filterComplex += "[0:a:$i]asetpts=PTS-STARTPTS[a$i];" }
+        $gainDb = if ($i -eq 0) { $SystemVolumeDb } else { $MicVolumeDb }
+        # InvariantCulture: on a comma-decimal locale "-6,5dB" reaches ffmpeg as a broken
+        # filter argument and the whole merge fails.
+        if ($gainDb -ne 0) {
+            $gainText = $gainDb.ToString("0.##", [System.Globalization.CultureInfo]::InvariantCulture)
+            $filterComplex += "[0:a:$i]volume=${gainText}dB[a$i];"
+        } else {
+            $filterComplex += "[0:a:$i]asetpts=PTS-STARTPTS[a$i];"
+        }
     }
     $mixInputs = (0..($audioStreams.Count - 1) | ForEach-Object { "[a$_]" }) -join ""
     $filterComplex += "$mixInputs amix=inputs=$($audioStreams.Count):duration=longest:normalize=0[aout]"
@@ -68,7 +77,9 @@ function Merge-AudioStreamsAsync {
             if ($progress) {
                 $progressBar.Value = $progress.Percent
                 $percentText.Text = "{0:N1}%" -f $progress.Percent
-                $etaText.Text = $progress.EtaString
+                # Same reason as Compress-VideoAsync: ffmpeg sits at ~100% while it muxes,
+                # and a stuck ETA there looks like a hang.
+                $etaText.Text = if ($progress.Percent -ge 99.5) { "finalizing..." } else { $progress.EtaString }
             }
         }.GetNewClosure() `
         -OnExit {
@@ -78,7 +89,8 @@ function Merge-AudioStreamsAsync {
             if ($dropzone) { $dropzone.IsEnabled = $true; $dropzone.AllowDrop = $true }
             if ($dropCaption) { $dropCaption.Text = "Drag and drop a multi-stream video here" }
             if ($exitCode -eq 0) {
-                $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "00:00:00"
+                # "done" rather than "00:00:00", which is also what an idle bar shows.
+                $progressBar.Value = 100; $percentText.Text = "100.0%"; $etaText.Text = "done"
                 if ($OnFinished) { & $OnFinished $InputVideo $outputFile }
             }
         }.GetNewClosure()

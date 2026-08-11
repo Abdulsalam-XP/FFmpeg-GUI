@@ -72,6 +72,16 @@ function Start-YtDlpDownload {
                 $progressBar.Value = $progress.Percent
                 $statusText.Text = "{0:N1}% downloaded" -f $progress.Percent
                 $etaText.Text = $progress.EtaString
+            } elseif ($line -match '^\[(Merger|ExtractAudio|VideoConvertor|Fixup\w*)\]') {
+                # yt-dlp's own post-download phases: remuxing the separate video and audio
+                # streams, or extracting to mp3. The bar is pegged at 100% throughout and
+                # this can run for a while on a long video, so it needs to say something
+                # other than "100% downloaded". Matched on yt-dlp's actual phase prefixes
+                # rather than inferred from the percentage: an MP4 download hits 100% once
+                # per stream, so a percentage test would flash this between them.
+                $progressBar.Value = 100
+                $statusText.Text = "Download complete -- finalizing..."
+                $etaText.Text = "finalizing..."
             }
         }.GetNewClosure() `
         -OnExit {
@@ -80,8 +90,8 @@ function Start-YtDlpDownload {
             if ($startButton) { $startButton.IsEnabled = $true }
             if ($exitCode -eq 0) {
                 $progressBar.Value = 100
-                $statusText.Text = "Saved to $DestinationPath"
-                $etaText.Text = "00:00:00"
+                $statusText.Text = "Done -- saved to $DestinationPath"
+                $etaText.Text = "done"
             } elseif ($exitCode -eq -1) {
                 $statusText.Text = "Cancelled"
             } else {
