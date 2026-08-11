@@ -2314,8 +2314,13 @@ try {
     }
 
     function Show-CaptionSidebar {
-        if ($null -eq $panelCaptionSidebar) { return }
         $cap = Get-TrimSelectedCaption
+        # Selection change, not a blur: lane blocks are non-Focusable Borders, so clicking
+        # another caption's block repopulates the text box while the caret stays in it and no
+        # LostFocus ever fires. Settle the in-flight edit against the caption it was opened
+        # for before the box is refilled, or its undo step is lost outright.
+        Complete-CaptionTextEditOnSelectionChange -Id $(if ($null -eq $cap) { "" } else { [string]$cap.Id })
+        if ($null -eq $panelCaptionSidebar) { return }
         # Asked to show the properties of nothing: collapse rather than leave the previous
         # caption's values on screen attached to no caption at all.
         if ($null -eq $cap) { Hide-CaptionSidebar; return }
@@ -2337,12 +2342,31 @@ try {
             Set-CaptionSidebarLoading -Value $false
         }
         $panelCaptionSidebar.Visibility = "Visible"
+        # The caret never left the box, so no GotFocus will fire to open the next bracket.
+        # Re-arm it here against the caption now on screen; typing straight after clicking a
+        # different lane block otherwise gets no undo checkpoint at all.
+        if ($null -ne $textCaptionText -and $textCaptionText.IsKeyboardFocusWithin) { Start-CaptionTextEdit }
     }
 
     function Hide-CaptionSidebar {
+        # Hiding is a selection change too (delete, deselect, file load): settle any in-flight
+        # text edit before the box goes away, since its LostFocus is not guaranteed either.
+        Complete-CaptionTextEdit
         Set-CaptionSidebarLoading -Value $false
         if ($null -eq $panelCaptionSidebar) { return }
         $panelCaptionSidebar.Visibility = "Collapsed"
+    }
+
+    # Deselect. Without it nothing but delete, undo or a file load ever drops the selection,
+    # so the cyan box and its handle sit over the picture through playback for the rest of the
+    # session. Deliberately NOT bound to Escape: this app has no panel-level keyboard
+    # shortcuts, and Escape is already the dismiss key for its dialogs.
+    function Clear-TrimCaptionSelection {
+        if ($null -eq $script:TrimSelectedCaption) { return }
+        Set-TrimSelectedCaption -Id $null
+        Hide-CaptionSidebar
+        Update-TrimCaptionLane
+        Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
     }
 
     # Re-fills one box from the model without the write-back a plain assignment would
@@ -2371,6 +2395,17 @@ try {
         if ($null -eq $cap) { return }
         if ([string]$cap.Text -eq $edit.Text) { return }
         Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+    }
+
+    # Same completion, but only when the selection actually moved to a different caption:
+    # re-showing the sidebar for the caption already being typed into must leave the open
+    # bracket alone, or every redraw would chop the edit into a separate undo step.
+    function Complete-CaptionTextEditOnSelectionChange {
+        param([string]$Id)
+        $edit = $script:CaptionTextEdit
+        if ($null -eq $edit) { return }
+        if ([string]$edit.Id -eq [string]$Id) { return }
+        Complete-CaptionTextEdit
     }
 
     # The slider raises ValueChanged on every tick of a drag; the snapshot is taken when it
@@ -2830,6 +2865,16 @@ try {
                 Update-TrimTimeline
             })
 
+            # Empty lane space deselects. The blocks and their grips mark their own clicks
+            # Handled and are children of this canvas, so OriginalSource being the canvas
+            # itself means the click landed on bare background -- a drag start can never
+            # reach here.
+            $canvasTrimCaptions.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                if ($e.OriginalSource -ne $canvasTrimCaptions) { return }
+                Clear-TrimCaptionSelection
+            })
+
             $canvasTrimCaptions.Add_SizeChanged({ Update-TrimCaptionLane })
         }
         # Preview-overlay drags. Capture lives on the overlay canvas for the same reason it
@@ -2838,6 +2883,15 @@ try {
         # here either -- these read and write $script: state through top-level functions and
         # capture nothing.
         if ($null -ne $canvasCaptionOverlay) {
+            # Empty video space deselects, same test as the lane: the caption box and its
+            # resize handle are children that mark their own clicks Handled, so an
+            # OriginalSource of the canvas itself is background and never a drag start.
+            $canvasCaptionOverlay.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                if ($e.OriginalSource -ne $canvasCaptionOverlay) { return }
+                Clear-TrimCaptionSelection
+            })
+
             $canvasCaptionOverlay.Add_MouseMove({
                 param($eventSource, $e)
                 if (-not (Test-CaptionOverlayDrag)) { return }
