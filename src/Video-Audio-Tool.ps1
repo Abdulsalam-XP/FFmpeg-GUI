@@ -51,6 +51,7 @@ $requiredModules = @(
     "backend\AudioProcessing.psm1",
     "backend\YouTubeDownload.psm1",
     "backend\Captions.psm1",
+    "backend\ProjectFile.psm1",
     "backend\VideoTrimmer.psm1"
 )
 
@@ -914,6 +915,37 @@ try {
     $script:CaptionTextEdit = $null
     $script:CaptionSliderEdit = $null
 
+    # Project persistence. The save failure is reported once per file, not once per edit:
+    # a read-only folder would otherwise repaint the same error over the panel every
+    # second for as long as the user keeps working.
+    $script:ProjectSaveWarned = $false
+
+    # One DispatcherTimer, restarted on every edit: the file writes once things go quiet
+    # for a second, not on every keystroke of caption typing. A save is cheap, but it is
+    # a synchronous disk write on the UI thread, so it must not run per keypress.
+    $script:ProjectSaveTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:ProjectSaveTimer.Interval = [timespan]::FromSeconds(1)
+    $script:ProjectSaveTimer.Add_Tick({
+        $script:ProjectSaveTimer.Stop()
+        if (-not $script:TrimInputFile) { return }
+        $ok = Save-TrimProject -VideoPath $script:TrimInputFile `
+            -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions)
+        if (-not $ok -and -not $script:ProjectSaveWarned) {
+            $script:ProjectSaveWarned = $true
+            Show-PanelMessage -Block $textTrimMeta -IsError `
+                -Text "Couldn't save the project file next to the video. Edits won't survive closing the app."
+        }
+    })
+
+    # Called at the end of every mutating action. A top-level function for the usual
+    # reason: several of those actions live inside .GetNewClosure()'d handlers, where a
+    # bare $script: write would land in the closure's own private module.
+    function Request-TrimProjectSave {
+        if (-not $script:TrimEditorReady) { return }
+        $script:ProjectSaveTimer.Stop()
+        $script:ProjectSaveTimer.Start()
+    }
+
     function Format-TrimTime {
         param([double]$Seconds)
         $ts = [timespan]::FromSeconds([math]::Max(0, $Seconds))
@@ -1596,6 +1628,7 @@ try {
                 # Turning a fade OFF has to take the overlay down straight away; turning
                 # one on is picked up by Set-TrimFadeProxy once the render lands.
                 Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+                Request-TrimProjectSave
             }.GetNewClosure())
 
             $canvasTrimFades.Children.Add($toggle) | Out-Null
@@ -1735,6 +1768,10 @@ try {
         if ([math]::Abs($cap.Start - $drag.OrigStart) -lt 0.001 -and
             [math]::Abs($cap.End - $drag.OrigEnd) -lt 0.001) { return }
         Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        # Hooked on release rather than on Update-TrimCaptionDrag: one save per drag
+        # instead of one per mouse move, and the early return above means a click that
+        # moved nothing does not rewrite the file either.
+        Request-TrimProjectSave
     }
 
     # Rebuilt from scratch like the rest of the timeline. Guarded on the canvas being
@@ -2040,6 +2077,8 @@ try {
             [math]::Abs([double]$cap.Y - $drag.OrigY) -lt 1e-4 -and
             [math]::Abs([double]$cap.FontSizeFrac - $drag.OrigSize) -lt 1e-4) { return }
         Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        # Same release-only hook as the lane drag, for the same reason.
+        Request-TrimProjectSave
         # No sidebar refresh: position and size have no field in the properties column, so
         # nothing there can have gone stale.
     }
@@ -2220,6 +2259,7 @@ try {
         $buttonTrimDelete.IsEnabled = $false
         Update-TrimSelectionText
         Update-TrimTimeline
+        Request-TrimProjectSave
     }
 
     function Invoke-TrimDelete {
@@ -2244,6 +2284,7 @@ try {
 
         Update-TrimSelectionText
         Update-TrimTimeline
+        Request-TrimProjectSave
     }
 
     function Invoke-TrimUndo {
@@ -2266,6 +2307,9 @@ try {
         # The sidebar edits whatever is selected, so an undo that changed the selection --
         # including one that undid an add and left nothing selected -- has to move it.
         if ($null -eq (Get-TrimSelectedCaption)) { Hide-CaptionSidebar } else { Show-CaptionSidebar }
+        # Undo changes the model as much as any edit does, so the saved project has to
+        # follow it back -- otherwise closing the app restores the state that was undone.
+        Request-TrimProjectSave
     }
 
     # ---- Caption properties sidebar ----
@@ -2311,6 +2355,10 @@ try {
         if ($null -eq $cap) { return }
         $cap.$Field = $Value
         Update-TrimCaptionLane
+        # Every sidebar field writes through here, so this one call covers text, font,
+        # bold, colours, outline width and bounce. Debounced, which is what makes it safe
+        # to hang off a per-keystroke handler.
+        Request-TrimProjectSave
     }
 
     function Show-CaptionSidebar {
@@ -2395,6 +2443,10 @@ try {
         if ($null -eq $cap) { return }
         if ([string]$cap.Text -eq $edit.Text) { return }
         Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+        # Update-CaptionField already asked for a save per keystroke; this one covers the
+        # case where the debounce timer is still pending as the box loses focus, and costs
+        # nothing when it is not.
+        Request-TrimProjectSave
     }
 
     # Same completion, but only when the selection actually moved to a different caption:
@@ -2475,6 +2527,9 @@ try {
         # necessarily what was typed and the box must not claim otherwise.
         $applied = if ($Edge -eq "start") { [double]$cap.Start } else { [double]$cap.End }
         Reset-CaptionSidebarField -Box $Box -Text (Format-CaptionTime $applied)
+        # Retiming from the boxes goes through Set-TrimCaptionTimes, not Update-CaptionField,
+        # so it needs its own save hook.
+        Request-TrimProjectSave
     }
 
     function Invoke-TrimAddCaption {
@@ -2490,6 +2545,7 @@ try {
         Set-TrimSelectedCaption -Id $cap.Id
         Update-TrimTimeline
         Show-CaptionSidebar
+        Request-TrimProjectSave
     }
 
     function Invoke-TrimDeleteCaption {
@@ -2500,6 +2556,7 @@ try {
         Set-TrimSelectedCaption -Id $null
         Update-TrimTimeline
         Hide-CaptionSidebar
+        Request-TrimProjectSave
     }
 
     function Update-TrimPosition {
@@ -3059,6 +3116,29 @@ try {
         # Empty until the async read lands; Find-NearestKeyframe treats that as "no
         # snapping" rather than "cannot cut".
         $script:TrimKeyframes = @()
+        # The save warning is per file: a new pick deserves its own chance to report a
+        # folder it cannot write to.
+        $script:ProjectSaveWarned = $false
+
+        # Restore whatever was last saved for this video, over the fresh state above and
+        # before the first Update-TrimTimeline so the panel draws the restored edit once
+        # rather than drawing the empty cut list first and flickering to it.
+        # @() around the array members: Read-TrimProject hands back a hashtable whose
+        # CutList/Captions values are arrays, and a one-element array unrolls to a bare
+        # object on assignment without it.
+        $project = Read-TrimProject -VideoPath $path
+        # A file is there but unreadable (hand-edited, truncated, written by a newer
+        # version). Reported rather than silently discarded -- but only further down,
+        # after the unconditional message clear, which would otherwise wipe it.
+        $projectUnreadable = $false
+        if ($project) {
+            $script:TrimCutList = @($project.CutList)
+            $script:TrimFades = $project.Fades
+            $script:TrimCaptions = New-Object System.Collections.ArrayList
+            foreach ($c in @($project.Captions)) { [void]$script:TrimCaptions.Add($c) }
+        } elseif (Test-Path -LiteralPath (Get-TrimProjectPath -VideoPath $path)) {
+            $projectUnreadable = $true
+        }
 
         # A second file's thumbnails are for a different source and must not be served
         # from the first file's cache -- keyed only by second, not by file.
@@ -3090,7 +3170,12 @@ try {
             $mediaTrimFadePreview.Source = $null
         }
 
-        Show-PanelMessage -Block $textTrimMeta -Text ""
+        if ($projectUnreadable) {
+            Show-PanelMessage -Block $textTrimMeta -IsError `
+                -Text "Couldn't read the saved project for this video. Starting fresh."
+        } else {
+            Show-PanelMessage -Block $textTrimMeta -Text ""
+        }
         $cardTrimEditor.Visibility = "Visible"
         $mediaTrimPreview.Source = New-Object System.Uri($path)
         $mediaTrimPreview.Pause()
@@ -3150,6 +3235,7 @@ try {
             Sync-TrimFadeLengthButtons
             Update-TrimTimeline
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+            Request-TrimProjectSave
         }
 
         foreach ($entry in $fadeLengthButtons.GetEnumerator()) {
@@ -3179,12 +3265,10 @@ try {
             $fadeLengths = Get-TrimFadeLengths -Pieces $pieces
             $anyFade = @($fadeLengths | Where-Object { $_ -gt 0 }).Count -gt 0
 
-            # Task 9 replaces this with @($script:TrimCaptions) once the caption list
-            # exists; until then the export runs with nothing to burn, which is exactly
-            # the old behaviour (every non-transition segment stream-copies).
             # [object[]] cast for the same reason Get-TrimFadeLengths casts: an empty
-            # bare @() binds to a typed array parameter as $null.
-            $captions = [object[]]@()
+            # bare @() binds to a typed array parameter as $null, and an empty caption
+            # list is the normal case for a plain trim.
+            $captions = [object[]]@($script:TrimCaptions)
             $anyCaption = @($captions | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Text) }).Count -gt 0
 
             if ($anyFade -or $anyCaption) {
@@ -3208,7 +3292,24 @@ try {
                 }
             }
 
-            Show-PanelMessage -Block $textTrimMeta -Text ""
+            # Fonts are resolved by libass at burn time, from the fonts installed on THIS
+            # machine. A name that is not installed still exports -- libass substitutes --
+            # so this warns and carries on rather than refusing: a blocked export helps
+            # nobody when the only consequence is a different typeface.
+            $missingFonts = @(@($captions |
+                Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Text) } |
+                ForEach-Object { [string]$_.FontFamily } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique) |
+                Where-Object { $name = $_
+                    -not (@([System.Windows.Media.Fonts]::SystemFontFamilies) |
+                        Where-Object { $_.Source -eq $name }).Count })
+            if ($missingFonts.Count -gt 0) {
+                Show-PanelMessage -Block $textTrimMeta -IsError -Text (
+                    "This PC has no font called {0}, so those captions will burn in a substitute typeface." -f ($missingFonts -join ", "))
+            } else {
+                Show-PanelMessage -Block $textTrimMeta -Text ""
+            }
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
                 -FadeLengths $fadeLengths -Captions $captions `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
@@ -3556,6 +3657,13 @@ try {
     # hundred KB, but the rendered fades are real mp4s, so leaving a set behind per run
     # accumulates in %TEMP% with nothing to ever clear it.
     $ctx.Window.Add_Closed({
+        # Unconditional, timer bypassed: closing within a second of the last edit would
+        # otherwise take the debounced save down with the window. Save-TrimProject
+        # swallows its own failures, and there is no panel left to report one to anyway.
+        if ($script:TrimInputFile) {
+            Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
+                -Fades $script:TrimFades -Captions @($script:TrimCaptions) | Out-Null
+        }
         foreach ($dir in @($script:TrimThumbDir, $script:TrimFadeProxyDir)) {
             if ($dir -and (Test-Path $dir)) {
                 Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
