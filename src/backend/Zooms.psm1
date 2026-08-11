@@ -229,12 +229,38 @@ function New-ZoomCropFilter {
     $cyd = ($cy1 - $cy0).ToString("0.####", $inv)
     $dS = $Duration.ToString("0.####", $inv)
 
-    $w = "iw/({0}+({1})*t/{2})" -f $z0s, $zd, $dS
-    $h = "ih/({0}+({1})*t/{2})" -f $z0s, $zd, $dS
-    $x = "min(max(({0}+({1})*t/{2})*iw-ow/2,0),iw-ow)" -f $cx0s, $cxd, $dS
-    $y = "min(max(({0}+({1})*t/{2})*ih-oh/2,0),ih-oh)" -f $cy0s, $cyd, $dS
+    # A glide has to SCALE first and crop second, which is the opposite of the constant
+    # branch. crop's w/h expressions are evaluated once, when the filter is configured, and
+    # `t` does not exist yet at that point -- "crop=iw/(z0+zd*t/D)" fails outright with
+    # "Error when evaluating the expression". Only crop's x/y are per-frame. scale, on the
+    # other hand, re-evaluates w/h every frame when eval=frame is set, so the moving part
+    # of the zoom lives there: blow the whole frame up by z(t), then cut a fixed
+    # Width x Height window out of it at the moving centre. z >= 1 always, so the scaled
+    # frame is never smaller than the window. trunc(../2)*2 keeps both intermediate
+    # dimensions even, which yuv420p requires.
+    #
+    # Every comma inside an expression is backslash-escaped: the filtergraph is split on
+    # commas BEFORE a filter's own arguments are parsed, so a bare "max(a,0)" is read as
+    # the end of one filter and the start of another called "0)".
+    $z = "({0}+({1})*t/{2})" -f $z0s, $zd, $dS
+    $sw = "trunc(iw*{0}/2)*2" -f $z
+    $sh = "trunc(ih*{0}/2)*2" -f $z
+    # crop's x/y must NOT be written in terms of iw/ih. crop resolves those ONCE, when the
+    # filter is configured, and keeps the first frame's numbers for the whole segment --
+    # but its input is now resized every frame by the scale above, so "cx*iw" silently
+    # tracks the wrong frame width and the zoom drifts off centre. Measured live on a
+    # 1.4x->1.8x glide: the crop stayed pinned to the 1.4x width and landed on centre
+    # (0.50, 0.39) where the plan asked for (0.575, 0.450). Restating the scaled size from
+    # the literal source dimensions -- the same trunc() the scale filter above uses, so the
+    # two agree exactly and the window can never fall outside the frame -- fixes it.
+    $swNum = "trunc({0}*{1}/2)*2" -f $Width, $z
+    $shNum = "trunc({0}*{1}/2)*2" -f $Height, $z
+    $halfW = ($Width / 2.0).ToString("0.####", $inv)
+    $halfH = ($Height / 2.0).ToString("0.####", $inv)
+    $x = "min(max(({0}+({1})*t/{2})*{3}-{4}\,0)\,{3}-{5})" -f $cx0s, $cxd, $dS, $swNum, $halfW, $Width
+    $y = "min(max(({0}+({1})*t/{2})*{3}-{4}\,0)\,{3}-{5})" -f $cy0s, $cyd, $dS, $shNum, $halfH, $Height
 
-    return "crop={0}:{1}:{2}:{3},scale={4}x{5},setsar=1" -f $w, $h, $x, $y, $Width, $Height
+    return "scale=w={0}:h={1}:eval=frame,crop={2}:{3}:{4}:{5},setsar=1" -f $sw, $sh, $Width, $Height, $x, $y
 }
 
 Export-ModuleMember -Function New-ZoomKeyframe, Get-TrimZoomStateAt, Get-TrimZoomSpans, Split-TrimSegmentsForZooms, New-ZoomCropFilter

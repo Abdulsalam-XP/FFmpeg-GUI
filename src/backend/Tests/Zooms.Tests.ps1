@@ -132,8 +132,32 @@ Describe "New-ZoomCropFilter" {
     }
     It "emits t-interpolated expressions for a glide" {
         $f = New-ZoomCropFilter -Zoom @{Z0=1.0;Z1=2.0;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
-        $f | Should Match $([regex]::Escape("iw/(1+(1)*t/4)"))
-        $f | Should Match "scale=2560x1440"
+        $f | Should Match $([regex]::Escape("trunc(iw*(1+(1)*t/4)/2)*2"))
+        $f | Should Match $([regex]::Escape("eval=frame"))
+        $f | Should Match $([regex]::Escape("crop=2560:1440:"))
+    }
+    It "scales before cropping on a glide, because crop's w/h are configure-time only" {
+        $f = New-ZoomCropFilter -Zoom @{Z0=1.0;Z1=2.0;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
+        $f.IndexOf("scale=") | Should BeLessThan $f.IndexOf("crop=")
+        # crop's w/h must be plain numbers: an expression in t there fails at configure time.
+        $f | Should Not Match $([regex]::Escape("crop=iw"))
+    }
+    It "keeps iw/ih out of the crop's x and y, which crop resolves only once" {
+        $f = New-ZoomCropFilter -Zoom @{Z0=1.4;Z1=1.8;CX0=0.55;CX1=0.6;CY0=0.4;CY1=0.4} -Duration 3 -Width 2560 -Height 1440
+        $cropPart = $f.Substring($f.IndexOf("crop="))
+        # crop caches iw/ih at configure time, so with a per-frame scale in front of it any
+        # iw in x/y silently tracks the FIRST frame's width and the zoom drifts off centre.
+        $cropPart | Should Not Match "iw"
+        $cropPart | Should Not Match "ih"
+        $f | Should Match $([regex]::Escape("trunc(2560*(1.4+(0.4)*t/3)/2)*2"))
+    }
+    It "backslash-escapes the commas inside a glide expression" {
+        $f = New-ZoomCropFilter -Zoom @{Z0=1.0;Z1=2.0;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
+        # Every comma that is NOT a filter separator has to be escaped, or the graph
+        # parser reads "max(a,0)" as the end of one filter and a new filter called "0)".
+        # 2 unescaped: the scale/crop and crop/setsar separators. 4 escaped: the min/max pairs.
+        ([regex]::Matches($f, "(?<!\\),")).Count | Should Be 2
+        ([regex]::Matches($f, "\\,")).Count | Should Be 4
     }
     It "clamps the crop window inside the frame" {
         $f = New-ZoomCropFilter -Zoom @{Z0=2.0;Z1=2.0;CX0=1.0;CX1=1.0;CY0=0.0;CY1=0.0} -Duration 5 -Width 2560 -Height 1440

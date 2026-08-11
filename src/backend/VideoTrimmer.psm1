@@ -1,6 +1,7 @@
 Import-Module "$PSScriptRoot/UI.psm1"
 Import-Module "$PSScriptRoot/ToolPaths.psm1"
 Import-Module "$PSScriptRoot/Captions.psm1"
+Import-Module "$PSScriptRoot/Zooms.psm1"
 
 # Keyframe times for the trim timeline. Cuts can only start on a keyframe without
 # re-encoding, so the timeline snaps to these and the panel reports their spacing --
@@ -202,6 +203,9 @@ function Export-CutListAsync {
         # Caption objects (New-Caption shape) in SOURCE time. Empty means nothing burns
         # and every non-transition segment still stream-copies.
         [object[]]$Captions = @(),
+        # Zoom keyframes (New-ZoomKeyframe shape) in SOURCE time. Empty means no segment
+        # crops and the plan comes out exactly as the caption split left it.
+        [object[]]$Zooms = @(),
         [scriptblock]$OnFinished = $null
     )
 
@@ -228,9 +232,15 @@ function Export-CutListAsync {
     # "burn" segments that re-encode with the .ass baked in, and everything else still
     # stream-copies, so a two-second caption costs two seconds of encoding rather than
     # the whole export. Same return-shape trap as above -- assigned directly, never
-    # @(...)-wrapped. $stepCount is computed AFTER the split because the split is what
-    # decides how many ffmpeg runs there actually are.
+    # @(...)-wrapped.
     $work = Split-TrimSegmentsForCaptions -Segments $work -Captions $Captions
+    # Zooms split what is left the same way: the stretches under a zoom span become "zoom"
+    # segments that re-encode with a crop/scale chain, and a caption segment that happens
+    # to sit inside a span just gains a .Zoom key instead of being split again (its shape
+    # is already fixed by the caption). Same return-shape trap -- direct assignment.
+    # $stepCount is computed after the LAST split, because the splits are what decide how
+    # many ffmpeg runs there actually are.
+    $work = Split-TrimSegmentsForZooms -Segments $work -Zooms $Zooms
     $stepCount = $work.Count + 1
     $profile = Get-TrimSourceProfile -InputFile $InputFile
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-cut-" + [guid]::NewGuid().ToString("N"))
@@ -364,9 +374,31 @@ function Export-CutListAsync {
                 # cannot survive a filtered re-encode, and mapping them would make this
                 # segment's stream layout differ from the copied ones and break the concat.
                 $assEsc = ConvertTo-AssFilterPath -Path $segment.AssFile
+                # A caption segment that also sits under a zoom crops FIRST and burns
+                # second: the ass filter draws onto the already-rescaled full-size frame,
+                # so the text stays the size the user set it instead of being magnified
+                # along with the footage.
+                $vf = "ass='$assEsc'"
+                if ($segment.Zoom) {
+                    $vf = "$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height),$vf"
+                }
                 $args = @("-hide_banner",
                           "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
-                          "-vf", "`"ass='$assEsc'`"",
+                          "-vf", "`"$vf`"",
+                          "-map", "0:v", "-map", "0:a",
+                          "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                          "-pix_fmt", "yuv420p",
+                          "-video_track_timescale", $profile.TimeScale,
+                          "-c:a", "aac", "-b:a", "256k",
+                          "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                          "`"$($tempFiles[$StepIndex])`"", "-y")
+            } elseif ($segment.Kind -eq "zoom") {
+                # A stretch under a zoom span with no caption on it. Same encoder,
+                # timescale and mapping contract as the burn branch -- the crop/scale chain
+                # is the only difference -- so the final concat stays a stream copy.
+                $args = @("-hide_banner",
+                          "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
+                          "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height)`"",
                           "-map", "0:v", "-map", "0:a",
                           "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                           "-pix_fmt", "yuv420p",
@@ -412,6 +444,9 @@ function Export-CutListAsync {
                     # Also a re-encoding step, and named for the same reason: the user
                     # should be able to tell a slow caption burn from a stalled export.
                     "burning captions ($($StepIndex + 1) of $($work.Count))"
+                } elseif ($work[$StepIndex].Kind -eq "zoom") {
+                    # Third re-encoding step, named for the same reason as the other two.
+                    "zooming ($($StepIndex + 1) of $($work.Count))"
                 } else {
                     "cutting piece $($StepIndex + 1) of $($work.Count)"
                 }

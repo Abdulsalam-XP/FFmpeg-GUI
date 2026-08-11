@@ -51,6 +51,7 @@ $requiredModules = @(
     "backend\AudioProcessing.psm1",
     "backend\YouTubeDownload.psm1",
     "backend\Captions.psm1",
+    "backend\Zooms.psm1",
     "backend\ProjectFile.psm1",
     "backend\VideoTrimmer.psm1"
 )
@@ -3412,14 +3413,24 @@ try {
             $captions = [object[]]@($script:TrimCaptions)
             $anyCaption = @($captions | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Text) }).Count -gt 0
 
-            if ($anyFade -or $anyCaption) {
+            # Task 6 replaces this with @($script:TrimZooms) -- the keyframe state does not
+            # exist yet, so every check below is wired up against a list that is currently
+            # always empty and starts working the moment that state lands. [object[]] cast
+            # for the same reason the captions get one.
+            $zooms = [object[]]@()
+            $zoomSpans = Get-TrimZoomSpans -Zooms $zooms -Pieces $pieces
+            $anyZoom = $zoomSpans.Count -gt 0
+
+            if ($anyFade -or $anyCaption -or $anyZoom) {
                 # Both crossfades and burned captions re-encode the segments they touch,
                 # and only h264/hevc have an encoder mapped. Anything else would splice a
                 # differently-coded segment between copied ones and produce a file that
                 # changes codec halfway through.
                 $sourceProfile = Get-TrimSourceProfile -InputFile $script:TrimInputFile
                 if (-not $sourceProfile.VideoEncoder) {
-                    $reason = if ($anyFade) { "Fades need to re-encode across each cut" } else { "Burning captions needs to re-encode the parts they cover" }
+                    $reason = if ($anyFade) { "Fades need to re-encode across each cut" }
+                        elseif ($anyCaption) { "Burning captions needs to re-encode the parts they cover" }
+                        else { "Zooming needs to re-encode the parts it covers" }
                     Show-PanelMessage -Block $textTrimMeta -IsError -Text (
                         "{0}, and this file's video codec ({1}) is not one this app can re-encode. Remove them to export with plain cuts." -f $reason, $sourceProfile.VideoCodec)
                     return
@@ -3429,6 +3440,34 @@ try {
                 $problem = Get-TrimFadeProblem -Pieces $pieces
                 if ($problem) {
                     Show-PanelMessage -Block $textTrimMeta -IsError -Text $problem
+                    return
+                }
+            }
+
+            # A crossfade eats the outgoing piece's last fade-length of footage and blends
+            # it with the next piece's head in one xfade pass. There is nowhere in that
+            # pass to also apply a per-side crop, so a zoom overlapping a fade would have
+            # to be silently dropped -- refuse instead. The window matches exactly the
+            # extent of the transition segment the plan will build there, which is what
+            # Split-TrimSegmentsForZooms throws on if one ever slips through.
+            if ($anyZoom -and $anyFade) {
+                $clash = $false
+                for ($b = 0; $b -lt $pieces.Count - 1 -and -not $clash; $b++) {
+                    if ($b -ge $fadeLengths.Count) { break }
+                    $len = [double]$fadeLengths[$b]
+                    if ($len -le 0) { continue }
+                    $windowEnd = [double]$pieces[$b].End
+                    $windowStart = $windowEnd - $len
+                    foreach ($span in $zoomSpans) {
+                        if ([double]$span.Start -lt $windowEnd -and [double]$span.End -gt $windowStart) {
+                            $clash = $true
+                            break
+                        }
+                    }
+                }
+                if ($clash) {
+                    Show-PanelMessage -Block $textTrimMeta -IsError `
+                        -Text "Move the zoom or the fade -- a zoomed crossfade isn't supported yet."
                     return
                 }
             }
@@ -3452,7 +3491,7 @@ try {
                 Show-PanelMessage -Block $textTrimMeta -Text ""
             }
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
-                -FadeLengths $fadeLengths -Captions $captions `
+                -FadeLengths $fadeLengths -Captions $captions -Zooms $zooms `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
         })
     }
