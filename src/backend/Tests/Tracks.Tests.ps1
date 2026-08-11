@@ -40,7 +40,9 @@ Describe "ConvertFrom-AudioStreamProbe" {
         (ConvertFrom-AudioStreamProbe -Lines @("", "garbage text", "1,Game")).Count | Should Be 1
     }
     It "returns an empty array, not null, for no input" {
-        @(ConvertFrom-AudioStreamProbe -Lines @()).Count | Should Be 0
+        $r = ConvertFrom-AudioStreamProbe -Lines @()
+        ($null -eq $r) | Should Be $false
+        @($r).Count | Should Be 0
     }
 }
 
