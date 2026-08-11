@@ -174,4 +174,39 @@ function New-TrimAudioMixPlan {
     return @{ InputPaths = @($inputPaths); FilterComplex = ($graph -join ";"); OutputLabel = "[aout]" }
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan
+function New-PipOverlayChain {
+    param([object[]]$Overlays = @(), [Parameter(Mandatory = $true)][int]$Width, [Parameter(Mandatory = $true)][int]$Height)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $parts = @()
+    $prev = "[0:v]"
+    for ($k = 0; $k -lt @($Overlays).Count; $k++) {
+        $o = $Overlays[$k]
+        $pip = $o.Pip
+        $w = 2 * [int][math]::Round(([double]$pip.W * $Width) / 2.0)
+        $h = 2 * [int][math]::Round(([double]$pip.H * $Height) / 2.0)
+        $x = [int][math]::Round(([double]$pip.X - [double]$pip.W / 2.0) * $Width)
+        $y = [int][math]::Round(([double]$pip.Y - [double]$pip.H / 2.0) * $Height)
+        $out = if ($k -eq @($Overlays).Count - 1) { "[vout]" } else { "[vo$k]" }
+        $parts += ,("[{0}:v]scale={1}:{2}[ov{3}]" -f ([int]$o.InputIndex), $w.ToString($inv), $h.ToString($inv), $k)
+        $parts += ,("{0}[ov{1}]overlay={2}:{3}{4}" -f $prev, $k, $x.ToString($inv), $y.ToString($inv), $out)
+        $prev = $out
+    }
+    return ($parts -join ";")
+}
+
+function Test-PipTransitionClash {
+    param([object[]]$PipSpans = @(), [object[]]$Pieces = @(), [double[]]$FadeLengths = @())
+    $starts = Get-TrimTimelineStarts -Pieces $Pieces -FadeLengths $FadeLengths
+    for ($i = 0; $i -lt @($Pieces).Count - 1; $i++) {
+        $d = if ($i -lt @($FadeLengths).Count) { [double]$FadeLengths[$i] } else { 0.0 }
+        if ($d -le 0.0) { continue }
+        $wEnd = [double]$starts[$i + 1] + $d
+        $wStart = [double]$starts[$i + 1]
+        foreach ($s in @($PipSpans)) {
+            if ([double]$s.Start -lt $wEnd -and [double]$s.End -gt $wStart) { return $true }
+        }
+    }
+    return $false
+}
+
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash

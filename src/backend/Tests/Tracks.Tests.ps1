@@ -166,3 +166,41 @@ Describe "New-TrimAudioMixPlan" {
         } finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
     }
 }
+
+Describe "New-PipOverlayChain" {
+    It "scales and positions one overlay from its centered box" {
+        $ov = @(@{ InputIndex = 1; Pip = @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 } })
+        $f = New-PipOverlayChain -Overlays $ov -Width 2560 -Height 1440
+        $f | Should Match ([regex]::Escape("[1:v]scale=896:504[ov0]"))
+        $f | Should Match ([regex]::Escape("[0:v][ov0]overlay=832:468[vout]"))
+    }
+    It "stacks two overlays in order, last on top" {
+        $ov = @(
+            @{ InputIndex = 1; Pip = @{ X = 0.25; Y = 0.25; W = 0.2; H = 0.2 } },
+            @{ InputIndex = 2; Pip = @{ X = 0.75; Y = 0.75; W = 0.2; H = 0.2 } }
+        )
+        $f = New-PipOverlayChain -Overlays $ov -Width 2560 -Height 1440
+        $f.IndexOf("[1:v]") | Should BeLessThan $f.IndexOf("[2:v]")
+        $f | Should Match ([regex]::Escape("[vo0][ov1]overlay"))
+        $f | Should Match ([regex]::Escape("[vout]"))
+    }
+    It "keeps scaled dimensions even for yuv420p" {
+        $ov = @(@{ InputIndex = 1; Pip = @{ X = 0.5; Y = 0.5; W = 0.333; H = 0.333 } })
+        $f = New-PipOverlayChain -Overlays $ov -Width 2560 -Height 1440
+        $f -match "scale=(\d+):(\d+)" | Should Be $true
+        ([int]$Matches[1]) % 2 | Should Be 0
+        ([int]$Matches[2]) % 2 | Should Be 0
+    }
+}
+
+Describe "Test-PipTransitionClash" {
+    $p = @([PSCustomObject]@{Start=0.0;End=10.0}, [PSCustomObject]@{Start=20.0;End=30.0})
+    It "flags a PiP crossing a crossfade window" {
+        # fade 0.5 -> window timeline 9.5..10.0
+        Test-PipTransitionClash -PipSpans @(@{Start=9.7;End=12.0}) -Pieces $p -FadeLengths @(0.5) | Should Be $true
+    }
+    It "passes a PiP clear of every fade, and any PiP over hard cuts" {
+        Test-PipTransitionClash -PipSpans @(@{Start=2.0;End=9.0}) -Pieces $p -FadeLengths @(0.5) | Should Be $false
+        Test-PipTransitionClash -PipSpans @(@{Start=9.7;End=12.0}) -Pieces $p -FadeLengths @(0.0) | Should Be $false
+    }
+}
