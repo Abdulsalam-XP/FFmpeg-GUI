@@ -57,5 +57,29 @@ Describe "Save-TrimProject / Read-TrimProject round trip" {
         Set-Content -Path (Get-TrimProjectPath -VideoPath $v2) -Value '{"Version":2,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
         Read-TrimProject -VideoPath $v2 | Should Be $null
     }
+    It "round-trips zoom keyframes" {
+        Import-Module (Join-Path $PSScriptRoot "..\Zooms.psm1") -Force
+        $z = New-ZoomKeyframe -Time 12.5 -CX 0.65 -CY 0.4 -Level 2.4
+        (Save-TrimProject -VideoPath $video -CutList @() -Fades @{} -Captions @() -Zooms @($z)) | Should Be $true
+        $r = Read-TrimProject -VideoPath $video
+        @($r.Zooms).Count | Should Be 1
+        $r.Zooms[0].Level | Should Be 2.4
+        $r.DroppedZooms | Should Be 0
+    }
+    It "loads old projects without a Zooms field as zero zooms" {
+        $old = Join-Path $tmp "old.mp4"
+        Set-Content -Path $old -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $old) -Value '{"Version":1,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
+        $r = Read-TrimProject -VideoPath $old
+        @($r.Zooms).Count | Should Be 0
+    }
+    It "drops corrupt zoom entries instead of failing the whole load" {
+        $zc = Join-Path $tmp "zc.mp4"
+        Set-Content -Path $zc -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $zc) -Value '{"Version":1,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[],"Zooms":[{"Id":"a","Time":"junk","CX":0.5,"CY":0.5,"Level":2},{"Id":"b","Time":3,"CX":0.5,"CY":0.5,"Level":2}]}'
+        $r = Read-TrimProject -VideoPath $zc
+        @($r.Zooms).Count | Should Be 1
+        $r.DroppedZooms | Should Be 1
+    }
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

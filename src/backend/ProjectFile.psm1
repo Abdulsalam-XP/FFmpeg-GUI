@@ -13,7 +13,8 @@ function Save-TrimProject {
         [Parameter(Mandatory = $true)][string]$VideoPath,
         [object[]]$CutList = @(),
         [hashtable]$Fades = @{},
-        [object[]]$Captions = @()
+        [object[]]$Captions = @(),
+        [object[]]$Zooms = @()
     )
     try {
         $doc = [ordered]@{
@@ -21,6 +22,7 @@ function Save-TrimProject {
             CutList  = @(@($CutList) | ForEach-Object { [ordered]@{ Start = $_.Start; End = $_.End } })
             Fades    = $Fades
             Captions = @(@($Captions) | ForEach-Object { $_ })
+            Zooms    = @(@($Zooms) | ForEach-Object { $_ })
         }
         $json = $doc | ConvertTo-Json -Depth 6
         [System.IO.File]::WriteAllText((Get-TrimProjectPath -VideoPath $VideoPath), $json,
@@ -46,10 +48,35 @@ function Read-TrimProject {
         if ($doc.Fades) {
             foreach ($p in $doc.Fades.PSObject.Properties) { $fades[$p.Name] = [double]$p.Value }
         }
+
+        # Zoom keyframes: validate each entry individually; invalid ones drop but don't fail the load.
+        $zooms = @()
+        $droppedZooms = 0
+        if ($doc.Zooms) {
+            foreach ($z in @($doc.Zooms)) {
+                try {
+                    $time = [double]$z.Time
+                    $cx = [double]$z.CX
+                    $cy = [double]$z.CY
+                    $level = [double]$z.Level
+                    # Clamp: Level 1.0..6.0, CX/CY 0.0..1.0 (double literals prevent truncation)
+                    $level = [math]::Max(1.0, [math]::Min(6.0, $level))
+                    $cx = [math]::Max(0.0, [math]::Min(1.0, $cx))
+                    $cy = [math]::Max(0.0, [math]::Min(1.0, $cy))
+                    $id = if ($z.Id) { $z.Id } else { [guid]::NewGuid().ToString("N") }
+                    $zooms += ,[PSCustomObject]@{ Id = $id; Time = $time; CX = $cx; CY = $cy; Level = $level }
+                } catch {
+                    $droppedZooms++
+                }
+            }
+        }
+
         return @{
-            CutList  = @(@($doc.CutList) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = [double]$_.End } })
-            Fades    = $fades
-            Captions = @(@($doc.Captions) | ForEach-Object { $_ })
+            CutList      = @(@($doc.CutList) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = [double]$_.End } })
+            Fades        = $fades
+            Captions     = @(@($doc.Captions) | ForEach-Object { $_ })
+            Zooms        = @($zooms)
+            DroppedZooms = $droppedZooms
         }
     } catch { return $null }
 }
