@@ -150,4 +150,18 @@ Describe "New-ZoomCropFilter" {
             $f | Should Not Match "0,5"
         } finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
     }
+    It "writes dot decimals under a comma-decimal culture on the glide branch" {
+        $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("de-DE")
+            $f = New-ZoomCropFilter -Zoom @{Z0=1.5;Z1=2.5;CX0=0.4;CX1=0.6;CY0=0.5;CY1=0.5} -Duration 2.5 -Width 2560 -Height 1440
+            $f | Should Match $([regex]::Escape("1.5"))
+            $f | Should Match $([regex]::Escape("0.4"))
+            $f | Should Not Match "1,5"
+            $f | Should Not Match "0,4"
+        } finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
+    }
+    It "throws when Duration is zero instead of emitting a broken t/0 expression" {
+        { New-ZoomCropFilter -Zoom @{Z0=1.0;Z1=2.0;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 0 -Width 100 -Height 100 } | Should Throw
+    }
 }

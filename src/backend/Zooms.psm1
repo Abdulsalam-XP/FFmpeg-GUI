@@ -157,7 +157,6 @@ function Split-TrimSegmentsForZooms {
         }
         $points = @([double]$segStart) + @($cutsSet) + @([double]$segEnd)
 
-        $cursor = $segStart
         for ($i = 0; $i -lt $points.Count - 1; $i++) {
             $partStart = $points[$i]
             $partEnd = $points[$i + 1]
@@ -181,7 +180,6 @@ function Split-TrimSegmentsForZooms {
             } else {
                 $result += ,@{ Kind = "cut"; Start = $partStart; Duration = ($partEnd - $partStart) }
             }
-            $cursor = $partEnd
         }
     }
     return ,@($result)
@@ -199,6 +197,8 @@ function New-ZoomCropFilter {
         [Parameter(Mandatory = $true)][int]$Width,
         [Parameter(Mandatory = $true)][int]$Height
     )
+    if ($Duration -le 0) { throw "New-ZoomCropFilter: Duration must be positive" }
+
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $z0 = [double]$Zoom.Z0; $z1 = [double]$Zoom.Z1
     $cx0 = [double]$Zoom.CX0; $cx1 = [double]$Zoom.CX1
