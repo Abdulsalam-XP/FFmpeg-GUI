@@ -59,11 +59,22 @@ Describe "Save-TrimProject / Read-TrimProject round trip" {
     }
     It "round-trips zoom keyframes" {
         Import-Module (Join-Path $PSScriptRoot "..\Zooms.psm1") -Force
-        $z = New-ZoomKeyframe -Time 12.5 -CX 0.65 -CY 0.4 -Level 2.4
+        $z = New-ZoomKeyframe -Time 12.5 -CX 0.65 -CY 0.4 -W 0.4 -H 0.7
         (Save-TrimProject -VideoPath $video -CutList @() -Fades @{} -Captions @() -Zooms @($z)) | Should Be $true
         $r = Read-TrimProject -VideoPath $video
         @($r.Zooms).Count | Should Be 1
-        $r.Zooms[0].Level | Should Be 2.4
+        $r.Zooms[0].W | Should Be 0.4
+        $r.Zooms[0].H | Should Be 0.7
+        $r.DroppedZooms | Should Be 0
+    }
+    It "migrates an old Level-model project onto the box model" {
+        $lv = Join-Path $tmp "levelmodel.mp4"
+        Set-Content -Path $lv -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $lv) -Value '{"Version":1,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[],"Zooms":[{"Id":"a","Time":3,"CX":0.6,"CY":0.4,"Level":2}]}'
+        $r = Read-TrimProject -VideoPath $lv
+        @($r.Zooms).Count | Should Be 1
+        $r.Zooms[0].W | Should Be 0.5
+        $r.Zooms[0].H | Should Be 0.5
         $r.DroppedZooms | Should Be 0
     }
     It "loads old projects without a Zooms field as zero zooms" {

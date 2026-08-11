@@ -58,13 +58,25 @@ function Read-TrimProject {
                     $time = [double]$z.Time
                     $cx = [double]$z.CX
                     $cy = [double]$z.CY
-                    $level = [double]$z.Level
-                    # Clamp: Level 1.0..6.0, CX/CY 0.0..1.0 (double literals prevent truncation)
-                    $level = [math]::Max(1.0, [math]::Min(6.0, $level))
+                    # New-model entries carry the box (W/H, fractions of the frame,
+                    # 1/6..3.0); files from before the stretch rework carry a uniform
+                    # Level (1..6) that maps onto both axes as 1/Level. Either shape
+                    # loads; anything with neither drops.
+                    if ($null -ne $z.PSObject.Properties["W"] -and $null -ne $z.PSObject.Properties["H"]) {
+                        $bw = [double]$z.W
+                        $bh = [double]$z.H
+                    } else {
+                        $level = [math]::Max(1.0, [math]::Min(6.0, [double]$z.Level))
+                        $bw = 1.0 / $level
+                        $bh = 1.0 / $level
+                    }
+                    # Clamp: W/H (1/6)..3.0, CX/CY 0.0..1.0 (double literals prevent truncation)
+                    $bw = [math]::Max(1.0 / 6.0, [math]::Min(3.0, $bw))
+                    $bh = [math]::Max(1.0 / 6.0, [math]::Min(3.0, $bh))
                     $cx = [math]::Max(0.0, [math]::Min(1.0, $cx))
                     $cy = [math]::Max(0.0, [math]::Min(1.0, $cy))
                     $id = if ($z.Id) { $z.Id } else { [guid]::NewGuid().ToString("N") }
-                    $zooms += ,[PSCustomObject]@{ Id = $id; Time = $time; CX = $cx; CY = $cy; Level = $level }
+                    $zooms += ,[PSCustomObject]@{ Id = $id; Time = $time; CX = $cx; CY = $cy; W = $bw; H = $bh }
                 } catch {
                     $droppedZooms++
                 }

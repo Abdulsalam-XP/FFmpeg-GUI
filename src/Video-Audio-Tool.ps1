@@ -444,6 +444,13 @@ try {
             return
         }
         $Card.Visibility = "Visible"
+        # The Video Editor hides its recent card (and the dropzone) once a file is open
+        # so the whole editor fits on screen; a recents refresh triggered by that very
+        # load must not pop the card back up. Children are still rebuilt above, so the
+        # list is current if it ever shows again.
+        if ($null -ne $cardRecentTrim -and [object]::ReferenceEquals($Card, $cardRecentTrim) -and $script:TrimInputFile) {
+            $Card.Visibility = "Collapsed"
+        }
 
         $now = Get-Date
         $isFirst = $true
@@ -847,6 +854,7 @@ try {
     $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
     $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
+    $previewCell         = $panelTrim.FindName("PreviewCell")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
     $textTrimFadeNote    = $panelTrim.FindName("TextTrimFadeNote")
     $textTrimFadeScope   = $panelTrim.FindName("TextTrimFadeScope")
@@ -861,8 +869,11 @@ try {
     $buttonTrimSplit     = $panelTrim.FindName("ButtonTrimSplit")
     $buttonTrimDelete    = $panelTrim.FindName("ButtonTrimDelete")
     $buttonTrimUndo      = $panelTrim.FindName("ButtonTrimUndo")
+    $buttonTrimRedo      = $panelTrim.FindName("ButtonTrimRedo")
     $buttonTrimExport    = $panelTrim.FindName("ButtonTrimExport")
     $buttonTrimAddCaption = $panelTrim.FindName("ButtonTrimAddCaption")
+    $buttonTrimBrowse     = $panelTrim.FindName("ButtonTrimBrowse")
+    $buttonTrimOpenAnother = $panelTrim.FindName("ButtonTrimOpenAnother")
     $buttonTrimAddZoom    = $panelTrim.FindName("ButtonTrimAddZoom")
     $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
     $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
@@ -956,6 +967,10 @@ try {
     $script:ZoomPillBorder = $null
     $script:ZoomPillSlider = $null
     $script:ZoomPillValueText = $null
+    $script:ZoomPillMagnetButton = $null
+    # Magnet ON by default: resizing keeps the box video-shaped (uniform zoom) until the
+    # user opts into free-stretch. Session-wide, not per keyframe -- it is a tool mode.
+    $script:ZoomMagnet = $true
     # Set while the pill is being filled from the model: WPF raises ValueChanged for a
     # programmatic assignment exactly as it does for a user drag, so without this the redraw
     # that follows a box drag would write the slider's snapped value straight back over it.
@@ -1587,6 +1602,25 @@ try {
             if ($pieceWidth -le 0) { continue }
 
             $key = "{0:N2}_{1:N2}" -f $tp.SourceStart, $tp.SourceEnd
+            # Hydrate from the persistent disk cache before deciding this strip is
+            # missing: any earlier open of this file already paid the ffmpeg render,
+            # and loading the PNG here is what makes reopening feel instant. Done
+            # inline in the draw pass (not inside Request-TrimWaveform) so a cache
+            # hit never triggers a re-entrant redraw mid-loop.
+            if (-not $script:TrimWaveCache.ContainsKey($key)) {
+                $diskFile = Join-Path (Get-TrimWaveDir) ("w{0}.png" -f ($key -replace '[^\d]', ''))
+                if (Test-Path -LiteralPath $diskFile) {
+                    try {
+                        $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+                        $bmp.BeginInit()
+                        $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                        $bmp.UriSource = New-Object System.Uri($diskFile)
+                        $bmp.EndInit()
+                        $bmp.Freeze()
+                        $script:TrimWaveCache[$key] = $bmp
+                    } catch { }
+                }
+            }
             if ($script:TrimWaveCache.ContainsKey($key)) {
                 $img = New-Object System.Windows.Controls.Image
                 $img.Stretch = "Fill"
@@ -1598,8 +1632,29 @@ try {
                 $canvasTrimWave.Children.Add($img) | Out-Null
             } else {
                 Request-TrimWaveform -File $script:TrimInputFile -SourceStart $tp.SourceStart -SourceEnd $tp.SourceEnd
+                # First-ever render of this strip: say so instead of showing a black
+                # band that reads as "no audio". Only on strips wide enough to fit it.
+                if ($pieceWidth -gt 130) {
+                    $note = New-Object System.Windows.Controls.TextBlock
+                    $note.Text = "rendering waveform..."
+                    $note.FontSize = 12
+                    $note.FontStyle = "Italic"
+                    $note.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(0xAA, 0x6E, 0x8A, 0x9E))
+                    $note.Width = $pieceWidth
+                    $note.TextAlignment = "Center"
+                    [System.Windows.Controls.Canvas]::SetLeft($note, $x1)
+                    [System.Windows.Controls.Canvas]::SetTop($note, ($waveHeight - 17.0) / 2.0)
+                    $canvasTrimWave.Children.Add($note) | Out-Null
+                }
             }
         }
+    }
+
+    # Where waveform strips live on disk: the persistent per-source cache when it was
+    # created, the per-launch thumb dir otherwise (identical to the old behavior).
+    function Get-TrimWaveDir {
+        if ($script:TrimWaveCacheDir) { return $script:TrimWaveCacheDir }
+        return $script:TrimThumbDir
     }
 
     # One toggle per internal cut, in its own row under the ruler, at the cut's x.
@@ -1980,12 +2035,17 @@ try {
     # Task 7 spotlight is about to mutate in place.
     function Copy-TrimZoom {
         param($Zoom)
+        # Get-ZoomKeyframeBox rather than reading W/H raw: an undo snapshot taken before
+        # the stretch rework still carries Level-model keyframes, and copying those
+        # verbatim would reintroduce the old shape into a session running the new one.
+        $box = Get-ZoomKeyframeBox -Keyframe $Zoom
         return [PSCustomObject]@{
-            Id    = $Zoom.Id
-            Time  = [double]$Zoom.Time
-            CX    = [double]$Zoom.CX
-            CY    = [double]$Zoom.CY
-            Level = [double]$Zoom.Level
+            Id   = $Zoom.Id
+            Time = [double]$Zoom.Time
+            CX   = [double]$Zoom.CX
+            CY   = [double]$Zoom.CY
+            W    = [double]$box.W
+            H    = [double]$box.H
         }
     }
 
@@ -2061,12 +2121,18 @@ try {
     # so a keyframe edited here can never hold a value the constructor would have rejected.
     # Each is optional: Task 7's spotlight drag moves the centre without touching the level.
     function Set-TrimZoomValues {
-        param([string]$Id, $CX = $null, $CY = $null, $Level = $null)
+        param([string]$Id, $CX = $null, $CY = $null, $W = $null, $H = $null)
         $kf = Get-TrimZoomById -Id $Id
         if ($null -eq $kf) { return }
         if ($null -ne $CX) { $kf.CX = [math]::Max(0.0, [math]::Min(1.0, [double]$CX)) }
         if ($null -ne $CY) { $kf.CY = [math]::Max(0.0, [math]::Min(1.0, [double]$CY)) }
-        if ($null -ne $Level) { $kf.Level = [math]::Max(1.0, [math]::Min(6.0, [double]$Level)) }
+        if ($null -ne $W) { $kf.W = [math]::Max(1.0 / 6.0, [math]::Min(3.0, [double]$W)) }
+        if ($null -ne $H) { $kf.H = [math]::Max(1.0 / 6.0, [math]::Min(3.0, [double]$H)) }
+        # A zoomed-OUT axis has no legal off-centre position: the export pad has room
+        # for a centred frame only, so the preview must agree with it.
+        $box = Get-ZoomKeyframeBox -Keyframe $kf
+        if ($box.W -gt 1.0001) { $kf.CX = 0.5 }
+        if ($box.H -gt 1.0001) { $kf.CY = 0.5 }
         Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
         # The spotlight box IS these three numbers drawn, so it is stale the instant one of
         # them moves. Self-contained rather than left to the caller: every write path here
@@ -2152,11 +2218,16 @@ try {
         $rampHeight = 6.0
         $rampTop = [math]::Max(0.0, ($laneHeight - $rampHeight) / 2.0)
         for ($i = 0; $i -lt $sorted.Count - 1; $i++) {
-            $l0 = [double]$sorted[$i].Level
-            $l1 = [double]$sorted[$i + 1].Level
+            # Magnitude for ramp direction: how much the picture is blown up, as the
+            # geometric mean of the two axes so a pure stretch still counts as motion.
+            # 1.0 = identity, above = zoomed in, below = zoomed out.
+            $box0 = Get-ZoomKeyframeBox -Keyframe $sorted[$i]
+            $box1 = Get-ZoomKeyframeBox -Keyframe $sorted[$i + 1]
+            $l0 = 1.0 / [math]::Sqrt([math]::Max(1e-6, $box0.W * $box0.H))
+            $l1 = 1.0 / [math]::Sqrt([math]::Max(1e-6, $box1.W * $box1.H))
             $styleName = $null
             if ([math]::Abs($l1 - $l0) -lt 0.001) {
-                if ($l0 -gt 1.001) { $styleName = "ZoomRampHoldStyle" }
+                if (-not (Test-ZoomIdentity -W $box0.W -H $box0.H)) { $styleName = "ZoomRampHoldStyle" }
             } elseif ($l1 -gt $l0) { $styleName = "ZoomRampStyle" }
             else { $styleName = "ZoomRampDownStyle" }
             if ($null -eq $styleName) { continue }
@@ -2225,34 +2296,50 @@ try {
     # The live zoom. Applied to PreviewZoomHost, which wraps only the two video surfaces, so
     # the caption overlay beside it stays pinned to the frame instead of zooming with it.
     #
-    # RenderTransformOrigin is 0,0 and the centring is done by the TranslateTransform
-    # instead: the origin is a fraction of the element, so expressing "put source point
-    # (cx, cy) in the middle" through it would need a second, different fraction per axis and
-    # would break the moment the host is resized.
+    # LAYOUT-based, not RenderTransform-based, and that is a hard-won decision: a
+    # ScaleTransform+TranslateTransform on this host was verifiably attached (property
+    # readback, TransformToAncestor, HasAnimatedProperties all agreed) and still never
+    # reached the pixels -- not on screen, not in PrintWindow, not even in a
+    # RenderTargetBitmap -- while the identical transform in an isolated WPF repro with
+    # the same video rendered fine. Root cause unfound (2026-08-11); sizing the host
+    # and offsetting it with a margin is pixel-equivalent, provably renders in this
+    # app, and PreviewCell's Clip crops the overflow to the video box.
+    #
+    # The geometry sums: the box region (W,H fractions at centre CX,CY) must land on
+    # the video box PreviewBox describes. The host becomes the box's inverse scale of
+    # the video box and is shifted so the region's top-left sits at the box's origin.
     function Update-PreviewZoom {
         param([double]$SourceSeconds)
-        if ($null -eq $previewZoomHost) { return }
+        if ($null -eq $previewZoomHost -or $null -eq $script:PreviewBox) { return }
         $state = Get-TrimZoomStateAt -Zooms @($script:TrimZooms) -Seconds $SourceSeconds
-        $level = [double]$state.Level
-        # Identity fast-path. This runs 20x a second during playback, and rebuilding a
-        # transform group per tick for a 1x "zoom" is pure waste -- $null is also what keeps
-        # the preview bit-identical to no-zoom rather than resampled through a 1.0 scale.
-        if ($level -le 1.001) {
-            $previewZoomHost.RenderTransform = $null
+        $box = $script:PreviewBox
+        $w = [double]$box.W
+        $h = [double]$box.H
+        if ($w -le 0 -or $h -le 0) { return }
+        # Identity fast-path. This runs 20x a second during playback; the reset also
+        # keeps the preview bit-identical to no-zoom rather than resampled.
+        if (Test-ZoomIdentity -W ([double]$state.W) -H ([double]$state.H)) {
+            $previewZoomHost.HorizontalAlignment = "Center"
+            $previewZoomHost.VerticalAlignment = "Center"
+            $previewZoomHost.Margin = New-Object System.Windows.Thickness(0)
+            $previewZoomHost.Width = $w
+            $previewZoomHost.Height = $h
             return
         }
-        $w = [double]$previewZoomHost.ActualWidth
-        $h = [double]$previewZoomHost.ActualHeight
-        $group = New-Object System.Windows.Media.TransformGroup
-        # Scale FIRST, then translate: the group applies its children in order, so the
-        # source point (cx*w, cy*h) is blown up to (L*cx*w, L*cy*h) and the translate below
-        # is exactly what carries that to the middle of the box.
-        $group.Children.Add((New-Object System.Windows.Media.ScaleTransform($level, $level)))
-        $group.Children.Add((New-Object System.Windows.Media.TranslateTransform(
-            (($w / 2.0) - ($level * [double]$state.CX * $w)),
-            (($h / 2.0) - ($level * [double]$state.CY * $h)))))
-        $previewZoomHost.RenderTransformOrigin = New-Object System.Windows.Point(0, 0)
-        $previewZoomHost.RenderTransform = $group
+        # Per-axis scale: the box (W, H fractions of the frame) fills the whole video
+        # box, so a non-frame-shaped box stretches the picture -- that is the
+        # magnet-off effect, not a bug. W/H above 1 gives a scale below 1: the frame
+        # shrinks and the black cell background shows around it inside the clip,
+        # matching the export's pad.
+        $sx = 1.0 / [double]$state.W
+        $sy = 1.0 / [double]$state.H
+        $tx = ($w / 2.0) - ($sx * [double]$state.CX * $w)
+        $ty = ($h / 2.0) - ($sy * [double]$state.CY * $h)
+        $previewZoomHost.HorizontalAlignment = "Left"
+        $previewZoomHost.VerticalAlignment = "Top"
+        $previewZoomHost.Width = $w * $sx
+        $previewZoomHost.Height = $h * $sy
+        $previewZoomHost.Margin = New-Object System.Windows.Thickness(([double]$box.X + $tx), ([double]$box.Y + $ty), 0, 0)
     }
 
     function Invoke-TrimAddZoom {
@@ -2272,7 +2359,7 @@ try {
         # in the middle of an existing move must not yank the picture back to unzoomed. The
         # new keyframe changes nothing until it is edited, which is the only honest default.
         $state = Get-TrimZoomStateAt -Zooms @($script:TrimZooms) -Seconds $script:TrimPlayhead
-        $kf = New-ZoomKeyframe -Time $script:TrimPlayhead -CX $state.CX -CY $state.CY -Level $state.Level
+        $kf = New-ZoomKeyframe -Time $script:TrimPlayhead -CX $state.CX -CY $state.CY -W $state.W -H $state.H
         [void]$script:TrimZooms.Add($kf)
         Set-TrimSelectedZoom -Id $kf.Id
         Update-TrimTimeline
@@ -2569,14 +2656,23 @@ try {
     # The frame a keyframe describes, in overlay pixels. A Canvas has no box-shadow, so the
     # "everything outside is dimmed" look is composed from four rectangles around this rect.
     function Get-ZoomBoxRect {
-        param([double]$CX, [double]$CY, [double]$Level, [double]$Width, [double]$Height)
-        $lvl = [math]::Max(1.0, [double]$Level)
-        $bw = $Width / $lvl
-        $bh = $Height / $lvl
-        # Clamped inside the frame: a box hanging off the edge would be asking for footage
-        # that is not there.
-        $left = [math]::Max(0.0, [math]::Min($Width - $bw, ([double]$CX * $Width) - ($bw / 2.0)))
-        $top = [math]::Max(0.0, [math]::Min($Height - $bh, ([double]$CY * $Height) - ($bh / 2.0)))
+        param([double]$BoxW, [double]$BoxH, [double]$CX, [double]$CY, [double]$Width, [double]$Height)
+        $bw = $Width * [math]::Max(0.01, [double]$BoxW)
+        $bh = $Height * [math]::Max(0.01, [double]$BoxH)
+        # Clamped inside the frame when the box fits: a zoom-in box hanging off the edge
+        # would be asking for footage that is not there. A zoomed-OUT axis (box bigger
+        # than the frame) stays centred instead -- there is no legal clamp range -- and
+        # the preview cell's Clip crops the overhang visually.
+        if ($bw -le $Width) {
+            $left = [math]::Max(0.0, [math]::Min($Width - $bw, ([double]$CX * $Width) - ($bw / 2.0)))
+        } else {
+            $left = ($Width - $bw) / 2.0
+        }
+        if ($bh -le $Height) {
+            $top = [math]::Max(0.0, [math]::Min($Height - $bh, ([double]$CY * $Height) - ($bh / 2.0)))
+        } else {
+            $top = ($Height - $bh) / 2.0
+        }
         return @{ Left = $left; Top = $top; Width = $bw; Height = $bh }
     }
 
@@ -2603,16 +2699,22 @@ try {
         # only happens on release, so until then the model still holds the old framing.
         if ($forming) {
             $rect = $drag.Rect
-            $level = [math]::Max(1.0, [math]::Min(6.0, $w / [math]::Max(1.0, [double]$rect.Width)))
+            $boxW = [math]::Max(0.01, [double]$rect.Width / $w)
+            $boxH = [math]::Max(0.01, [double]$rect.Height / $h)
         } else {
-            $level = [double]$kf.Level
-            $rect = Get-ZoomBoxRect -CX ([double]$kf.CX) -CY ([double]$kf.CY) -Level $level -Width $w -Height $h
+            $box = Get-ZoomKeyframeBox -Keyframe $kf
+            $boxW = [double]$box.W
+            $boxH = [double]$box.H
+            $rect = Get-ZoomBoxRect -BoxW $boxW -BoxH $boxH -CX ([double]$kf.CX) -CY ([double]$kf.CY) -Width $w -Height $h
         }
+        $nonIdentity = -not (Test-ZoomIdentity -W $boxW -H $boxH)
 
-        # At 1x the box IS the whole frame, so there is nothing outside it to dim -- four
-        # zero-width strips. The frame and the badge are still drawn, because a fresh 1x
-        # keyframe with nothing on screen would look like the selection had not taken.
-        if ($level -gt 1.001) {
+        # At identity the box IS the whole frame, so there is nothing outside it to dim --
+        # four zero-width strips. The frame and the badge are still drawn, because a fresh
+        # identity keyframe with nothing on screen would look like the selection had not
+        # taken. (Zoom-out boxes overflow the frame; the dim helper drops the negative
+        # strips itself.)
+        if ($nonIdentity) {
             Add-ZoomBoxDimRect -Left 0.0 -Top 0.0 -Width $w -Height $rect.Top
             Add-ZoomBoxDimRect -Left 0.0 -Top ($rect.Top + $rect.Height) -Width $w -Height ($h - $rect.Top - $rect.Height)
             Add-ZoomBoxDimRect -Left 0.0 -Top $rect.Top -Width $rect.Left -Height $rect.Height
@@ -2629,10 +2731,10 @@ try {
 
         # The grab surface: an invisible, HIT-TESTABLE rect over the committed box so it
         # can be dragged to a new position like a caption. Only when a real box exists
-        # (above 1x) and not mid-draw -- the forming box has nothing to grab yet. Added
-        # AFTER Add-ZoomBoxElement's blanket IsHitTestVisible=$false, deliberately undone
+        # and not mid-draw -- the forming box has nothing to grab yet. Added AFTER
+        # Add-ZoomBoxElement's blanket IsHitTestVisible=$false, deliberately undone
         # here: this one element is the exception that rule exists to protect.
-        if (-not $forming -and $level -gt 1.001) {
+        if (-not $forming -and $nonIdentity) {
             $mover = New-Object System.Windows.Shapes.Rectangle
             $mover.Width = [math]::Max(1.0, $rect.Width)
             $mover.Height = [math]::Max(1.0, $rect.Height)
@@ -2651,16 +2753,40 @@ try {
                 # the corner of a NEW box.
                 $e.Handled = $true
             })
+
+            # Bottom-right resize handle, the caption box's grammar exactly: same 13px
+            # dot, same diagonal cursor. Free resize by default; the magnet toggle on
+            # the pill locks it back to the frame's shape. Drawn after the mover so it
+            # wins the hit test over it.
+            $sizer = New-Object System.Windows.Shapes.Ellipse
+            $sizer.Width = 13
+            $sizer.Height = 13
+            $sizer.Fill = Get-CaptionBrush -Hex $script:ZoomBoxStrokeBrush -Fallback "#E0C48F"
+            $sizer.Stroke = Get-CaptionBrush -Hex "#12161C" -Fallback "#000000"
+            $sizer.StrokeThickness = 1.5
+            $sizer.Cursor = [System.Windows.Input.Cursors]::SizeNWSE
+            Add-ZoomBoxElement -Element $sizer `
+                -Left ([math]::Max(0.0, [math]::Min($w - 13.0, $rect.Left + $rect.Width - 6.5))) `
+                -Top ([math]::Max(0.0, [math]::Min($h - 13.0, $rect.Top + $rect.Height - 6.5)))
+            $sizer.IsHitTestVisible = $true
+            $sizer.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                $p = $e.GetPosition($canvasCaptionOverlay)
+                Start-ZoomBoxDrag -StartX $p.X -StartY $p.Y -Mode "resize"
+                $canvasCaptionOverlay.CaptureMouse() | Out-Null
+                $e.Handled = $true
+            })
         }
 
-        # Level badge, top-right INSIDE the box: outside it would fall off the frame for a
-        # box pinned to the top edge, which is where most zooms end up.
+        # Zoom badge, top-right INSIDE the box: outside it would fall off the frame for a
+        # box pinned to the top edge, which is where most zooms end up. A stretched box
+        # shows both axes; a uniform one keeps the familiar single figure.
         $badge = New-Object System.Windows.Controls.Border
         $badge.Background = Get-CaptionBrush -Hex "#D9090D1A" -Fallback "#000000"
         $badge.CornerRadius = New-Object System.Windows.CornerRadius(4)
         $badge.Padding = New-Object System.Windows.Thickness(5, 1, 5, 1)
         $badgeText = New-Object System.Windows.Controls.TextBlock
-        $badgeText.Text = "{0:N1}x" -f $level
+        $badgeText.Text = Get-ZoomBadgeText -BoxW $boxW -BoxH $boxH
         $badgeText.FontSize = 11
         $badgeText.Foreground = Get-CaptionBrush -Hex $script:ZoomBoxStrokeBrush -Fallback "#E0C48F"
         $badge.Child = $badgeText
@@ -2671,7 +2797,15 @@ try {
             -Left ([math]::Max(0.0, [math]::Min($w - $bw, $rect.Left + $rect.Width - $bw - 4.0))) `
             -Top ([math]::Max(0.0, [math]::Min($h - $bh, $rect.Top + 4.0)))
 
-        Show-ZoomPill -Level $level -Rect $rect -Width $w -Height $h
+        Show-ZoomPill -BoxW $boxW -BoxH $boxH -Rect $rect -Width $w -Height $h
+    }
+
+    function Get-ZoomBadgeText {
+        param([double]$BoxW, [double]$BoxH)
+        $zx = 1.0 / [math]::Max(0.01, $BoxW)
+        $zy = 1.0 / [math]::Max(0.01, $BoxH)
+        if ([math]::Abs($BoxW - $BoxH) -lt 0.005) { return ("{0:N1}x" -f $zx) }
+        return ("{0:N1}x / {1:N1}x" -f $zx, $zy)
     }
 
     function Hide-ZoomPill {
@@ -2681,16 +2815,21 @@ try {
 
     # Position and sync only -- the pill itself is built once by Initialize-ZoomPill.
     function Show-ZoomPill {
-        param([double]$Level, $Rect, [double]$Width, [double]$Height)
+        param([double]$BoxW, [double]$BoxH, $Rect, [double]$Width, [double]$Height)
         if ($null -eq $script:ZoomPillBorder) { return }
         $script:ZoomPillBorder.Visibility = "Visible"
+        # The slider is a UNIFORM control: it reads the box's overall magnitude (geometric
+        # mean of the axes so a stretch still registers) and writes a frame-shaped box
+        # back. Fine detail per axis lives on the corner handle, not here.
+        $sliderLevel = [math]::Max(1.0, [math]::Min(6.0, 1.0 / [math]::Sqrt([math]::Max(1e-6, $BoxW * $BoxH))))
         # The whole point of the loading flag: this assignment raises ValueChanged exactly as
         # a user drag does, and the handler behind it would write the value straight back
-        # (snapped to the nearest tick) over the level the box drag just committed.
+        # (snapped to the nearest tick) over the box the drag just committed.
         Set-ZoomUiLoading -Value $true
         try {
-            if ($null -ne $script:ZoomPillSlider) { $script:ZoomPillSlider.Value = [double]$Level }
-            if ($null -ne $script:ZoomPillValueText) { $script:ZoomPillValueText.Text = "{0:N1}x" -f $Level }
+            if ($null -ne $script:ZoomPillSlider) { $script:ZoomPillSlider.Value = $sliderLevel }
+            if ($null -ne $script:ZoomPillValueText) { $script:ZoomPillValueText.Text = Get-ZoomBadgeText -BoxW $BoxW -BoxH $BoxH }
+            Update-ZoomMagnetVisual
         } finally {
             # finally, not a trailing assignment: a throw in the fill would otherwise leave
             # the flag set and deaden the pill for the rest of the session.
@@ -2736,6 +2875,7 @@ try {
     function Start-ZoomBoxDrag {
         param([double]$StartX, [double]$StartY, [string]$Mode = "draw")
         $orig = Get-TrimSelectedZoom
+        $origBox = if ($orig) { Get-ZoomKeyframeBox -Keyframe $orig } else { @{ W = 1.0; H = 1.0 } }
         $script:ZoomBoxDrag = @{
             Mode     = $Mode
             StartX   = $StartX
@@ -2744,6 +2884,8 @@ try {
             Rect     = $null
             OrigCX   = if ($orig) { [double]$orig.CX } else { 0.5 }
             OrigCY   = if ($orig) { [double]$orig.CY } else { 0.5 }
+            OrigW    = [double]$origBox.W
+            OrigH    = [double]$origBox.H
             Snapshot = New-TrimUndoSnapshot
         }
     }
@@ -2775,23 +2917,59 @@ try {
             if (-not $drag.Moved) { return }
             $kf = Get-TrimSelectedZoom
             if ($null -eq $kf) { return }
-            $lvl = [math]::Max(1.0, [double]$kf.Level)
-            # Nothing to move at 1x -- the box IS the frame.
-            if ($lvl -le 1.001) { return }
-            # Clamped so the box never leaves the frame: at level L the box is 1/L of the
-            # frame, so its centre lives in [0.5/L, 1 - 0.5/L] on both axes. Applied LIVE
-            # (unlike draw, which commits on release) so the zoomed preview pans with the
-            # pointer, exactly like dragging a caption.
-            $halfW = 0.5 / $lvl
-            $cx = [math]::Max($halfW, [math]::Min(1.0 - $halfW, [double]$drag.OrigCX + ($dx / $w)))
-            $cy = [math]::Max($halfW, [math]::Min(1.0 - $halfW, [double]$drag.OrigCY + ($dy / $h)))
+            $box = Get-ZoomKeyframeBox -Keyframe $kf
+            # Nothing to move at identity -- the box IS the frame.
+            if (Test-ZoomIdentity -W $box.W -H $box.H) { return }
+            # Clamped per axis so the box never leaves the frame: a box W wide has its
+            # centre in [W/2, 1 - W/2]. A zoomed-OUT axis has no legal off-centre
+            # position at all (the export pad is centred), so it pins to 0.5. Applied
+            # LIVE (unlike draw, which commits on release) so the zoomed preview pans
+            # with the pointer, exactly like dragging a caption.
+            $cx = if ($box.W -lt 1.0) {
+                [math]::Max($box.W / 2.0, [math]::Min(1.0 - $box.W / 2.0, [double]$drag.OrigCX + ($dx / $w)))
+            } else { 0.5 }
+            $cy = if ($box.H -lt 1.0) {
+                [math]::Max($box.H / 2.0, [math]::Min(1.0 - $box.H / 2.0, [double]$drag.OrigCY + ($dy / $h)))
+            } else { 0.5 }
             Set-TrimZoomValues -Id ([string]$kf.Id) -CX $cx -CY $cy
             return
         }
+
+        if ($drag.Mode -eq "resize") {
+            if (-not $drag.Moved) { return }
+            $kf = Get-TrimSelectedZoom
+            if ($null -eq $kf) { return }
+            # The corner handle grows the box around its CENTRE, the same way the caption
+            # handle grows the caption around its anchor: half the pointer delta lands on
+            # each side, so a corner drag of d pixels widens the box by 2d/frame.
+            $newW = [double]$drag.OrigW + (2.0 * $dx / $w)
+            $newH = [double]$drag.OrigH + (2.0 * $dy / $h)
+            if ($script:ZoomMagnet) {
+                # Magnet: frame-shaped means W == H in normalised units. Follow whichever
+                # axis the pointer moved further on, so the gesture feels direct.
+                $uniform = if ([math]::Abs($newW - [double]$drag.OrigW) -ge [math]::Abs($newH - [double]$drag.OrigH)) { $newW } else { $newH }
+                $newW = $uniform
+                $newH = $uniform
+            }
+            # Applied LIVE so the preview stretches under the pointer; Set-TrimZoomValues
+            # clamps to the model's limits and re-centres any zoomed-out axis itself.
+            Set-TrimZoomValues -Id ([string]$kf.Id) -W $newW -H $newH
+            return
+        }
+
+        # Draw mode. Magnet ON keeps the forming box frame-shaped from the larger of the
+        # two deltas, in whatever direction the pointer went -- the overlay canvas is
+        # itself exactly frame-shaped, so clamping the WIDTH to the canvas is enough.
+        # Magnet OFF tracks both axes independently: the box is exactly what was dragged.
         # 0.0 in every clamp, never 0: [math]::Max(0, <double>) binds the int overload and
         # truncates, which is exactly what quantised the caption drags to whole seconds.
-        $bw = [math]::Min($w, [math]::Max([math]::Abs($dx), [math]::Abs($dy) * 16.0 / 9.0))
-        $bh = $bw * 9.0 / 16.0
+        if ($script:ZoomMagnet) {
+            $bw = [math]::Min($w, [math]::Max([math]::Abs($dx), [math]::Abs($dy) * 16.0 / 9.0))
+            $bh = $bw * 9.0 / 16.0
+        } else {
+            $bw = [math]::Min($w, [math]::Abs($dx))
+            $bh = [math]::Min($h, [math]::Abs($dy))
+        }
         $left = if ($dx -lt 0) { [double]$drag.StartX - $bw } else { [double]$drag.StartX }
         $top = if ($dy -lt 0) { [double]$drag.StartY - $bh } else { [double]$drag.StartY }
         $drag.Rect = @{
@@ -2813,10 +2991,10 @@ try {
         if ($null -eq $kf) { return }
         if ($null -eq $canvasCaptionOverlay) { return }
 
-        if ($drag.Mode -eq "move") {
+        if ($drag.Mode -eq "move" -or $drag.Mode -eq "resize") {
             # The values already landed live; this settles the bookkeeping. A no-move
-            # click on the box keeps the selection -- clicking the thing you selected
-            # must never deselect it.
+            # click on the box (or its handle) keeps the selection -- clicking the thing
+            # you selected must never deselect it.
             if ($drag.Moved) {
                 Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
                 Request-TrimProjectSave
@@ -2833,10 +3011,14 @@ try {
         }
         $rect = $drag.Rect
         Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        # The drawn rectangle IS the box: W/H are its size as fractions of the frame.
+        # With the magnet on the draw already kept it frame-shaped; with it off this is
+        # exactly the free rectangle the user made.
         Set-TrimZoomValues -Id ([string]$kf.Id) `
             -CX (([double]$rect.Left + ([double]$rect.Width / 2.0)) / $w) `
             -CY (([double]$rect.Top + ([double]$rect.Height / 2.0)) / $h) `
-            -Level ($w / [math]::Max(1.0, [double]$rect.Width))
+            -W ([double]$rect.Width / $w) `
+            -H ([double]$rect.Height / $h)
         # One save per completed drag, like every other drag here.
         Request-TrimProjectSave
     }
@@ -2882,6 +3064,21 @@ try {
         $valueText.MinWidth = 34
         $row.Children.Add($valueText) | Out-Null
 
+        # The magnet: ON locks the box to the frame's shape (uniform zoom, like the
+        # caption box's proportional resize); OFF frees both axes so the corner handle
+        # can stretch the picture. A Button restyled by hand rather than a ToggleButton:
+        # the pressed-state visuals of the stock ToggleButton fight the pill's dark
+        # chrome, and the on/off state lives in script scope anyway.
+        $magnetButton = New-Object System.Windows.Controls.Button
+        $magnetButton.Style = $ctx.Window.FindResource("PresetButtonStyle")
+        $magnetButton.Content = [char]::ConvertFromUtf32(0x1F9F2)   # magnet emoji
+        $magnetButton.Padding = New-Object System.Windows.Thickness(7, 3, 7, 3)
+        $magnetButton.FontSize = 12
+        $magnetButton.Margin = New-Object System.Windows.Thickness(10, 0, 0, 0)
+        $magnetButton.VerticalAlignment = "Center"
+        $magnetButton.ToolTip = "Magnet: keep the box video-shaped while resizing. Off = free resize (stretches the picture)."
+        $row.Children.Add($magnetButton) | Out-Null
+
         $deleteButton = New-Object System.Windows.Controls.Button
         $deleteButton.Style = $ctx.Window.FindResource("PresetButtonStyle")
         $deleteButton.Content = "Delete"
@@ -2900,6 +3097,8 @@ try {
         $script:ZoomPillBorder = $border
         $script:ZoomPillSlider = $slider
         $script:ZoomPillValueText = $valueText
+        $script:ZoomPillMagnetButton = $magnetButton
+        Update-ZoomMagnetVisual
 
         # No GetNewClosure on any of these: they reach $script: state through the top-level
         # functions only, and a closure would rebind those writes into its own private module.
@@ -2911,18 +3110,39 @@ try {
         # ValueChanged fires on every tick of one.
         $slider.Add_GotMouseCapture({ Start-ZoomSliderEdit })
         $slider.Add_LostMouseCapture({ Complete-ZoomSliderEdit })
+        $magnetButton.Add_Click({
+            Set-ZoomMagnet -Value (-not $script:ZoomMagnet)
+        })
         $deleteButton.Add_Click({ Invoke-TrimDeleteZoom })
+    }
+
+    # Write-throughs for the magnet flag: read/toggled from plain (non-closured)
+    # handlers, but kept as functions anyway so every path agrees on the visual.
+    function Set-ZoomMagnet {
+        param([bool]$Value)
+        $script:ZoomMagnet = $Value
+        Update-ZoomMagnetVisual
+    }
+
+    function Update-ZoomMagnetVisual {
+        if ($null -eq $script:ZoomPillMagnetButton) { return }
+        # Dim when off: the state has to be readable at a glance, and the button is the
+        # only place it shows.
+        $script:ZoomPillMagnetButton.Opacity = if ($script:ZoomMagnet) { 1.0 } else { 0.35 }
     }
 
     function Set-ZoomLevelFromPill {
         $kf = Get-TrimSelectedZoom
         if ($null -eq $kf) { return }
         if ($null -eq $script:ZoomPillSlider) { return }
-        # Level only: the pill tightens or loosens the framing the box drag chose, it does
-        # not move it.
-        Set-TrimZoomValues -Id ([string]$kf.Id) -Level ([double]$script:ZoomPillSlider.Value)
+        # The slider writes a UNIFORM, frame-shaped box: it tightens or loosens the
+        # framing the box drag chose, it does not move it. A stretched box snaps back
+        # to the frame's shape here -- per-axis freedom belongs to the corner handle.
+        $lvl = [math]::Max(1.0, [double]$script:ZoomPillSlider.Value)
+        Set-TrimZoomValues -Id ([string]$kf.Id) -W (1.0 / $lvl) -H (1.0 / $lvl)
         if ($null -ne $script:ZoomPillValueText) {
-            $script:ZoomPillValueText.Text = "{0:N1}x" -f [double]$kf.Level
+            $box = Get-ZoomKeyframeBox -Keyframe $kf
+            $script:ZoomPillValueText.Text = Get-ZoomBadgeText -BoxW $box.W -BoxH $box.H
         }
         # The lane's ramps are drawn from the levels, so they are stale the moment one
         # changes -- and this redraws the box and the preview with them.
@@ -2934,7 +3154,8 @@ try {
     function Start-ZoomSliderEdit {
         $kf = Get-TrimSelectedZoom
         if ($null -eq $kf) { $script:ZoomSliderEdit = $null; return }
-        $script:ZoomSliderEdit = @{ Id = [string]$kf.Id; Level = [double]$kf.Level; Snapshot = New-TrimUndoSnapshot }
+        $box = Get-ZoomKeyframeBox -Keyframe $kf
+        $script:ZoomSliderEdit = @{ Id = [string]$kf.Id; W = [double]$box.W; H = [double]$box.H; Snapshot = New-TrimUndoSnapshot }
     }
 
     function Complete-ZoomSliderEdit {
@@ -2943,7 +3164,9 @@ try {
         if ($null -eq $edit) { return }
         $kf = Get-TrimZoomById -Id $edit.Id
         if ($null -eq $kf) { return }
-        if ([math]::Abs([double]$kf.Level - [double]$edit.Level) -lt 1e-9) { return }
+        $box = Get-ZoomKeyframeBox -Keyframe $kf
+        if ([math]::Abs([double]$box.W - [double]$edit.W) -lt 1e-9 -and
+            [math]::Abs([double]$box.H - [double]$edit.H) -lt 1e-9) { return }
         Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
     }
 
@@ -3113,7 +3336,17 @@ try {
     function Push-TrimUndoSnapshot {
         param($Snapshot)
         [void]$script:TrimUndoStack.Add($Snapshot)
+        # A new edit forks history: whatever was undone can no longer be redone.
+        # Undo/redo themselves bypass this function for exactly that reason.
+        if ($null -ne $script:TrimRedoStack) { $script:TrimRedoStack.Clear() }
         $buttonTrimUndo.IsEnabled = $true
+        Update-TrimRedoButton
+    }
+
+    function Update-TrimRedoButton {
+        if ($null -ne $buttonTrimRedo) {
+            $buttonTrimRedo.IsEnabled = ($null -ne $script:TrimRedoStack -and $script:TrimRedoStack.Count -gt 0)
+        }
     }
 
     function Push-TrimUndo {
@@ -3166,11 +3399,11 @@ try {
         Request-TrimProjectSave
     }
 
-    function Invoke-TrimUndo {
-        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
-        if ($script:TrimUndoStack.Count -eq 0) { return }
-        $last = $script:TrimUndoStack[$script:TrimUndoStack.Count - 1]
-        $script:TrimUndoStack.RemoveAt($script:TrimUndoStack.Count - 1)
+    # Shared by undo and redo: puts a snapshot's state back and refreshes every view.
+    # The callers own the stack bookkeeping (what gets popped, what the current state
+    # gets pushed onto) -- this only restores.
+    function Restore-TrimSnapshot {
+        param($last)
         $script:TrimCutList = @($last.List)
         $script:TrimSelected = $last.Selected
         # Entries pushed before captions existed have no Captions key; treating a missing
@@ -3201,6 +3434,29 @@ try {
         # Undo changes the model as much as any edit does, so the saved project has to
         # follow it back -- otherwise closing the app restores the state that was undone.
         Request-TrimProjectSave
+    }
+
+    function Invoke-TrimUndo {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        if ($script:TrimUndoStack.Count -eq 0) { return }
+        $last = $script:TrimUndoStack[$script:TrimUndoStack.Count - 1]
+        $script:TrimUndoStack.RemoveAt($script:TrimUndoStack.Count - 1)
+        # The state being left becomes the redo target. Added directly, not through
+        # Push-TrimUndoSnapshot: that one clears the redo stack (any NEW edit makes
+        # the redone future unreachable), which is exactly wrong mid undo/redo.
+        [void]$script:TrimRedoStack.Add((New-TrimUndoSnapshot))
+        Restore-TrimSnapshot -last $last
+        Update-TrimRedoButton
+    }
+
+    function Invoke-TrimRedo {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        if ($null -eq $script:TrimRedoStack -or $script:TrimRedoStack.Count -eq 0) { return }
+        $next = $script:TrimRedoStack[$script:TrimRedoStack.Count - 1]
+        $script:TrimRedoStack.RemoveAt($script:TrimRedoStack.Count - 1)
+        [void]$script:TrimUndoStack.Add((New-TrimUndoSnapshot))
+        Restore-TrimSnapshot -last $next
+        Update-TrimRedoButton
     }
 
     # ---- Caption properties sidebar ----
@@ -3626,7 +3882,7 @@ try {
         if ($script:TrimWavePending.Count -ge 4) { return }
         $script:TrimWavePending[$key] = $true
 
-        $outFile = Join-Path $script:TrimThumbDir ("w{0}.png" -f ($key -replace '[^\d]', ''))
+        $outFile = Join-Path (Get-TrimWaveDir) ("w{0}.png" -f ($key -replace '[^\d]', ''))
         $duration = [math]::Max(0.01, $SourceEnd - $SourceStart)
         $ps = [powershell]::Create()
         $ps.AddScript({
@@ -3706,29 +3962,68 @@ try {
     # $buttonTrimPlay and $mediaTrimPreview are $null, and .Add_Click()/.Add_MediaEnded()
     # on a $null reference throws during startup, before the window ever shows.
     if ($script:TrimEditorReady) {
-        # Keeps the preview at exactly 16:9 (the source format) and full card width,
-        # instead of a fixed height that either letterboxes or crops depending on how
-        # wide the card ends up being. Fires on every layout pass, including window
-        # resize, so it never drifts back out of sync.
-        $mediaTrimPreview.Add_SizeChanged({
-            param($eventSource, $e)
-            if ($e.NewSize.Width -gt 0) {
-                $mediaTrimPreview.Height = $e.NewSize.Width * 9 / 16
-                # The caption overlay has to be the VIDEO box, not the cell it shares with
-                # the preview. Left to stretch, it takes the height of the tallest thing in
-                # that Grid -- which is the 500px properties sidebar the moment a caption is
-                # selected -- and every caption is then drawn against a box 170px taller
-                # than the picture, landing well below where the export puts it. Pinned to
-                # the same 16:9 box as the preview and centred on it, a caption at Y=0.78
-                # sits at 78% of the frame here and at 78% of the frame in the export.
-                if ($null -ne $canvasCaptionOverlay) {
-                    $canvasCaptionOverlay.HorizontalAlignment = "Center"
-                    $canvasCaptionOverlay.VerticalAlignment = "Center"
-                    $canvasCaptionOverlay.Width = $e.NewSize.Width
-                    $canvasCaptionOverlay.Height = $e.NewSize.Width * 9 / 16
-                }
+        # Sizes the zoom host and the caption overlay to the largest exact-16:9 box
+        # that fits BOTH the card width and the window height. Width-only sizing (the
+        # old behavior) made a preview so tall on wide windows that the timeline fell
+        # below the fold and needed scrolling. The 660 is the vertical budget
+        # everything except the preview needs: transport + track + lanes + ruler +
+        # fades + status + buttons + card padding + window chrome.
+        #
+        # The host and the overlay are sized INDIVIDUALLY and the cell gets a Clip
+        # geometry over the box -- there is deliberately no sized wrapper grid doing
+        # this job. One was tried (2026-08-11) and the zoom's RenderTransform, while
+        # verifiably attached and even reported by TransformToAncestor, simply never
+        # reached the screen with the wrapper in the tree; the same transform on the
+        # same host renders fine without it.
+        $script:UpdatePreviewFrameSize = {
+            if ($null -eq $previewCell) { return }
+            $cellW = [double]$previewCell.ActualWidth
+            if ($cellW -le 0) { return }
+            $availH = [double]$ctx.Window.ActualHeight - 660.0
+            if ($availH -lt 360.0) { $availH = 360.0 }
+            $w = [math]::Min($cellW, $availH * 16.0 / 9.0)
+            $h = $w * 9.0 / 16.0
+            foreach ($el in @($previewZoomHost, $canvasCaptionOverlay)) {
+                if ($null -eq $el) { continue }
+                $el.HorizontalAlignment = "Center"
+                $el.VerticalAlignment = "Center"
+                $el.Width = $w
+                $el.Height = $h
             }
-        })
+            # The cell's height is PINNED to the box: a zoomed host is laid out larger
+            # than the box, and without the pin its size would grow this cell, shove
+            # the whole timeline below the fold, and re-trigger SizeChanged in a loop.
+            # With the pin, the oversized host simply overflows and the clip below
+            # crops that overflow to exactly the video box.
+            $previewCell.Height = $h
+            $boxX = ($cellW - $w) / 2.0
+            $boxY = 0.0
+            $previewCell.Clip = New-Object System.Windows.Media.RectangleGeometry (
+                New-Object System.Windows.Rect ($boxX, $boxY, $w, $h))
+            # Everything the layout-based zoom needs to place the host: the box's
+            # position and size within the cell. Re-asserted here because a resize
+            # just re-centred the host at identity, which is wrong mid-zoom.
+            $script:PreviewBox = @{ X = $boxX; Y = $boxY; W = $w; H = $h }
+            Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+        }
+        if ($null -ne $previewCell) {
+            $previewCell.Add_SizeChanged({ & $script:UpdatePreviewFrameSize })
+            $ctx.Window.Add_SizeChanged({ & $script:UpdatePreviewFrameSize })
+        } else {
+            # Old XAML without PreviewCell: keep the previous width-driven sizing.
+            $mediaTrimPreview.Add_SizeChanged({
+                param($eventSource, $e)
+                if ($e.NewSize.Width -gt 0) {
+                    $mediaTrimPreview.Height = $e.NewSize.Width * 9 / 16
+                    if ($null -ne $canvasCaptionOverlay) {
+                        $canvasCaptionOverlay.HorizontalAlignment = "Center"
+                        $canvasCaptionOverlay.VerticalAlignment = "Center"
+                        $canvasCaptionOverlay.Width = $e.NewSize.Width
+                        $canvasCaptionOverlay.Height = $e.NewSize.Width * 9 / 16
+                    }
+                }
+            })
+        }
 
         # WPF MediaElement quirk, confirmed live: the very FIRST Play() after a fresh
         # Source assignment always resumes from the start, ignoring any Position set
@@ -4119,6 +4414,15 @@ try {
         $buttonTrimSplit.Add_Click({ Invoke-TrimSplit })
         $buttonTrimDelete.Add_Click({ Invoke-TrimDelete })
         $buttonTrimUndo.Add_Click({ Invoke-TrimUndo })
+        if ($null -ne $buttonTrimRedo) { $buttonTrimRedo.Add_Click({ Invoke-TrimRedo }) }
+        if ($null -ne $buttonTrimOpenAnother) {
+            # Funnels into the dropzone's own Click so the file-dialog flow (and any
+            # future changes to it) stays in exactly one place. A collapsed button
+            # still handles a programmatic RaiseEvent.
+            $buttonTrimOpenAnother.Add_Click({
+                $buttonTrimBrowse.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+            })
+        }
 
         # Handled at the window, then filtered to the Trim panel: the Canvas cannot hold
         # focus reliably and a panel-level handler would miss keys pressed over the preview.
@@ -4133,15 +4437,22 @@ try {
             # covers the combo (and its popup items), the sliders and the checkboxes in
             # one test instead of enumerating control types.
             if ($null -ne $panelCaptionSidebar -and $panelCaptionSidebar.IsKeyboardFocusWithin) { return }
-            # Same reasoning for the floating zoom pill: its slider takes arrow keys and its
-            # Delete button takes Space, and both of those would otherwise be read as the
-            # panel shortcuts (scrub/split, play/pause) while the pointer is in the pill.
-            if ($null -ne $script:ZoomPillBorder -and $script:ZoomPillBorder.IsKeyboardFocusWithin) { return }
+            # The floating zoom pill's buttons keep keyboard focus after a click, and a
+            # focused button activates on Space -- so Space alone is swallowed here, or
+            # play/pause would also re-click the magnet or Delete. Everything else
+            # (Ctrl+Z/Y, C, Z, S, DEL) must keep working right after tapping a pill
+            # control: a blanket return here was exactly what deadened every shortcut
+            # until the user happened to click elsewhere.
+            if ($null -ne $script:ZoomPillBorder -and $script:ZoomPillBorder.IsKeyboardFocusWithin -and
+                $e.Key -eq [System.Windows.Input.Key]::Space) { return }
 
             $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
 
             if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Z) { Invoke-TrimUndo; $e.Handled = $true; return }
+            if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Y) { Invoke-TrimRedo; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::S -and -not $ctrl) { Invoke-TrimSplit; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::C -and -not $ctrl) { Invoke-TrimAddCaption; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::Z -and -not $ctrl) { Invoke-TrimAddZoom; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::Delete) {
                 # A selected zoom keyframe wins. Selecting one clears the caption selection
                 # and vice versa, so at most one of these is ever armed -- but a piece can be
@@ -4189,6 +4500,8 @@ try {
         $script:TrimDuration = $props.Duration.TotalSeconds
         $script:TrimCutList = New-CutList -Duration $script:TrimDuration
         $script:TrimUndoStack = New-Object System.Collections.ArrayList
+        $script:TrimRedoStack = New-Object System.Collections.ArrayList
+        Update-TrimRedoButton
         # Fades belong to the file that was being edited: keys are source times, so
         # keeping them across a file swap would drop fades onto unrelated timestamps.
         $script:TrimFades = @{}
@@ -4255,10 +4568,27 @@ try {
         New-Item -ItemType Directory -Path $script:TrimThumbDir -Force | Out-Null
         $script:TrimThumbCache = @{}
         $script:TrimThumbPending = @{}
-        # Waveform strips share the thumbnail temp dir (created just above) -- keyed by
-        # source range instead of a single second, since a waveform covers a whole piece.
+        # Waveform strips get a PERSISTENT on-disk cache, unlike the thumbnails: they
+        # took a visible couple of seconds to re-render on every single file open, and
+        # a waveform never changes for a given source file. Keyed by path + size +
+        # mtime so a re-recorded file with the same name renders fresh. The in-memory
+        # caches still reset per file open like everything else.
         $script:TrimWaveCache = @{}
         $script:TrimWavePending = @{}
+        try {
+            $srcInfo = Get-Item -LiteralPath $path
+            $waveKeySource = "{0}|{1}|{2:o}" -f $srcInfo.FullName.ToLowerInvariant(), $srcInfo.Length, $srcInfo.LastWriteTimeUtc
+            $md5 = [System.Security.Cryptography.MD5]::Create()
+            $hash = ($md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($waveKeySource)) |
+                ForEach-Object { $_.ToString("x2") }) -join ""
+            $md5.Dispose()
+            $script:TrimWaveCacheDir = Join-Path $env:LOCALAPPDATA ("FFmpegGUI\wavecache\" + $hash.Substring(0, 20))
+            New-Item -ItemType Directory -Path $script:TrimWaveCacheDir -Force | Out-Null
+        } catch {
+            # Cache dir is an optimization only; on any failure fall back to the
+            # per-launch temp dir and behave exactly as before.
+            $script:TrimWaveCacheDir = $script:TrimThumbDir
+        }
 
         # Same reasoning for the rendered fades, and the overlay has to be taken down as
         # well: it is keyed by source time, so leaving it up would show the previous
@@ -4303,10 +4633,10 @@ try {
         Update-TrimPosition
         Update-TrimSelectionText
         Update-TrimTimeline
-        # After the load, not just the reset above: a project whose first keyframe is zoomed
-        # is zoomed from the very first frame (the glide is held flat before it), so leaving
-        # the preview at identity until the first scrub would show a picture the model does
-        # not agree with. Posted at Loaded priority because PreviewZoomHost has no
+        # After the load, not just the reset above: a project whose first keyframe sits AT
+        # 0:00 zoomed is zoomed from the very first frame, so leaving the preview at
+        # identity until the first scrub would show a picture the model does not agree
+        # with. Posted at Loaded priority because PreviewZoomHost has no
         # ActualWidth yet on the pass that makes the card visible, and the translate is
         # computed from it -- called inline it would centre on a zero-sized box.
         # GetNewClosure: the block runs after this handler has returned. Read-only capture,
@@ -4317,6 +4647,15 @@ try {
                 [action]({ Update-PreviewZoom -SourceSeconds $script:TrimPlayhead }.GetNewClosure())) | Out-Null
         }
         Start-TrimKeyframeRead -Path $path
+
+        # With a file open, the huge dropzone and the recent list are just 400 vertical
+        # pixels standing between the user and the timeline -- the whole reason the
+        # editor used to need scrolling on a 1440p screen. They collapse here and the
+        # small "Open another video" button in the transport row takes over their job
+        # (it raises the dropzone's own Click, so the file dialog flow stays identical).
+        if ($null -ne $buttonTrimBrowse) { $buttonTrimBrowse.Visibility = "Collapsed" }
+        if ($null -ne $cardRecentTrim) { $cardRecentTrim.Visibility = "Collapsed" }
+        if ($null -ne $buttonTrimOpenAnother) { $buttonTrimOpenAnother.Visibility = "Visible" }
         return $true
     }
 
@@ -4851,7 +5190,12 @@ try {
 }
 catch {
     # With the console hidden there is nowhere for an unhandled error to surface, so a
-    # startup failure would otherwise look like the app simply never opening.
+    # startup failure would otherwise look like the app simply never opening. The log
+    # file exists for the same reason: a dialog can be dismissed and its text lost.
+    try {
+        Set-Content -Path (Join-Path $env:TEMP "ffgui-crash.txt") -Encoding UTF8 -Value (
+            "{0}`n{1}`n{2}" -f (Get-Date -Format o), $_.Exception.Message, $_.ScriptStackTrace)
+    } catch { }
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show(
         "FFmpeg GUI could not start.`n`n$($_.Exception.Message)`n`n$($_.ScriptStackTrace)",
