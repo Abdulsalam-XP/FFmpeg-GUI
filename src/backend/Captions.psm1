@@ -68,7 +68,7 @@ function New-AssDocument {
         if ($e -le 0 -or $e -le $s) { continue }
         if ($s -lt 0) { $s = 0 }
 
-        $key = "{0}|{1}|{2}|{3}|{4}|{5}" -f $cap.FontFamily, $cap.Bold, $cap.FillColor, $cap.OutlineColor, $cap.OutlineWidth, $cap.FontSizeFrac
+        $key = ("{0}|{1}|{2}|{3}|{4}|{5}" -f $cap.FontFamily, $cap.Bold, $cap.FillColor, $cap.OutlineColor, $cap.OutlineWidth, $cap.FontSizeFrac).ToUpperInvariant()
         if (-not $styles.ContainsKey($key)) {
             $name = "S{0}" -f $styles.Count
             $styles[$key] = $name

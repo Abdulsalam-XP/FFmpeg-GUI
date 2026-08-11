@@ -98,4 +98,23 @@ Describe "New-AssDocument" {
         $doc = New-AssDocument -Captions @($e, $cap) -PlayResX 100 -PlayResY 100
         ([regex]::Matches($doc, "^Dialogue:", "Multiline")).Count | Should Be 1
     }
+    It "gives two styles to captions differing only in size" {
+        $a = New-Caption -Start 0 -End 1 -Text "a"
+        $b = New-Caption -Start 2 -End 3 -Text "b"
+        $b.FontSizeFrac = 0.1
+        $doc = New-AssDocument -Captions @($a, $b) -PlayResX 100 -PlayResY 100
+        ([regex]::Matches($doc, "^Style:", "Multiline")).Count | Should Be 2
+    }
+    It "writes dot-decimal numbers even under a comma-decimal culture" {
+        $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("de-DE")
+            $cap = New-Caption -Start 10 -End 12 -Text "locale"
+            $doc = New-AssDocument -Captions @($cap) -PlayResX 2560 -PlayResY 1440
+            $doc | Should Match "\\pos\(1280,1123\.2\)"
+            $doc | Should Not Match "\\pos\(1280,1123,2\)"
+        } finally {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig
+        }
+    }
 }
