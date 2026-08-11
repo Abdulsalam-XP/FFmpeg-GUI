@@ -243,6 +243,14 @@ function Export-CutListAsync {
     if ($mode -eq "audio-only") {
         $outputFile = [System.IO.Path]::ChangeExtension($outputFile, ".m4a")
     }
+    # Muting every audio lane is NOT trivial (Test-TrackStackTrivial refuses any Muted
+    # track), so a fully-muted stack lands in "rebuild" same as a gained one -- but running
+    # the audio pass there would mix zero sources over New-TrimAudioMixPlan's silence base
+    # and mux in a SILENT AAC stream, which is a different artifact than the spec's
+    # video-only, no-audio-stream-at-all output. Checked only for rebuild mode: audio-only
+    # mode already requires an audio pass to have any output at all (a fully-muted,
+    # video-main-deleted stack is a degenerate empty project, out of scope here).
+    $hasAudio = Test-TrackStackHasAudio -Tracks $Tracks
 
     # $work is the segment plan, not the piece list: with no fades the two are the same
     # thing (one copy step per piece), and with fades it also carries the transition
@@ -281,7 +289,15 @@ function Export-CutListAsync {
     # or mux marker is never extracted to piece{i}.mp4) and to know how many of $tempFiles
     # belong in the mux step's concat list.
     $segCount = $work.Count
-    if ($mode -eq "rebuild") {
+    # Whether audiomix/mux got appended as real $work entries -- true for every
+    # non-trivial mode EXCEPT a rebuild stack with no unmuted audio at all. That last case
+    # skips the audio pass entirely and falls through to the SAME implicit "one step past
+    # the segment list" concat trivial mode uses (unchanged code, further down): the
+    # pieces are already video-only (every rebuild-mode segment encode carries -an), so a
+    # plain "-map 0 -c copy" of them is already the correct video-only output -- no mux,
+    # no .m4a, nothing left to append.
+    $appendsFinalSteps = ($mode -eq "rebuild" -and $hasAudio) -or ($mode -eq "audio-only")
+    if ($mode -eq "rebuild" -and $hasAudio) {
         # Two more RunStep entries, reusing the same progress/cancel plumbing as every
         # other step: mix the tracks' audio, then mux it onto the video-only concat.
         $work = $work + @(@{ Kind = "audiomix" }, @{ Kind = "mux" })
@@ -290,11 +306,13 @@ function Export-CutListAsync {
         $work = $work + @(@{ Kind = "audiomix" })
     }
     $stepCount = $work.Count + 1
-    # For every non-trivial mode, audiomix (and mux) are now real entries INSIDE $work --
-    # unlike the trivial path's implicit "one step past the segment list is the concat",
-    # there is nothing left to do after the last entry in $work, so the "+1" above (which
-    # exists only to count that implicit trailing concat step) does not apply here.
-    if ($mode -ne "trivial") { $stepCount = $work.Count }
+    # For modes where audiomix (and mux) are now real entries INSIDE $work -- unlike the
+    # trivial path's implicit "one step past the segment list is the concat", there is
+    # nothing left to do after the last entry in $work, so the "+1" above (which exists
+    # only to count that implicit trailing concat step) does not apply. A rebuild stack
+    # with no unmuted audio did NOT get those entries appended, so it keeps the "+1" and
+    # reaches the implicit concat step exactly like trivial mode does.
+    if ($appendsFinalSteps) { $stepCount = $work.Count }
     $profile = Get-TrimSourceProfile -InputFile $InputFile
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-cut-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -404,6 +422,8 @@ function Export-CutListAsync {
         $fadeAudioMaps = $fadeAudioMaps
         $mode = $mode
         $segCount = $segCount
+        $hasAudio = $hasAudio
+        $appendsFinalSteps = $appendsFinalSteps
         $Tracks = $Tracks
         $Pieces = $Pieces
         $FadeLengths = $FadeLengths
@@ -656,13 +676,15 @@ function Export-CutListAsync {
                     if ($startButton) { $startButton.IsEnabled = $true }
                     return
                 }
-                # Trivial mode has one implicit step past the segment list (the concat),
-                # so the last real StepIndex is $work.Count - 1 and this condition -- read
-                # literally as "$StepIndex -lt $work.Count" -- is unchanged from before.
-                # Non-trivial modes appended audiomix (and mux) INTO $work itself, so its
-                # own last entry (mux for rebuild, audiomix for audio-only) is already the
-                # final step; there is no implicit step after it to recurse into.
-                $lastStepIndex = if ($mode -eq "trivial") { $work.Count } else { $work.Count - 1 }
+                # Trivial mode -- and a rebuild stack with no unmuted audio, which never
+                # got audiomix/mux appended to $work -- has one implicit step past the
+                # segment list (the concat), so the last real StepIndex is $work.Count and
+                # this condition -- read literally as "$StepIndex -lt $work.Count" -- is
+                # unchanged from before. Every OTHER non-trivial mode appended audiomix
+                # (and mux) INTO $work itself, so its own last entry (mux for rebuild,
+                # audiomix for audio-only) is already the final step; there is no implicit
+                # step after it to recurse into.
+                $lastStepIndex = if ($appendsFinalSteps) { $work.Count - 1 } else { $work.Count }
                 if ($StepIndex -lt $lastStepIndex) {
                     & $chain.RunStep ($StepIndex + 1)
                     return
@@ -828,7 +850,22 @@ function Get-TrimExportMode {
     return "rebuild"
 }
 
+# True when the stack has at least one audio-source or audio-clip track that is not
+# muted -- i.e. whether the "rebuild" pipeline's audio pass has anything to mix. A stack
+# is never "trivial" once ANY track is muted (Test-TrackStackTrivial refuses that), so a
+# fully-muted stack still lands in "rebuild"; without this check Export-CutListAsync would
+# run an audio pass that mixes zero sources over New-TrimAudioMixPlan's silence base and
+# mux in a silent AAC stream -- a different artifact than a true video-only, no-audio-
+# stream-at-all output.
+function Test-TrackStackHasAudio {
+    param([object[]]$Tracks = @())
+    foreach ($t in @($Tracks)) {
+        if (($t.Kind -eq "audio-source" -or $t.Kind -eq "audio-clip") -and -not $t.Muted) { return $true }
+    }
+    return $false
+}
+
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
     ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
-    Get-TrimExportMode
+    Get-TrimExportMode, Test-TrackStackHasAudio

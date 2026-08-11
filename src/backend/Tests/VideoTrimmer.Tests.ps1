@@ -277,3 +277,31 @@ Describe "Get-TrimExportMode" {
         Get-TrimExportMode -Tracks @($src) -PipSpans @() | Should Be "audio-only"
     }
 }
+
+# A muted-everything stack is "rebuild" (Test-TrackStackTrivial refuses any Muted track),
+# but Export-CutListAsync must NOT run an audio pass in that case -- there is nothing
+# unmuted to mix, and mixing zero sources over New-TrimAudioMixPlan's silence base would
+# mux in a silent AAC stream instead of producing a true video-only output. This flag is
+# what Export-CutListAsync checks (alongside $mode) to skip the audiomix/mux append.
+Describe "Test-TrackStackHasAudio" {
+    $main = New-TrimTrack -Kind "video-main" -Path "a.mp4"
+    It "is true with at least one unmuted audio-source" {
+        $src = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 1
+        Test-TrackStackHasAudio -Tracks @($main, $src) | Should Be $true
+    }
+    It "is true with at least one unmuted audio-clip" {
+        $clip = New-TrimTrack -Kind "audio-clip" -Path "b.mp3"
+        Test-TrackStackHasAudio -Tracks @($main, $clip) | Should Be $true
+    }
+    It "is false when every audio track is muted" {
+        $src = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 1 -Muted $true
+        $clip = New-TrimTrack -Kind "audio-clip" -Path "b.mp3" -Muted $true
+        Test-TrackStackHasAudio -Tracks @($main, $src, $clip) | Should Be $false
+    }
+    It "is false with no audio tracks at all" {
+        Test-TrackStackHasAudio -Tracks @($main) | Should Be $false
+    }
+    It "is false for an empty stack" {
+        Test-TrackStackHasAudio -Tracks @() | Should Be $false
+    }
+}
