@@ -177,7 +177,12 @@ function Get-TrimSegmentPlan {
 # option list starting at "/x".
 function ConvertTo-AssFilterPath {
     param([Parameter(Mandatory = $true)][string]$Path)
-    return (($Path -replace '\\', '/') -replace ':', '\:')
+    $p = ($Path -replace '\\', '/') -replace ':', '\:'
+    # The call sites wrap the result in single quotes; a literal ' in the path (an
+    # apostrophe in a Windows username reaching %TEMP%) would close that quote early and
+    # feed the rest of the path to the graph parser as garbage. ffmpeg's quoting rule:
+    # end the quoted run, emit an escaped quote, reopen.
+    return ($p -replace "'", "'\''")
 }
 
 # Exports the surviving pieces as one file.

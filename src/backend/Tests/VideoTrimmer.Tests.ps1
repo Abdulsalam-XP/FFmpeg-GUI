@@ -215,4 +215,10 @@ Describe "ConvertTo-AssFilterPath" {
     It "escapes every colon, not only the first" {
         ConvertTo-AssFilterPath -Path "C:\a:b\c.ass" | Should Be "C\:/a\:b/c.ass"
     }
+
+    It "escapes a single quote so it cannot close the filter's quoted argument" {
+        # An apostrophe in a Windows username reaches %TEMP% paths.
+        ConvertTo-AssFilterPath -Path "C:\Users\O'Brien\seg.ass" |
+            Should Be "C\:/Users/O'\''Brien/seg.ass"
+    }
 }

@@ -238,6 +238,9 @@ $errorBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.M
 # Finished-successfully green. Distinct from both the error red and the muted grey every
 # other panel message uses, so "it worked, here is the file" is not just more grey text.
 $successBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x7A, 0xD9, 0xA5))
+# Amber for warnings that do not stop anything (missing font, and the like): red implies
+# the action failed, grey implies nothing happened -- neither is true for a heads-up.
+$warningBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0xE0, 0xB4, 0x5C))
 
 try {
     $ctx = Initialize-MainWindow -ScriptRoot $scriptRoot
@@ -287,11 +290,12 @@ try {
     $mutedBrush = $ctx.Window.FindResource("BrushTextMuted")
 
     function Show-PanelMessage {
-        param($Block, [string]$Text, [switch]$IsError, [switch]$IsSuccess)
+        param($Block, [string]$Text, [switch]$IsError, [switch]$IsSuccess, [switch]$IsWarning)
         $Block.Text = $Text
-        # Error wins over success if both are somehow passed -- a wrong "done" is worse
-        # than a redundant red.
-        $Block.Foreground = if ($IsError) { $errorBrush } elseif ($IsSuccess) { $successBrush } else { $mutedBrush }
+        # Error wins over success/warning if several are somehow passed -- a wrong "done"
+        # is worse than a redundant red. Warning is for "heads up, still proceeding":
+        # red on a message that says the export continues reads as a failed export.
+        $Block.Foreground = if ($IsError) { $errorBrush } elseif ($IsWarning) { $warningBrush } elseif ($IsSuccess) { $successBrush } else { $mutedBrush }
         # Output paths are long and the meta blocks are single-line by default, so a
         # finished-job message would otherwise be silently truncated at the card edge --
         # cutting off the very thing the message exists to show.
@@ -950,7 +954,9 @@ try {
 
     function Format-TrimTime {
         param([double]$Seconds)
-        $ts = [timespan]::FromSeconds([math]::Max(0, $Seconds))
+        # 0.0, not 0: an int literal binds [math]::Max's INT overload and truncates the
+        # double (trap #8), which zeroed the milliseconds of every displayed time.
+        $ts = [timespan]::FromSeconds([math]::Max(0.0, $Seconds))
         return ("{0:D2}:{1:D2}.{2:D3}" -f $ts.Minutes, $ts.Seconds, $ts.Milliseconds)
     }
 
@@ -959,7 +965,7 @@ try {
     # the fraction entirely.
     function Format-TrimRulerLabel {
         param([double]$Seconds, [double]$Interval)
-        $ts = [timespan]::FromSeconds([math]::Max(0, $Seconds))
+        $ts = [timespan]::FromSeconds([math]::Max(0.0, $Seconds))
         # Not [int]$ts.TotalMinutes: PowerShell's [int] cast on a double ROUNDS rather than
         # truncates, so 45s (TotalMinutes 0.75) came out as "1:45" instead of "0:45".
         # Hours*60 + Minutes is exact and needs no cast.
@@ -977,7 +983,7 @@ try {
         param([double]$ViewSpanSeconds, [double]$CanvasWidth, [double]$MinPixelGap = 85)
         $niceSteps = @(0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
         if ($CanvasWidth -le 0 -or $ViewSpanSeconds -le 0) { return $niceSteps[0] }
-        $maxTicks = [math]::Max(1, $CanvasWidth / $MinPixelGap)
+        $maxTicks = [math]::Max(1.0, $CanvasWidth / $MinPixelGap)
         $rawInterval = $ViewSpanSeconds / $maxTicks
         foreach ($step in $niceSteps) {
             if ($step -ge $rawInterval) { return $step }
@@ -1265,7 +1271,7 @@ try {
         if ($state.TotalDuration -gt 0) {
             if ($script:TrimViewSpan -gt $state.TotalDuration) { $script:TrimViewSpan = $state.TotalDuration }
             if ($script:TrimViewStart + $script:TrimViewSpan -gt $state.TotalDuration) {
-                $script:TrimViewStart = [math]::Max(0, $state.TotalDuration - $script:TrimViewSpan)
+                $script:TrimViewStart = [math]::Max(0.0, $state.TotalDuration - $script:TrimViewSpan)
             }
         }
 
@@ -1273,7 +1279,7 @@ try {
             $tp = $timelinePieces[$i]
             $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
             $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
-            $width = [math]::Max(1, $x2 - $x1)
+            $width = [math]::Max(1.0, $x2 - $x1)
             $isSelected = ($i -eq $script:TrimSelected)
 
             # A Border+Grid of Images instead of a flat Rectangle, so the piece shows the
@@ -1434,7 +1440,7 @@ try {
                     # Centred on the playhead, but clamped inside the canvas: at 0:00 and at
                     # the very end an uncentred badge would hang off the edge and be clipped
                     # exactly when the time still needs reading.
-                    $badgeLeft = [math]::Max(0, [math]::Min($rulerWidth - $badgeWidth, $playX - $badgeWidth / 2))
+                    $badgeLeft = [math]::Max(0.0, [math]::Min($rulerWidth - $badgeWidth, $playX - $badgeWidth / 2))
                     $badgeRight = $badgeLeft + $badgeWidth
                 }
 
@@ -2117,7 +2123,16 @@ try {
         return ("{0:N3}_{1:N3}_{2:N2}" -f $OutgoingEnd, $IncomingStart, $FadeSeconds)
     }
 
-    # Write-through, same reason as Set-TrimThumbnail: called from a closured timer tick.
+    # Write-throughs, same reason as Set-TrimThumbnail: called from closured timer ticks.
+    # The Remove- variants exist for the watchers' FAILURE path -- a bare
+    # $script:...Pending.Remove() inside a GetNewClosure'd tick reads the closure's own
+    # never-initialized copy (trap #7), so the "render failed" branch crashed with
+    # "cannot call a method on a null-valued expression" whenever a reload deleted the
+    # scratch dir under an in-flight render. Flaky for months; root-caused 2026-08-11.
+    function Remove-TrimFadeProxyPending { param([string]$Key) $script:TrimFadeProxyPending.Remove($Key) }
+    function Remove-TrimThumbPending { param([string]$Key) $script:TrimThumbPending.Remove($Key) }
+    function Remove-TrimWavePending { param([string]$Key) $script:TrimWavePending.Remove($Key) }
+
     function Set-TrimFadeProxy {
         param([string]$Key, [string]$FilePath)
         $script:TrimFadeProxies[$Key] = $FilePath
@@ -2159,7 +2174,7 @@ try {
             try { $ps.EndInvoke($handle) | Out-Null } catch { }
             $ps.Dispose()
             if (Test-Path $outFile) { Set-TrimFadeProxy -Key $key -FilePath $outFile }
-            else { $script:TrimFadeProxyPending.Remove($key) }
+            else { Remove-TrimFadeProxyPending -Key $key }
         }.GetNewClosure())
         $watcher.Start()
     }
@@ -2724,7 +2739,7 @@ try {
             if (Test-Path $outFile) {
                 Set-TrimThumbnail -Key $key -FilePath $outFile
             } else {
-                $script:TrimThumbPending.Remove($key)
+                Remove-TrimThumbPending -Key $key
             }
         }.GetNewClosure())
         $watcher.Start()
@@ -2777,7 +2792,7 @@ try {
             if (Test-Path $outFile) {
                 Set-TrimWaveform -Key $key -FilePath $outFile
             } else {
-                $script:TrimWavePending.Remove($key)
+                Remove-TrimWavePending -Key $key
             }
         }.GetNewClosure())
         $watcher.Start()
@@ -2952,7 +2967,9 @@ try {
             # The click lands in timeline (compacted) space; convert to a real source
             # second before seeking, so a click can never target deleted footage.
             $t = Convert-TrimXToTime -X $pos.X
-            $tClamped = [math]::Max(0, [math]::Min($state.TotalDuration, $t))
+            # 0.0, not 0 (trap #8): the int overload truncated every scrub click to a
+            # whole second, so the playhead could never land between seconds.
+            $tClamped = [math]::Max(0.0, [math]::Min($state.TotalDuration, $t))
             $script:TrimPlayhead = Convert-TrimTimelineToSource -TimelineSeconds $tClamped -TimelinePieces $state.TimelinePieces
             $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
             Update-TrimPosition
@@ -2982,7 +2999,7 @@ try {
 
             $ratio = if ($script:TrimViewSpan -gt 0) { ($anchor - $script:TrimViewStart) / $script:TrimViewSpan } else { 0.5 }
             # Keep the window inside the clip.
-            $newStart = [math]::Max(0, [math]::Min($state.TotalDuration - $newSpan, $anchor - ($ratio * $newSpan)))
+            $newStart = [math]::Max(0.0, [math]::Min($state.TotalDuration - $newSpan, $anchor - ($ratio * $newSpan)))
             Set-TrimView -Start $newStart -Span $newSpan
             Update-TrimTimeline
         })
@@ -3416,7 +3433,7 @@ try {
                     -not (@([System.Windows.Media.Fonts]::SystemFontFamilies) |
                         Where-Object { $_.Source -eq $name }).Count })
             if ($missingFonts.Count -gt 0) {
-                Show-PanelMessage -Block $textTrimMeta -IsError -Text (
+                Show-PanelMessage -Block $textTrimMeta -IsWarning -Text (
                     "This PC has no font called {0}, so those captions will burn in a substitute typeface." -f ($missingFonts -join ", "))
             } else {
                 Show-PanelMessage -Block $textTrimMeta -Text ""

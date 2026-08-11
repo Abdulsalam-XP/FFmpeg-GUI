@@ -42,10 +42,23 @@ function ConvertTo-AssTime {
     return ("{0}:{1:D2}:{2:D2}.{3:D2}" -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds, [int]$cs)
 }
 
-# Braces open ASS override blocks; a user typing "{" must not be able to inject tags.
+# Braces open ASS override blocks and a backslash can start a control sequence (a user
+# typing a literal "\N" would otherwise burn as a hard line break). One evaluator pass so
+# the characters we INSERT are never rescanned: user "\" becomes "\{}" (backslash followed
+# by an empty override block, which renders as a lone backslash and cannot pair with a
+# following N/n/h), and braces become their escaped forms.
 function ConvertTo-AssText {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
-    $t = $Text -replace '\{', '\{' -replace '\}', '\}'
+    $t = [regex]::Replace($Text, '[\\{}]', {
+        param($m)
+        switch ($m.Value) {
+            '\' { '\{}' }
+            '{' { '\{' }
+            '}' { '\}' }
+        }
+    })
+    # Real newline characters (typed via the multi-line box) become ASS breaks; these are
+    # control characters, untouched by the pass above.
     $t = $t -replace "`r`n", '\N' -replace "`n", '\N'
     return $t
 }

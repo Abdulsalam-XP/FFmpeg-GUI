@@ -57,6 +57,16 @@ Describe "ConvertTo-AssText" {
     It "passes plain text through, emoji included" {
         ConvertTo-AssText -Text "gg wp" | Should Be "gg wp"
     }
+
+    It "keeps a typed backslash-N as literal text instead of a line break" {
+        # A user backslash becomes backslash + empty override block, which renders as a
+        # lone backslash and can no longer pair with the following N.
+        ConvertTo-AssText -Text 'a\Nb' | Should Be 'a\{}Nb'
+    }
+
+    It "escapes user braces even next to escaped backslashes" {
+        ConvertTo-AssText -Text '\{' | Should Be '\{}\{'
+    }
 }
 
 Describe "New-AssDocument" {
