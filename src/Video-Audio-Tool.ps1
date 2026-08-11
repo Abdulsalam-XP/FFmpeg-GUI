@@ -845,6 +845,8 @@ try {
     $canvasTrimWave      = $panelTrim.FindName("CanvasTrimWave")
     $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
     $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
+    $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
+    $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
     $textTrimFadeNote    = $panelTrim.FindName("TextTrimFadeNote")
     $textTrimFadeScope   = $panelTrim.FindName("TextTrimFadeScope")
@@ -861,6 +863,7 @@ try {
     $buttonTrimUndo      = $panelTrim.FindName("ButtonTrimUndo")
     $buttonTrimExport    = $panelTrim.FindName("ButtonTrimExport")
     $buttonTrimAddCaption = $panelTrim.FindName("ButtonTrimAddCaption")
+    $buttonTrimAddZoom    = $panelTrim.FindName("ButtonTrimAddZoom")
     $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
     $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
     $canvasCaptionOverlay = $panelTrim.FindName("CanvasCaptionOverlay")
@@ -926,6 +929,19 @@ try {
     $script:CaptionTextEdit = $null
     $script:CaptionSliderEdit = $null
 
+    # Zoom keyframe state. Declared here beside the caption state and for exactly the same
+    # reason: the zoom lane is drawn from Update-TrimTimeline, which runs during initial
+    # layout before any file has been picked, so both of these have to exist by then.
+    # $script:TrimSelectedZoom is a keyframe Id string (or $null), never an index --
+    # indexes shift on add/delete and a drag re-sorts the list on every move.
+    $script:TrimZooms = New-Object System.Collections.ArrayList
+    $script:TrimSelectedZoom = $null
+    # In-flight diamond drag: $null when nothing is being dragged, otherwise a hashtable of
+    # Id / StartX / OrigTime / Snapshot. Snapshot taken when the drag BEGINS and pushed on
+    # release only if the keyframe really moved -- one undo step per completed drag, the
+    # same rule the caption lane drag follows.
+    $script:TrimZoomDrag = $null
+
     # Project persistence. The save failure is reported once per file, not once per edit:
     # a read-only folder would otherwise repaint the same error over the panel every
     # second for as long as the user keeps working.
@@ -940,7 +956,8 @@ try {
         $script:ProjectSaveTimer.Stop()
         if (-not $script:TrimInputFile) { return }
         $ok = Save-TrimProject -VideoPath $script:TrimInputFile `
-            -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions)
+            -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions) `
+            -Zooms @($script:TrimZooms)
         if (-not $ok -and -not $script:ProjectSaveWarned) {
             $script:ProjectSaveWarned = $true
             Show-PanelMessage -Block $textTrimMeta -IsError `
@@ -1499,6 +1516,9 @@ try {
 
         Update-TrimWaveform
         Update-TrimCaptionLane
+        # Last: the zoom lane is the bottom row and depends on the same timeline pieces
+        # everything above it has just been drawn from.
+        Update-TrimZoomLane
     }
 
     # Waveform strip under the filmstrip, one image per piece that is at least partly on
@@ -1852,6 +1872,11 @@ try {
                 param($eventSource, $e)
                 $x = ($e.GetPosition($canvasTrimCaptions)).X
                 Set-TrimSelectedCaption -Id $thisId
+                # The other half of the mutual exclusion Set-TrimSelectedZoom carries: only
+                # one of a caption and a zoom keyframe is ever selected, so Delete is never
+                # ambiguous. Clear- only nulls the zoom selection and redraws its own lane,
+                # so this cannot recurse back into here.
+                Clear-TrimZoomSelection
                 Start-TrimCaptionDrag -Id $thisId -Mode "move" -StartX $x
                 $canvasTrimCaptions.CaptureMouse() | Out-Null
                 $e.Handled = $true
@@ -1876,6 +1901,7 @@ try {
                         param($eventSource, $e)
                         $x = ($e.GetPosition($canvasTrimCaptions)).X
                         Set-TrimSelectedCaption -Id $thisId
+                        Clear-TrimZoomSelection
                         Start-TrimCaptionDrag -Id $thisId -Mode $thisSide -StartX $x
                         $canvasTrimCaptions.CaptureMouse() | Out-Null
                         # Handled, so the block's own move-drag handler underneath does not
@@ -1908,6 +1934,323 @@ try {
             [System.Windows.Controls.Canvas]::SetTop($laneHead, 0)
             $canvasTrimCaptions.Children.Add($laneHead) | Out-Null
         }
+    }
+
+    # ---- Zoom keyframes ----
+    #
+    # Mirrors the caption machinery above function for function, and for the same reasons:
+    # a script-scope ArrayList plus an Id selection, write-throughs so nothing inside a
+    # .GetNewClosure()'d handler ever assigns $script: directly (a bare write there lands in
+    # the closure's own private module and is invisible to the drawing code), a lane rebuilt
+    # from scratch on every change, and one undo step per completed drag.
+
+    # Field by field rather than PSObject.Copy(), like Copy-TrimCaption: undo has to hold a
+    # genuinely independent keyframe and not a second reference to the one a drag or the
+    # Task 7 spotlight is about to mutate in place.
+    function Copy-TrimZoom {
+        param($Zoom)
+        return [PSCustomObject]@{
+            Id    = $Zoom.Id
+            Time  = [double]$Zoom.Time
+            CX    = [double]$Zoom.CX
+            CY    = [double]$Zoom.CY
+            Level = [double]$Zoom.Level
+        }
+    }
+
+    function Set-TrimZooms {
+        param([object[]]$Zooms = @())
+        $list = New-Object System.Collections.ArrayList
+        foreach ($z in @($Zooms)) { if ($null -ne $z) { [void]$list.Add($z) } }
+        $script:TrimZooms = $list
+    }
+
+    function Get-TrimZoomById {
+        param([string]$Id)
+        foreach ($z in $script:TrimZooms) { if ($z.Id -eq $Id) { return $z } }
+        return $null
+    }
+
+    function Get-TrimSelectedZoom {
+        foreach ($z in $script:TrimZooms) {
+            if ($z.Id -eq $script:TrimSelectedZoom) { return $z }
+        }
+        return $null
+    }
+
+    # Selecting a zoom drops any caption selection. The two features share the preview
+    # surface and the Delete key, so leaving both live would make Delete ambiguous and put
+    # the caption sidebar on screen next to a zoom nobody is editing.
+    #
+    # The two Clear- functions only ever null their OWN selection and redraw their OWN lane;
+    # only the Set- functions reach across. That asymmetry is what keeps the pair from
+    # recursing into each other.
+    function Set-TrimSelectedZoom {
+        param($Id)
+        $script:TrimSelectedZoom = $Id
+        if ($null -ne $Id) { Clear-TrimCaptionSelection }
+    }
+
+    function Clear-TrimZoomSelection {
+        if ($null -eq $script:TrimSelectedZoom) { return }
+        $script:TrimSelectedZoom = $null
+        Update-TrimZoomLane
+    }
+
+    # Two keyframes at the same instant are a zero-length glide, which Get-TrimZoomStateAt
+    # resolves arbitrarily and New-ZoomCropFilter would divide by. Keyframes are kept this
+    # far apart instead of merged, so a drag can never destroy one by dropping it on another.
+    $script:TrimZoomMinGap = 0.05
+
+    # Retime one keyframe. Clamped to the clip AND to its immediate neighbours, so a drag
+    # cannot reorder the list: the keyframe stays in its own slot and the lane, the glide and
+    # the exported filtergraph all keep reading the same sequence.
+    function Move-TrimZoomKeyframe {
+        param([string]$Id, [double]$Time)
+        $kf = Get-TrimZoomById -Id $Id
+        if ($null -eq $kf) { return }
+        # 0.0/doubles in every clamp: [math]::Max(0, <double>) binds the INT overload and
+        # truncates, which is what quantised the caption drags to whole seconds.
+        $lo = 0.0
+        $hi = [math]::Max(0.0, [double]$script:TrimDuration)
+        foreach ($other in @($script:TrimZooms)) {
+            if ($other.Id -eq $Id) { continue }
+            $t = [double]$other.Time
+            if ($t -le [double]$kf.Time) { $lo = [math]::Max($lo, $t + $script:TrimZoomMinGap) }
+            else { $hi = [math]::Min($hi, $t - $script:TrimZoomMinGap) }
+        }
+        # Keyframes packed tighter than the gap allows leave no legal position at all;
+        # refusing beats snapping onto a neighbour and silently merging the two.
+        if ($hi -lt $lo) { return }
+        $kf.Time = [math]::Max($lo, [math]::Min($hi, $Time))
+        Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+    }
+
+    # Absolute write for the framing values, clamped exactly as New-ZoomKeyframe clamps them
+    # so a keyframe edited here can never hold a value the constructor would have rejected.
+    # Each is optional: Task 7's spotlight drag moves the centre without touching the level.
+    function Set-TrimZoomValues {
+        param([string]$Id, $CX = $null, $CY = $null, $Level = $null)
+        $kf = Get-TrimZoomById -Id $Id
+        if ($null -eq $kf) { return }
+        if ($null -ne $CX) { $kf.CX = [math]::Max(0.0, [math]::Min(1.0, [double]$CX)) }
+        if ($null -ne $CY) { $kf.CY = [math]::Max(0.0, [math]::Min(1.0, [double]$CY)) }
+        if ($null -ne $Level) { $kf.Level = [math]::Max(1.0, [math]::Min(6.0, [double]$Level)) }
+        Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+    }
+
+    # Same drag lifecycle as the caption lane: snapshot at mouse-down, pushed on release only
+    # if the keyframe actually ended up somewhere else, so a click that merely selects a
+    # diamond costs no undo step.
+    function Start-TrimZoomDrag {
+        param([string]$Id, [double]$StartX)
+        $kf = Get-TrimZoomById -Id $Id
+        if ($null -eq $kf) { return }
+        $script:TrimZoomDrag = @{
+            Id       = $Id
+            StartX   = $StartX
+            OrigTime = [double]$kf.Time
+            Snapshot = New-TrimUndoSnapshot
+        }
+    }
+
+    function Test-TrimZoomDrag {
+        return ($null -ne $script:TrimZoomDrag)
+    }
+
+    # Applied against the drag's ORIGINAL time, never accumulated: per-move deltas drift, and
+    # a clamped neighbour would otherwise "eat" motion so dragging back never returns.
+    function Update-TrimZoomDrag {
+        param([double]$CurrentX)
+        $drag = $script:TrimZoomDrag
+        if ($null -eq $drag) { return }
+        $dt = Convert-TrimPixelsToSeconds -Pixels ($CurrentX - $drag.StartX)
+        Move-TrimZoomKeyframe -Id $drag.Id -Time ($drag.OrigTime + $dt)
+    }
+
+    function Complete-TrimZoomDrag {
+        $drag = $script:TrimZoomDrag
+        $script:TrimZoomDrag = $null
+        if ($null -eq $drag) { return }
+        $kf = Get-TrimZoomById -Id $drag.Id
+        if ($null -eq $kf) { return }
+        # Sub-millisecond movement is the jitter of a plain click, not a drag.
+        if ([math]::Abs([double]$kf.Time - $drag.OrigTime) -lt 0.001) { return }
+        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        # On release rather than per mouse move: one save per drag, and the early return
+        # above means a click that moved nothing does not rewrite the project file either.
+        Request-TrimProjectSave
+    }
+
+    # Rebuilt from scratch like the caption lane, and guarded on the canvas being non-null
+    # for the same stale-XAML reason. Called at the END of Update-TrimTimeline.
+    function Update-TrimZoomLane {
+        if ($null -eq $canvasTrimZooms) { return }
+        $canvasTrimZooms.Children.Clear()
+        if (-not $script:TrimInputFile) { return }
+
+        $laneWidth = $canvasTrimZooms.ActualWidth
+        if ($laneWidth -le 0) { $laneWidth = $canvasTrimTimeline.ActualWidth }
+        $laneHeight = $canvasTrimZooms.ActualHeight
+        if ($laneHeight -le 0) { $laneHeight = 26 }
+
+        $timelinePieces = (Get-TrimTimelineState).TimelinePieces
+
+        # Keyframe times are SOURCE seconds, like caption times, so an x is the same two-step
+        # conversion the playhead uses: source -> timeline (compacted) -> pixels.
+        $sorted = @(@($script:TrimZooms) | Where-Object { $_ } | Sort-Object { [double]$_.Time })
+        $xs = @()
+        foreach ($z in $sorted) {
+            $xs += [double](Convert-TrimTimeToX -Seconds (
+                Convert-TrimSourceToTimeline -SourceSeconds ([double]$z.Time) -TimelinePieces $timelinePieces))
+        }
+
+        # Ramps first so the diamonds paint over their ends. One per consecutive pair: flat
+        # while the level is held above 1x, a gradient in the direction the zoom is moving,
+        # and nothing at all across a stretch that is 1x at both ends -- there is no zoom
+        # there to show.
+        $rampHeight = 6.0
+        $rampTop = [math]::Max(0.0, ($laneHeight - $rampHeight) / 2.0)
+        for ($i = 0; $i -lt $sorted.Count - 1; $i++) {
+            $l0 = [double]$sorted[$i].Level
+            $l1 = [double]$sorted[$i + 1].Level
+            $styleName = $null
+            if ([math]::Abs($l1 - $l0) -lt 0.001) {
+                if ($l0 -gt 1.001) { $styleName = "ZoomRampHoldStyle" }
+            } elseif ($l1 -gt $l0) { $styleName = "ZoomRampStyle" }
+            else { $styleName = "ZoomRampDownStyle" }
+            if ($null -eq $styleName) { continue }
+
+            $x1 = $xs[$i]
+            $x2 = $xs[$i + 1]
+            # Fully off-view: nothing to draw, and a rectangle hundreds of thousands of
+            # pixels wide at a deep zoom is worth not building at all.
+            if ($x2 -le 0 -or $x1 -ge $laneWidth) { continue }
+            $left = [math]::Max(0.0, $x1)
+            $right = [math]::Min([double]$laneWidth, $x2)
+            if ($right - $left -le 0.5) { continue }
+
+            $ramp = New-Object System.Windows.Shapes.Rectangle
+            $ramp.Style = $ctx.Window.FindResource($styleName)
+            $ramp.Width = $right - $left
+            $ramp.Height = $rampHeight
+            # Not hit-testable: a ramp lies between two diamonds and a hit-testable strip
+            # would swallow the empty-lane click that deselects.
+            $ramp.IsHitTestVisible = $false
+            [System.Windows.Controls.Canvas]::SetLeft($ramp, $left)
+            [System.Windows.Controls.Canvas]::SetTop($ramp, $rampTop)
+            $canvasTrimZooms.Children.Add($ramp) | Out-Null
+        }
+
+        # Diamonds: 13x13 squares the style rotates 45 degrees about their own centre, so the
+        # layout rect is still 13x13 and only the painted footprint grows to ~18px diagonal.
+        # Centring the LAYOUT rect therefore centres the diamond, and 18.4 < 26 means the
+        # points stay inside the lane.
+        $diamondSize = 13.0
+        $diamondTop = [math]::Max(0.0, ($laneHeight - $diamondSize) / 2.0)
+        for ($i = 0; $i -lt $sorted.Count; $i++) {
+            $x = $xs[$i]
+            if ($x -lt -$diamondSize -or $x -gt $laneWidth + $diamondSize) { continue }
+
+            $isSelected = ($sorted[$i].Id -eq $script:TrimSelectedZoom)
+            $diamond = New-Object System.Windows.Shapes.Rectangle
+            $diamond.Style = $ctx.Window.FindResource(
+                $(if ($isSelected) { "ZoomDiamondSelectedStyle" } else { "ZoomDiamondStyle" }))
+            $diamond.Width = $diamondSize
+            $diamond.Height = $diamondSize
+            [System.Windows.Controls.Canvas]::SetLeft($diamond, $x - ($diamondSize / 2.0))
+            [System.Windows.Controls.Canvas]::SetTop($diamond, $diamondTop)
+
+            $thisId = $sorted[$i].Id
+
+            # GetNewClosure is required, exactly as on the caption blocks: without it every
+            # diamond captures the loop variable's final value and dragging any of them moves
+            # the last keyframe. Mouse capture goes on the CANVAS, not on the diamond: the
+            # lane is rebuilt on every MouseMove, which destroys the element mid-drag, and a
+            # capture held by a destroyed element is lost.
+            $diamond.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                $x = ($e.GetPosition($canvasTrimZooms)).X
+                Set-TrimSelectedZoom -Id $thisId
+                Start-TrimZoomDrag -Id $thisId -StartX $x
+                $canvasTrimZooms.CaptureMouse() | Out-Null
+                $e.Handled = $true
+                Update-TrimZoomLane
+            }.GetNewClosure())
+
+            $canvasTrimZooms.Children.Add($diamond) | Out-Null
+        }
+    }
+
+    # The live zoom. Applied to PreviewZoomHost, which wraps only the two video surfaces, so
+    # the caption overlay beside it stays pinned to the frame instead of zooming with it.
+    #
+    # RenderTransformOrigin is 0,0 and the centring is done by the TranslateTransform
+    # instead: the origin is a fraction of the element, so expressing "put source point
+    # (cx, cy) in the middle" through it would need a second, different fraction per axis and
+    # would break the moment the host is resized.
+    function Update-PreviewZoom {
+        param([double]$SourceSeconds)
+        if ($null -eq $previewZoomHost) { return }
+        $state = Get-TrimZoomStateAt -Zooms @($script:TrimZooms) -Seconds $SourceSeconds
+        $level = [double]$state.Level
+        # Identity fast-path. This runs 20x a second during playback, and rebuilding a
+        # transform group per tick for a 1x "zoom" is pure waste -- $null is also what keeps
+        # the preview bit-identical to no-zoom rather than resampled through a 1.0 scale.
+        if ($level -le 1.001) {
+            $previewZoomHost.RenderTransform = $null
+            return
+        }
+        $w = [double]$previewZoomHost.ActualWidth
+        $h = [double]$previewZoomHost.ActualHeight
+        $group = New-Object System.Windows.Media.TransformGroup
+        # Scale FIRST, then translate: the group applies its children in order, so the
+        # source point (cx*w, cy*h) is blown up to (L*cx*w, L*cy*h) and the translate below
+        # is exactly what carries that to the middle of the box.
+        $group.Children.Add((New-Object System.Windows.Media.ScaleTransform($level, $level)))
+        $group.Children.Add((New-Object System.Windows.Media.TranslateTransform(
+            (($w / 2.0) - ($level * [double]$state.CX * $w)),
+            (($h / 2.0) - ($level * [double]$state.CY * $h)))))
+        $previewZoomHost.RenderTransformOrigin = New-Object System.Windows.Point(0, 0)
+        $previewZoomHost.RenderTransform = $group
+    }
+
+    function Invoke-TrimAddZoom {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        # A second keyframe on top of an existing one has no legal position to be dragged to
+        # (Move-TrimZoomKeyframe would refuse every request) and would be a zero-length glide
+        # on export. Selecting the one already there is what the user was reaching for anyway.
+        foreach ($z in @($script:TrimZooms)) {
+            if ([math]::Abs([double]$z.Time - $script:TrimPlayhead) -lt $script:TrimZoomMinGap) {
+                Set-TrimSelectedZoom -Id $z.Id
+                Update-TrimTimeline
+                return
+            }
+        }
+        Push-TrimUndo
+        # Seeded from the glide as it stands at the playhead, not from 1x: adding a keyframe
+        # in the middle of an existing move must not yank the picture back to unzoomed. The
+        # new keyframe changes nothing until it is edited, which is the only honest default.
+        $state = Get-TrimZoomStateAt -Zooms @($script:TrimZooms) -Seconds $script:TrimPlayhead
+        $kf = New-ZoomKeyframe -Time $script:TrimPlayhead -CX $state.CX -CY $state.CY -Level $state.Level
+        [void]$script:TrimZooms.Add($kf)
+        Set-TrimSelectedZoom -Id $kf.Id
+        Update-TrimTimeline
+        Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+        Request-TrimProjectSave
+    }
+
+    function Invoke-TrimDeleteZoom {
+        $kf = Get-TrimSelectedZoom
+        if ($null -eq $kf) { return }
+        Push-TrimUndo
+        $script:TrimZooms.Remove($kf)
+        $script:TrimSelectedZoom = $null
+        Update-TrimTimeline
+        # Removing a keyframe changes the glide everywhere its neighbours reached, so the
+        # picture under the playhead is stale until this runs.
+        Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+        Request-TrimProjectSave
     }
 
     # ---- Caption preview overlay ----
@@ -2273,6 +2616,11 @@ try {
             Selected        = $script:TrimSelected
             Captions        = @(foreach ($c in $script:TrimCaptions) { Copy-TrimCaption -Caption $c })
             SelectedCaption = $script:TrimSelectedCaption
+            # Cloned for exactly the reason the captions are: a diamond drag and the Task 7
+            # spotlight both edit keyframe objects IN PLACE, so an uncloned snapshot would
+            # hand undo the very objects the edit is about to change.
+            Zooms           = @(foreach ($z in $script:TrimZooms) { Copy-TrimZoom -Zoom $z })
+            SelectedZoom    = $script:TrimSelectedZoom
         }
     }
 
@@ -2348,6 +2696,16 @@ try {
             Set-TrimCaptions -Captions $last.Captions
             Set-TrimSelectedCaption -Id $last.SelectedCaption
         }
+        # Same "only restore what was recorded" rule for zooms: entries pushed before zoom
+        # keyframes existed carry no Zooms key, and treating that as "no zooms" would wipe
+        # the lane.
+        if ($last.ContainsKey("Zooms")) {
+            Set-TrimZooms -Zooms $last.Zooms
+            # NOT Set-TrimSelectedZoom: that one clears the caption selection, which the
+            # line above has just restored. A snapshot already records a consistent pair, so
+            # the restore writes both straight through.
+            $script:TrimSelectedZoom = $last.SelectedZoom
+        }
         $buttonTrimDelete.IsEnabled = ($script:TrimSelected -ge 0)
         $buttonTrimUndo.IsEnabled = ($script:TrimUndoStack.Count -gt 0)
         Update-TrimSelectionText
@@ -2355,6 +2713,8 @@ try {
         # The sidebar edits whatever is selected, so an undo that changed the selection --
         # including one that undid an add and left nothing selected -- has to move it.
         if ($null -eq (Get-TrimSelectedCaption)) { Hide-CaptionSidebar } else { Show-CaptionSidebar }
+        # The glide is part of what an undo puts back, so the picture has to follow it.
+        Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
         # Undo changes the model as much as any edit does, so the saved project has to
         # follow it back -- otherwise closing the app restores the state that was undone.
         Request-TrimProjectSave
@@ -2648,6 +3008,7 @@ try {
         $cap = New-Caption -Start $start -End ([math]::Min($script:TrimDuration, $start + 2.0)) -Text ""
         [void]$script:TrimCaptions.Add($cap)
         Set-TrimSelectedCaption -Id $cap.Id
+        Clear-TrimZoomSelection
         Update-TrimTimeline
         Show-CaptionSidebar
         # A new caption is empty, so the only useful next action is typing into it --
@@ -2942,6 +3303,10 @@ try {
             # After the fade overlay, not before: the fade owns the picture while it is up
             # and Update-CaptionOverlay reads the key it just set.
             Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+            # After the captions: the zoom transform is what makes the glide visible during
+            # playback, and it has its own identity fast-path so a clip with no keyframes
+            # pays almost nothing for being asked 20x a second.
+            Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
         })
 
         $buttonTrimPlay.Add_Click({
@@ -2987,6 +3352,8 @@ try {
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
             # Scrubbing across a caption's window shows it appear and disappear on time.
             Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+            # And scrubbing across a glide shows the picture move with it, paused.
+            Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
         })
 
         # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
@@ -3054,6 +3421,47 @@ try {
 
             $canvasTrimCaptions.Add_SizeChanged({ Update-TrimCaptionLane })
         }
+
+        # Zoom lane drags, same three handlers and the same reasoning as the caption lane
+        # above: capture lives on the canvas because the lane is rebuilt on every move, and
+        # none of these take a GetNewClosure() -- they read and write $script: state through
+        # top-level functions and capture nothing.
+        if ($null -ne $canvasTrimZooms) {
+            $canvasTrimZooms.Add_MouseMove({
+                param($eventSource, $e)
+                if (-not (Test-TrimZoomDrag)) { return }
+                Update-TrimZoomDrag -CurrentX ($e.GetPosition($canvasTrimZooms)).X
+                # Lane only: a handful of shapes, cheap per mouse move, where a full
+                # Update-TrimTimeline would re-request thumbnails.
+                Update-TrimZoomLane
+            })
+
+            $canvasTrimZooms.Add_MouseLeftButtonUp({
+                param($eventSource, $e)
+                if (-not (Test-TrimZoomDrag)) { return }
+                $canvasTrimZooms.ReleaseMouseCapture()
+                Complete-TrimZoomDrag
+                Update-TrimTimeline
+            })
+
+            # Empty lane space deselects. The diamonds mark their own clicks Handled and are
+            # children of this canvas, and the ramps are not hit-testable at all, so an
+            # OriginalSource of the canvas itself is bare background and never a drag start.
+            $canvasTrimZooms.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                if ($e.OriginalSource -ne $canvasTrimZooms) { return }
+                Clear-TrimZoomSelection
+            })
+
+            $canvasTrimZooms.Add_SizeChanged({ Update-TrimZoomLane })
+        }
+
+        # The zoom translate is computed from the host's own width and height, so every
+        # pixel of it is wrong until the next redraw once the box changes size -- opening the
+        # caption sidebar takes 240px off it, exactly as it does off the caption overlay.
+        if ($null -ne $previewZoomHost) {
+            $previewZoomHost.Add_SizeChanged({ Update-PreviewZoom -SourceSeconds $script:TrimPlayhead })
+        }
         # Preview-overlay drags. Capture lives on the overlay canvas for the same reason it
         # lives on the lane canvas: the overlay is rebuilt on every move, so a capture held
         # by the caption element itself would die after the first one. No GetNewClosure()
@@ -3092,6 +3500,7 @@ try {
 
         if ($null -ne $buttonTrimAddCaption) { $buttonTrimAddCaption.Add_Click({ Invoke-TrimAddCaption }) }
         if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
+        if ($null -ne $buttonTrimAddZoom) { $buttonTrimAddZoom.Add_Click({ Invoke-TrimAddZoom }) }
 
         # ---- Caption sidebar handlers ----
         #
@@ -3203,7 +3612,16 @@ try {
 
             if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Z) { Invoke-TrimUndo; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::S -and -not $ctrl) { Invoke-TrimSplit; $e.Handled = $true; return }
-            if ($e.Key -eq [System.Windows.Input.Key]::Delete) { Invoke-TrimDelete; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::Delete) {
+                # A selected zoom keyframe wins. Selecting one clears the caption selection
+                # and vice versa, so at most one of these is ever armed -- but a piece can be
+                # selected at the same time as a keyframe, and deleting footage is the far
+                # more destructive of the two to do by accident.
+                if ($null -ne (Get-TrimSelectedZoom)) { Invoke-TrimDeleteZoom }
+                else { Invoke-TrimDelete }
+                $e.Handled = $true
+                return
+            }
             if ($e.Key -eq [System.Windows.Input.Key]::Space) {
                 $buttonTrimPlay.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
                 $e.Handled = $true
@@ -3226,7 +3644,7 @@ try {
         if ($script:ProjectSaveTimer) { $script:ProjectSaveTimer.Stop() }
         if ($script:TrimInputFile) {
             Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
-                -Fades $script:TrimFades -Captions @($script:TrimCaptions) | Out-Null
+                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) | Out-Null
         }
 
         $props = Get-VideoProperties -inputFile $path
@@ -3251,6 +3669,15 @@ try {
         $script:TrimCaptions = New-Object System.Collections.ArrayList
         $script:TrimSelectedCaption = $null
         $script:TrimCaptionDrag = $null
+        # Zoom keyframes belong to the file they were written against for exactly the same
+        # reason captions do -- their times are source seconds. A drag in progress across a
+        # file pick is dropped with them.
+        $script:TrimZooms = New-Object System.Collections.ArrayList
+        $script:TrimSelectedZoom = $null
+        $script:TrimZoomDrag = $null
+        # Whatever the previous file's glide left on the preview would otherwise sit over the
+        # new file's first frame until something happens to redraw it.
+        Update-PreviewZoom -SourceSeconds 0.0
         $script:TrimSelected = -1
         $script:TrimPlayhead = 0.0
         $script:TrimViewStart = 0.0
@@ -3273,11 +3700,18 @@ try {
         # version). Reported rather than silently discarded -- but only further down,
         # after the unconditional message clear, which would otherwise wipe it.
         $projectUnreadable = $false
+        # Keyframes the reader could not make sense of. Reported below rather than silently
+        # dropped: a project that comes back with fewer zooms than it was saved with is
+        # something the user needs to know about before they export.
+        $droppedZooms = 0
         if ($project) {
             $script:TrimCutList = @($project.CutList)
             $script:TrimFades = $project.Fades
             $script:TrimCaptions = New-Object System.Collections.ArrayList
             foreach ($c in @($project.Captions)) { [void]$script:TrimCaptions.Add($c) }
+            $script:TrimZooms = New-Object System.Collections.ArrayList
+            foreach ($z in @($project.Zooms)) { [void]$script:TrimZooms.Add($z) }
+            if ($project.DroppedZooms -gt 0) { $droppedZooms = [int]$project.DroppedZooms }
         } elseif (Test-Path -LiteralPath (Get-TrimProjectPath -VideoPath $path)) {
             $projectUnreadable = $true
         }
@@ -3315,6 +3749,14 @@ try {
         if ($projectUnreadable) {
             Show-PanelMessage -Block $textTrimMeta -IsError `
                 -Text "Couldn't read the saved project for this video. Starting fresh."
+        } elseif ($droppedZooms -gt 0) {
+            # A warning, not an error: everything else in the project loaded fine and the
+            # editor is perfectly usable -- there are simply fewer keyframes than there were.
+            $noun = if ($droppedZooms -eq 1) { "zoom keyframe" } else { "zoom keyframes" }
+            $verb = if ($droppedZooms -eq 1) { "couldn't be read and was skipped" }
+                    else { "couldn't be read and were skipped" }
+            Show-PanelMessage -Block $textTrimMeta -IsWarning `
+                -Text ("{0} {1} {2}" -f $droppedZooms, $noun, $verb)
         } else {
             Show-PanelMessage -Block $textTrimMeta -Text ""
         }
@@ -3331,6 +3773,19 @@ try {
         Update-TrimPosition
         Update-TrimSelectionText
         Update-TrimTimeline
+        # After the load, not just the reset above: a project whose first keyframe is zoomed
+        # is zoomed from the very first frame (the glide is held flat before it), so leaving
+        # the preview at identity until the first scrub would show a picture the model does
+        # not agree with. Posted at Loaded priority because PreviewZoomHost has no
+        # ActualWidth yet on the pass that makes the card visible, and the translate is
+        # computed from it -- called inline it would centre on a zero-sized box.
+        # GetNewClosure: the block runs after this handler has returned. Read-only capture,
+        # so no $script: write can land in the closure's private module.
+        if ($null -ne $previewZoomHost) {
+            $previewZoomHost.Dispatcher.BeginInvoke(
+                [System.Windows.Threading.DispatcherPriority]::Loaded,
+                [action]({ Update-PreviewZoom -SourceSeconds $script:TrimPlayhead }.GetNewClosure())) | Out-Null
+        }
         Start-TrimKeyframeRead -Path $path
         return $true
     }
@@ -3413,11 +3868,10 @@ try {
             $captions = [object[]]@($script:TrimCaptions)
             $anyCaption = @($captions | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Text) }).Count -gt 0
 
-            # Task 6 replaces this with @($script:TrimZooms) -- the keyframe state does not
-            # exist yet, so every check below is wired up against a list that is currently
-            # always empty and starts working the moment that state lands. [object[]] cast
-            # for the same reason the captions get one.
-            $zooms = [object[]]@()
+            # [object[]] cast for the same reason the captions get one: an empty bare @()
+            # binds to a typed array parameter as $null, and no keyframes at all is the
+            # normal case for a plain trim.
+            $zooms = [object[]]@($script:TrimZooms)
             $zoomSpans = Get-TrimZoomSpans -Zooms $zooms -Pieces $pieces
             $anyZoom = $zoomSpans.Count -gt 0
 
@@ -3842,7 +4296,7 @@ try {
         # swallows its own failures, and there is no panel left to report one to anyway.
         if ($script:TrimInputFile) {
             Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
-                -Fades $script:TrimFades -Captions @($script:TrimCaptions) | Out-Null
+                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) | Out-Null
         }
         foreach ($dir in @($script:TrimThumbDir, $script:TrimFadeProxyDir)) {
             if ($dir -and (Test-Path $dir)) {
