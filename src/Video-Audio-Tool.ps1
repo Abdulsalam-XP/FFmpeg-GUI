@@ -1346,11 +1346,11 @@ try {
         Update-TrimWaveform
     }
 
-    # Waveform strip under the filmstrip, one image per VISIBLE timeline piece -- same
-    # x1/x2/width math as the filmstrip loop above, just one slot per piece instead of
-    # several, since a waveform strip is cheap to stretch across a whole piece. Guarded
-    # on $canvasTrimWave being non-null: it is $null on XAML that predates this task,
-    # same stale-XAML rule as the rest of the trim editor.
+    # Waveform strip under the filmstrip, one image per piece that is at least partly on
+    # screen -- one slot per piece instead of several like the filmstrip loop above, since
+    # a whole piece's waveform is cheap to stretch across its own width. Guarded on
+    # $canvasTrimWave being non-null: it is $null on XAML that predates this task, same
+    # stale-XAML rule as the rest of the trim editor.
     # No -TimelinePieces param, deliberately: Set-TrimWaveform calls this after a render
     # lands, from inside a closured timer tick, and has no timeline state of its own to
     # hand in. Computing it here via Get-TrimTimelineState makes every caller -- the end
@@ -1371,19 +1371,26 @@ try {
         foreach ($tp in @($timelinePieces)) {
             $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
             $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
-            $visibleLeft = [math]::Max($x1, 0)
-            $visibleRight = [math]::Min($x2, $waveWidth)
-            if ($visibleRight -le $visibleLeft) { continue }
-            $visibleWidth = $visibleRight - $visibleLeft
+            # NOT clamped to the viewport, deliberately -- the cached bitmap covers this
+            # piece's FULL source range, so squeezing it into a clipped visible sub-range
+            # (the way the clamped version used to) stretches the whole waveform into
+            # whatever sliver is on screen, misaligning it in time at any zoom/pan where
+            # a piece runs off either edge. Full unclipped left/width keeps the bitmap
+            # time-aligned; CanvasTrimWave's parent Border has ClipToBounds="True", the
+            # same mechanism the filmstrip's piece containers rely on, so WPF crops the
+            # overhang visually without any math here.
+            if ($x2 -lt 0 -or $x1 -gt $waveWidth) { continue }
+            $pieceWidth = $x2 - $x1
+            if ($pieceWidth -le 0) { continue }
 
             $key = "{0:N2}_{1:N2}" -f $tp.SourceStart, $tp.SourceEnd
             if ($script:TrimWaveCache.ContainsKey($key)) {
                 $img = New-Object System.Windows.Controls.Image
                 $img.Stretch = "Fill"
-                $img.Width = $visibleWidth
+                $img.Width = $pieceWidth
                 $img.Height = $waveHeight
                 $img.Source = $script:TrimWaveCache[$key]
-                [System.Windows.Controls.Canvas]::SetLeft($img, $visibleLeft)
+                [System.Windows.Controls.Canvas]::SetLeft($img, $x1)
                 [System.Windows.Controls.Canvas]::SetTop($img, 0)
                 $canvasTrimWave.Children.Add($img) | Out-Null
             } else {
