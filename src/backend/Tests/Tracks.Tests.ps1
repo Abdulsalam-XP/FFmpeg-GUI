@@ -105,3 +105,61 @@ Describe "Test-TrackStackTrivial" {
         Test-TrackStackTrivial -Tracks @($src) | Should Be $false
     }
 }
+
+Describe "New-TrimAudioMixPlan" {
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $main = New-TrimTrack -Kind "video-main" -Path "C:\v\main.mp4"
+    $game = New-TrimTrack -Kind "audio-source" -Path "C:\v\main.mp4" -StreamIdx 1 -Label "Game"
+    $mic  = New-TrimTrack -Kind "audio-source" -Path "C:\v\main.mp4" -StreamIdx 2 -Label "Mic" -GainDb -6.0
+    $p1   = @([PSCustomObject]@{Start=10.0;End=20.0})
+    $p2   = @([PSCustomObject]@{Start=10.0;End=20.0}, [PSCustomObject]@{Start=30.0;End=35.0})
+
+    It "cuts each source stream to the piece and mixes over a silence base" {
+        $r = New-TrimAudioMixPlan -Tracks @($main,$game,$mic) -Pieces $p1 -FadeLengths @() -ClipDurations @{}
+        $r.InputPaths[0] | Should Be "C:\v\main.mp4"
+        $r.FilterComplex | Should Match ([regex]::Escape("anullsrc=r=48000:cl=stereo,atrim=0:10[b0]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:a:1]atrim=start=10:end=20,asetpts=PTS-STARTPTS[s0_0]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:a:2]atrim=start=10:end=20,asetpts=PTS-STARTPTS,volume=-6dB[s0_1]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("amix=inputs=3:duration=first:normalize=0"))
+        $r.OutputLabel | Should Be "[aout]"
+    }
+    It "excludes muted tracks from the mix" {
+        $m = New-TrimTrack -Kind "audio-source" -Path "C:\v\main.mp4" -StreamIdx 2 -Muted $true
+        $r = New-TrimAudioMixPlan -Tracks @($main,$game,$m) -Pieces $p1 -FadeLengths @() -ClipDurations @{}
+        $r.FilterComplex | Should Not Match ([regex]::Escape("[0:a:2]"))
+    }
+    It "joins pieces with concat on a hard cut and acrossfade on a fade" {
+        $r = New-TrimAudioMixPlan -Tracks @($main,$game) -Pieces $p2 -FadeLengths @(0.5) -ClipDurations @{}
+        $r.FilterComplex | Should Match ([regex]::Escape("acrossfade=d=0.5:c1=tri:c2=tri"))
+        $r2 = New-TrimAudioMixPlan -Tracks @($main,$game) -Pieces $p2 -FadeLengths @(0.0) -ClipDurations @{}
+        $r2.FilterComplex | Should Match ([regex]::Escape("concat=n=2:v=0:a=1"))
+    }
+    It "trims, delays and gains an external clip against the piece timeline" {
+        # clip starts at timeline 3s; piece 0 covers timeline 0..10 (source 10..20)
+        $clip = New-TrimTrack -Kind "audio-clip" -Path "C:\m\song.mp3" -Offset 3.0 -GainDb 3.0
+        $r = New-TrimAudioMixPlan -Tracks @($main,$game,$clip) -Pieces $p1 -FadeLengths @() -ClipDurations @{ "C:\m\song.mp3" = 4.0 }
+        $r.InputPaths.Count | Should Be 2
+        $r.InputPaths[1] | Should Be "C:\m\song.mp3"
+        $r.FilterComplex | Should Match ([regex]::Escape("[1:a]atrim=start=0:end=4,asetpts=PTS-STARTPTS,volume=3dB,adelay=3000:all=1[c0_0]"))
+    }
+    It "skips a clip that never overlaps any piece" {
+        $clip = New-TrimTrack -Kind "audio-clip" -Path "C:\m\late.mp3" -Offset 500.0
+        $r = New-TrimAudioMixPlan -Tracks @($main,$game,$clip) -Pieces $p1 -FadeLengths @() -ClipDurations @{ "C:\m\late.mp3" = 4.0 }
+        $r.InputPaths.Count | Should Be 1
+    }
+    It "clips a clip hanging past the piece end" {
+        # piece 0 = timeline 0..10; clip at 8 with 5s of audio -> only 2s used
+        $clip = New-TrimTrack -Kind "audio-clip" -Path "C:\m\song.mp3" -Offset 8.0
+        $r = New-TrimAudioMixPlan -Tracks @($main,$game,$clip) -Pieces $p1 -FadeLengths @() -ClipDurations @{ "C:\m\song.mp3" = 5.0 }
+        $r.FilterComplex | Should Match ([regex]::Escape("atrim=start=0:end=2"))
+    }
+    It "writes dot decimals under a comma-decimal culture and contains no unescaped expression commas" {
+        $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("de-DE")
+            $r = New-TrimAudioMixPlan -Tracks @($main,$mic) -Pieces $p2 -FadeLengths @(0.5) -ClipDurations @{}
+            $r.FilterComplex | Should Not Match "0,5"
+            $r.FilterComplex | Should Not Match "-6,0"
+        } finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
+    }
+}
