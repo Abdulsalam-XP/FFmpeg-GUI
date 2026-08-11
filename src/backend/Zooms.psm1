@@ -98,20 +98,35 @@ function Get-TrimZoomSpans {
 
 # Splits cut segments further at zoom span edges and interior keyframe times, tagging
 # the zoomed parts with Zoom = @{Z0;Z1;CX0;CX1;CY0;CY1} from Get-TrimZoomStateAt at the
-# part's endpoints. Burn segments overlapping a span keep their shape (captions already
-# sized them) and just gain the same Zoom key evaluated at the BURN segment's own start
-# and end -- a burn spanning an interior keyframe therefore approximates the glide
-# linearly straight across it rather than bending at the keyframe; acceptable for v1.
+# part's endpoints. Burn segments overlapping a span are split at exactly the same points
+# -- every part keeps Kind "burn" and the SAME Captions list, because caption times are
+# source-space and the export writes each burning segment its own .ass with
+# -TimeOffset = that segment's Start, so a split re-times itself. Without the split, a
+# zoom bump wholly inside a caption window sampled only at the caption's own endpoints
+# comes out as 1x -> 1x and the punch-in vanishes from the export entirely.
+# A burn part whose endpoints are both effectively 1x gets NO Zoom key at all, so it takes
+# the plain ass-only path instead of an identity crop/scale re-encode.
 # Transitions overlapping a span should never reach here: the export pre-flight refuses
 # that combination before this function runs, so seeing one here is a future gap, and
-# we throw loudly instead of silently mis-rendering it.
+# we throw loudly instead of silently mis-rendering it. BOTH halves of the crossfade count
+# -- the outgoing tail at Start and the incoming head at NextStart.
 function Split-TrimSegmentsForZooms {
     param([object[]]$Segments = @(), [object[]]$Zooms = @())
 
     $ks = @(@($Zooms) | Where-Object { $_ } | Sort-Object { [double]$_.Time })
     # The segment plan (whatever mix of cut/burn/transition) already tiles the entire
     # surviving footage, so its own extents stand in for "Pieces" when locating spans.
-    $pieces = @(@($Segments) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = ([double]$_.Start + [double]$_.Duration) } })
+    # A transition's extent covers only its OUTGOING tail; the incoming head it also eats
+    # lives at NextStart and belongs to no segment at all, so it is added explicitly --
+    # otherwise Get-TrimZoomSpans clips a span over the incoming head away to nothing and
+    # the backstop below can never see it.
+    $pieces = @()
+    foreach ($s in @($Segments)) {
+        $pieces += ,([PSCustomObject]@{ Start = [double]$s.Start; End = ([double]$s.Start + [double]$s.Duration) })
+        if ($s.Kind -eq "transition" -and $null -ne $s.NextStart) {
+            $pieces += ,([PSCustomObject]@{ Start = [double]$s.NextStart; End = ([double]$s.NextStart + [double]$s.Duration) })
+        }
+    }
     $spans = Get-TrimZoomSpans -Zooms $ks -Pieces $pieces
 
     $result = @()
@@ -122,24 +137,21 @@ function Split-TrimSegmentsForZooms {
         $overlapping = @($spans | Where-Object { [double]$_.Start -lt $segEnd -and [double]$_.End -gt $segStart })
 
         if ($seg.Kind -eq "transition") {
-            if ($overlapping.Count -gt 0) {
+            $hit = $overlapping.Count -gt 0
+            if (-not $hit -and $null -ne $seg.NextStart) {
+                $inStart = [double]$seg.NextStart
+                $inEnd = $inStart + [double]$seg.Duration
+                $hit = @($spans | Where-Object { [double]$_.Start -lt $inEnd -and [double]$_.End -gt $inStart }).Count -gt 0
+            }
+            if ($hit) {
                 throw "zoomed transition reached the splitter"
             }
             $result += ,$seg
             continue
         }
 
-        if ($seg.Kind -eq "burn") {
-            if ($overlapping.Count -gt 0) {
-                $s0 = Get-TrimZoomStateAt -Zooms $ks -Seconds $segStart
-                $s1 = Get-TrimZoomStateAt -Zooms $ks -Seconds $segEnd
-                $seg.Zoom = @{ Z0 = $s0.Level; Z1 = $s1.Level; CX0 = $s0.CX; CX1 = $s1.CX; CY0 = $s0.CY; CY1 = $s1.CY }
-            }
-            $result += ,$seg
-            continue
-        }
-
-        if ($seg.Kind -ne "cut" -or $overlapping.Count -eq 0) { $result += ,$seg; continue }
+        if ($seg.Kind -ne "cut" -and $seg.Kind -ne "burn") { $result += ,$seg; continue }
+        if ($overlapping.Count -eq 0) { $result += ,$seg; continue }
 
         # Split points: span edges inside the segment, plus interior keyframe times.
         $cutsSet = New-Object System.Collections.Generic.SortedSet[double]
@@ -155,6 +167,35 @@ function Split-TrimSegmentsForZooms {
                 }
             }
         }
+
+        if ($seg.Kind -eq "burn") {
+            # A burn with no interior split point keeps its identity (and its object), so
+            # the untouched case behaves exactly as before.
+            if ($cutsSet.Count -eq 0) {
+                $s0 = Get-TrimZoomStateAt -Zooms $ks -Seconds $segStart
+                $s1 = Get-TrimZoomStateAt -Zooms $ks -Seconds $segEnd
+                if ($s0.Level -gt 1.001 -or $s1.Level -gt 1.001) {
+                    $seg.Zoom = @{ Z0 = $s0.Level; Z1 = $s1.Level; CX0 = $s0.CX; CX1 = $s1.CX; CY0 = $s0.CY; CY1 = $s1.CY }
+                }
+                $result += ,$seg
+                continue
+            }
+            $bPoints = @([double]$segStart) + @($cutsSet) + @([double]$segEnd)
+            for ($i = 0; $i -lt $bPoints.Count - 1; $i++) {
+                $partStart = $bPoints[$i]
+                $partEnd = $bPoints[$i + 1]
+                if ($partEnd - $partStart -le 0.0005) { continue }
+                $part = @{ Kind = "burn"; Start = $partStart; Duration = ($partEnd - $partStart); Captions = $seg.Captions }
+                $s0 = Get-TrimZoomStateAt -Zooms $ks -Seconds $partStart
+                $s1 = Get-TrimZoomStateAt -Zooms $ks -Seconds $partEnd
+                if ($s0.Level -gt 1.001 -or $s1.Level -gt 1.001) {
+                    $part.Zoom = @{ Z0 = $s0.Level; Z1 = $s1.Level; CX0 = $s0.CX; CX1 = $s1.CX; CY0 = $s0.CY; CY1 = $s1.CY }
+                }
+                $result += ,$part
+            }
+            continue
+        }
+
         $points = @([double]$segStart) + @($cutsSet) + @([double]$segEnd)
 
         for ($i = 0; $i -lt $points.Count - 1; $i++) {

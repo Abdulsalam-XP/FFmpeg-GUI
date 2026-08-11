@@ -103,7 +103,7 @@ Describe "Split-TrimSegmentsForZooms" {
         $r[2].Kind | Should Be "zoom"; $r[2].Zoom.Z0 | Should Be 2; $r[2].Zoom.Z1 | Should Be 1
         $r[3].Kind | Should Be "cut"; $r[3].Duration | Should Be 30
     }
-    It "attaches Zoom to an overlapping caption burn segment instead of splitting it" {
+    It "attaches Zoom to an overlapping caption burn segment with no interior keyframe" {
         $z = @((New-ZoomKeyframe -Time 0 -Level 2))
         $segs = @(@{ Kind = "burn"; Start = 10.0; Duration = 5.0; Captions = @("x") })
         $r = Split-TrimSegmentsForZooms -Segments $segs -Zooms $z
@@ -111,9 +111,34 @@ Describe "Split-TrimSegmentsForZooms" {
         $r[0].Kind | Should Be "burn"
         $r[0].Zoom.Z0 | Should Be 2
     }
+    It "splits a caption burn at interior zoom keyframes so the bump survives" {
+        # caption 10..15 with a punch-in wholly inside it: 12(1x) 13(3x) 14(1x).
+        # Sampling only the burn's own endpoints gave 1x -> 1x and lost the zoom.
+        $z = @((New-ZoomKeyframe -Time 12 -Level 1), (New-ZoomKeyframe -Time 13 -Level 3), (New-ZoomKeyframe -Time 14 -Level 1))
+        $segs = @(@{ Kind = "burn"; Start = 10.0; Duration = 5.0; Captions = @("x") })
+        $r = Split-TrimSegmentsForZooms -Segments $segs -Zooms $z
+        $r.Count | Should Be 4
+        @($r | Where-Object { $_.Kind -eq "burn" }).Count | Should Be 4
+        @($r | Where-Object { $_.Captions }).Count | Should Be 4
+        $r[0].Start | Should Be 10; $r[0].Duration | Should Be 2
+        $r[0].ContainsKey("Zoom") | Should Be $false
+        $r[1].Start | Should Be 12; $r[1].Duration | Should Be 1
+        $r[1].Zoom.Z0 | Should Be 1; $r[1].Zoom.Z1 | Should Be 3
+        $r[2].Start | Should Be 13; $r[2].Duration | Should Be 1
+        $r[2].Zoom.Z0 | Should Be 3; $r[2].Zoom.Z1 | Should Be 1
+        $r[3].Start | Should Be 14; $r[3].Duration | Should Be 1
+        $r[3].ContainsKey("Zoom") | Should Be $false
+        $total = 0.0; foreach ($s in $r) { $total += $s.Duration }
+        [math]::Round($total, 6) | Should Be 5
+    }
     It "throws on a zoomed transition (pre-flight owns that refusal)" {
         $z = @((New-ZoomKeyframe -Time 0 -Level 2))
         $segs = @(@{ Kind = "transition"; Start = 10.0; NextStart = 50.0; Duration = 0.5 })
+        { Split-TrimSegmentsForZooms -Segments $segs -Zooms $z } | Should Throw
+    }
+    It "throws on a zoom over the crossfade's INCOMING head, not just the outgoing tail" {
+        $z = @((New-ZoomKeyframe -Time 40.2 -Level 1), (New-ZoomKeyframe -Time 40.5 -Level 3))
+        $segs = @(@{ Kind = "transition"; Start = 29.5; NextStart = 40.0; Duration = 0.5 })
         { Split-TrimSegmentsForZooms -Segments $segs -Zooms $z } | Should Throw
     }
     It "conserves total duration across a split" {

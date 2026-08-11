@@ -4366,22 +4366,33 @@ try {
             # A crossfade eats the outgoing piece's last fade-length of footage and blends
             # it with the next piece's head in one xfade pass. There is nowhere in that
             # pass to also apply a per-side crop, so a zoom overlapping a fade would have
-            # to be silently dropped -- refuse instead. The window matches exactly the
-            # extent of the transition segment the plan will build there, which is what
+            # to be silently dropped -- refuse instead. The windows match exactly the
+            # footage the transition segment consumes, which is what
             # Split-TrimSegmentsForZooms throws on if one ever slips through.
+            #
+            # BOTH halves have to be tested. The transition eats the outgoing piece's last
+            # $len seconds AND the incoming piece's first $len seconds, and a zoom sitting
+            # only over the incoming head is just as impossible to render: the preview
+            # glides through it while the export hard-cuts to the zoom level the following
+            # segment starts at.
             if ($anyZoom -and $anyFade) {
                 $clash = $false
                 for ($b = 0; $b -lt $pieces.Count - 1 -and -not $clash; $b++) {
                     if ($b -ge $fadeLengths.Count) { break }
                     $len = [double]$fadeLengths[$b]
                     if ($len -le 0) { continue }
-                    $windowEnd = [double]$pieces[$b].End
-                    $windowStart = $windowEnd - $len
-                    foreach ($span in $zoomSpans) {
-                        if ([double]$span.Start -lt $windowEnd -and [double]$span.End -gt $windowStart) {
-                            $clash = $true
-                            break
+                    $windows = @(
+                        @{ Start = ([double]$pieces[$b].End - $len); End = [double]$pieces[$b].End },
+                        @{ Start = [double]$pieces[$b + 1].Start; End = ([double]$pieces[$b + 1].Start + $len) }
+                    )
+                    foreach ($w in $windows) {
+                        foreach ($span in $zoomSpans) {
+                            if ([double]$span.Start -lt [double]$w.End -and [double]$span.End -gt [double]$w.Start) {
+                                $clash = $true
+                                break
+                            }
                         }
+                        if ($clash) { break }
                     }
                 }
                 if ($clash) {
