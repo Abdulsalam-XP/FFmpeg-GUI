@@ -500,6 +500,10 @@ function Export-TrimThumbnail {
 # One waveform strip PNG for a source-time window, drawn by ffmpeg itself.
 # showwavespic is a single decode pass over the audio only, so this is cheap
 # even on the 3GB recordings.
+#
+# sqrt + draw=full + filter=peak, not the defaults: game audio is quiet on average
+# with sharp peaks, and a linear scale renders it as a hairline scribble. Peak-held
+# square-root scaling is what makes the strip read like an editor's waveform.
 function Export-TrimWaveform {
     param(
         [Parameter(Mandatory = $true)][string]$InputFile,
@@ -507,12 +511,12 @@ function Export-TrimWaveform {
         [Parameter(Mandatory = $true)][double]$DurationSeconds,
         [Parameter(Mandatory = $true)][string]$OutputFile,
         [int]$Width = 1600,
-        [int]$Height = 48
+        [int]$Height = 96
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     & $ffmpeg -y -hide_banner -loglevel error `
         -ss $StartSeconds -t $DurationSeconds -i $InputFile `
-        -filter_complex "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84" `
+        -filter_complex "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84:scale=sqrt:draw=full:filter=peak" `
         -frames:v 1 $OutputFile 2>&1 | Out-Null
 }
 

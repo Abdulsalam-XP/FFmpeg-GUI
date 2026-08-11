@@ -891,7 +891,7 @@ try {
     # Height of the waveform row inside the timeline track. Pairs with the XAML
     # RowDefinition in MainWindow.xaml (the track's inner Grid); the playhead overhang
     # and the waveform fallback both read this so the three cannot silently desync.
-    $script:TrimWaveRowHeight = 34.0
+    $script:TrimWaveRowHeight = 48.0
     # Rendered crossfades for the preview: key -> file path, plus the in-flight set and
     # the key currently on screen so the overlay is only re-sourced when it really changes.
     $script:TrimFadeProxies = @{}

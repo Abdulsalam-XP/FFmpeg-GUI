@@ -475,10 +475,10 @@
 
                             <!-- Row split pairs with $script:TrimWaveRowHeight in
                                  Video-Audio-Tool.ps1; change them together. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="118" ClipToBounds="True">
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="134" ClipToBounds="True">
                                 <Grid>
                                     <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/><RowDefinition Height="34"/>
+                                        <RowDefinition Height="*"/><RowDefinition Height="48"/>
                                     </Grid.RowDefinitions>
                                     <!-- ZIndex 1: the playhead is drawn taller than this row so it
                                          crosses the waveform strip below, and the strip's own
