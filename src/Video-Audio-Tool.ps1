@@ -857,6 +857,16 @@ try {
     $buttonTrimAddCaption = $panelTrim.FindName("ButtonTrimAddCaption")
     $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
     $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
+    $canvasCaptionOverlay = $panelTrim.FindName("CanvasCaptionOverlay")
+    $textCaptionText      = $panelTrim.FindName("TextCaptionText")
+    $comboCaptionFont     = $panelTrim.FindName("ComboCaptionFont")
+    $checkCaptionBold     = $panelTrim.FindName("CheckCaptionBold")
+    $textCaptionFill      = $panelTrim.FindName("TextCaptionFill")
+    $textCaptionOutline   = $panelTrim.FindName("TextCaptionOutline")
+    $sliderCaptionOutlineW = $panelTrim.FindName("SliderCaptionOutlineW")
+    $checkCaptionBounce   = $panelTrim.FindName("CheckCaptionBounce")
+    $textCaptionStart     = $panelTrim.FindName("TextCaptionStart")
+    $textCaptionEnd       = $panelTrim.FindName("TextCaptionEnd")
 
     # An install updated in place can run new code against old XAML, in which case every
     # lookup above is $null and the first handler to fire takes the app down. Same guard
@@ -890,6 +900,19 @@ try {
     # The undo snapshot is taken when the drag BEGINS and only pushed on release, so a
     # drag costs exactly one undo step no matter how many MouseMove events it produced.
     $script:TrimCaptionDrag = $null
+    # In-flight preview-overlay drag (move or resize), same shape and same one-undo-per-drag
+    # rule as the lane drag above.
+    $script:CaptionOverlayDrag = $null
+    # Set while Show-CaptionSidebar is filling the fields: every control's change handler
+    # fires on a programmatic assignment exactly as it does on a user edit, and without this
+    # guard selecting a caption would write each field straight back and push undo steps for
+    # edits nobody made.
+    $script:CaptionSidebarLoading = $false
+    # Focus/capture sessions for the two controls that would otherwise produce one undo step
+    # per keystroke (the text box) or per slider tick (the outline width). Each holds the
+    # snapshot taken when the session began, pushed on the way out only if it changed.
+    $script:CaptionTextEdit = $null
+    $script:CaptionSliderEdit = $null
 
     function Format-TrimTime {
         param([double]$Seconds)
@@ -1718,6 +1741,11 @@ try {
     # non-null: it is $null on XAML that predates this task, same stale-XAML rule the
     # waveform and fade rows carry.
     function Update-TrimCaptionLane {
+        # Unconditional and first: this is the cheapest correct hook for "a caption changed"
+        # (lane drags, sidebar edits, add/delete/undo all pass through here), and the lane's
+        # own early returns below must not suppress the preview overlay, which carries its
+        # own null/no-file guards.
+        Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
         if ($null -eq $canvasTrimCaptions) { return }
         $canvasTrimCaptions.Children.Clear()
         if (-not $script:TrimInputFile) { return }
@@ -1804,6 +1832,216 @@ try {
 
             $canvasTrimCaptions.Children.Add($block) | Out-Null
         }
+    }
+
+    # ---- Caption preview overlay ----
+    #
+    # Captions drawn over the video, in the same normalised space the export uses: X/Y are
+    # fractions of the preview box and FontSizeFrac is a fraction of its height, so what is
+    # positioned here lands in the same place at 2560x1440 as it does in a 900px preview.
+    #
+    # The outline is approximated with a DropShadowEffect at zero depth -- WPF has no text
+    # stroke on TextBlock, and the real outline is drawn by libass at export time. The
+    # preview is deliberately an approximation; the export is authoritative.
+    $script:CaptionOverlaySelectBrush = "#6FD8FF"
+
+    function Set-CaptionPosition {
+        param([string]$Id, [double]$X, [double]$Y)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        # Doubles in both slots of every clamp: [math]::Max(0, <double>) binds the INT
+        # overload and truncates (Task 9's quantised-drag bug).
+        $cap.X = [math]::Max(0.02, [math]::Min(0.98, $X))
+        $cap.Y = [math]::Max(0.06, [math]::Min(0.94, $Y))
+    }
+
+    function Set-CaptionSize {
+        param([string]$Id, [double]$FontSizeFrac)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        $cap.FontSizeFrac = [math]::Max(0.02, [math]::Min(0.2, $FontSizeFrac))
+    }
+
+    # Bad colour text can only reach here through a validated path, but a project file edited
+    # by hand could still carry one, and an unparsable colour would take the whole redraw
+    # down on every tick. Fall back rather than throw.
+    function Get-CaptionBrush {
+        param([string]$Hex, [string]$Fallback)
+        try { return (New-Object System.Windows.Media.BrushConverter).ConvertFromString($Hex) }
+        catch { return (New-Object System.Windows.Media.BrushConverter).ConvertFromString($Fallback) }
+    }
+
+    function Get-CaptionColor {
+        param([string]$Hex, [string]$Fallback)
+        try { return [System.Windows.Media.ColorConverter]::ConvertFromString($Hex) }
+        catch { return [System.Windows.Media.ColorConverter]::ConvertFromString($Fallback) }
+    }
+
+    function Update-CaptionOverlay {
+        param([double]$SourceSeconds)
+        if ($null -eq $canvasCaptionOverlay) { return }
+        $canvasCaptionOverlay.Children.Clear()
+        if (-not $script:TrimInputFile) { return }
+        # A rendered crossfade is playing on top of the live preview; the captions belong
+        # under it, not floating over a frame from a different position. Leave the overlay
+        # cleared until the fade ends (Update-TrimFadeOverlay calls back in on the way out).
+        if ($null -ne $script:TrimFadeOverlayKey) { return }
+
+        $w = $canvasCaptionOverlay.ActualWidth
+        $h = $canvasCaptionOverlay.ActualHeight
+        if ($w -le 0 -or $h -le 0) { return }
+
+        foreach ($c in @($script:TrimCaptions)) {
+            $isSelected = ($c.Id -eq $script:TrimSelectedCaption)
+            # The selected caption is drawn even when the playhead is outside its window --
+            # otherwise selecting one and scrubbing away leaves nothing to drag or resize.
+            $inWindow = ($SourceSeconds -ge [double]$c.Start -and $SourceSeconds -lt [double]$c.End)
+            if (-not $inWindow -and -not $isSelected) { continue }
+            # An empty caption has no glyphs, so it would measure to nothing and be
+            # impossible to grab. Selected, it gets a placeholder so it can still be placed;
+            # unselected, there is nothing worth putting over the video.
+            $isEmpty = [string]::IsNullOrEmpty($c.Text)
+            if ($isEmpty -and -not $isSelected) { continue }
+
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Text = if ($isEmpty) { "(empty)" } else { [string]$c.Text }
+            $label.FontFamily = New-Object System.Windows.Media.FontFamily([string]$c.FontFamily)
+            $label.FontWeight = if ($c.Bold) {
+                [System.Windows.FontWeights]::Bold
+            } else {
+                [System.Windows.FontWeights]::Normal
+            }
+            $label.FontSize = [math]::Max(1.0, [double]$c.FontSizeFrac * $h)
+            $label.Foreground = Get-CaptionBrush -Hex ([string]$c.FillColor) -Fallback "#FFFFFF"
+            $label.TextAlignment = "Center"
+            $label.TextWrapping = "NoWrap"
+
+            $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
+            $glow.ShadowDepth = 0
+            $glow.BlurRadius = [double]$c.OutlineWidth * 2
+            $glow.Color = Get-CaptionColor -Hex ([string]$c.OutlineColor) -Fallback "#000000"
+            $glow.Opacity = 1
+            $label.Effect = $glow
+
+            $element = $label
+            if ($isSelected) {
+                # Solid 1.5px cyan, not dashed: Border has no dash support and overlaying a
+                # dashed Rectangle would add a second element to keep in sync through every
+                # drag for a purely cosmetic difference. Background must be Transparent
+                # rather than unset -- an unset Background is not hit-testable, so the box
+                # around the glyphs would not be draggable.
+                $box = New-Object System.Windows.Controls.Border
+                $box.BorderBrush = Get-CaptionBrush -Hex $script:CaptionOverlaySelectBrush -Fallback "#6FD8FF"
+                $box.BorderThickness = New-Object System.Windows.Thickness(1.5)
+                $box.Background = [System.Windows.Media.Brushes]::Transparent
+                $box.Padding = New-Object System.Windows.Thickness(3)
+                $box.Cursor = [System.Windows.Input.Cursors]::SizeAll
+                $box.Child = $label
+                $element = $box
+            }
+
+            $element.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+            $ew = $element.DesiredSize.Width
+            $eh = $element.DesiredSize.Height
+            $left = ([double]$c.X * $w) - ($ew / 2)
+            $top = ([double]$c.Y * $h) - ($eh / 2)
+            [System.Windows.Controls.Canvas]::SetLeft($element, $left)
+            [System.Windows.Controls.Canvas]::SetTop($element, $top)
+            $canvasCaptionOverlay.Children.Add($element) | Out-Null
+
+            if (-not $isSelected) { continue }
+
+            $thisId = $c.Id
+            # GetNewClosure, exactly as on the lane blocks: without it every element captures
+            # the loop variable's final value. Capture goes on the CANVAS, not on these
+            # elements -- the overlay is rebuilt on every MouseMove, and a capture held by a
+            # destroyed element is lost after one move.
+            $element.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                $p = $e.GetPosition($canvasCaptionOverlay)
+                Start-CaptionOverlayDrag -Id $thisId -Mode "move" -StartX $p.X -StartY $p.Y
+                $canvasCaptionOverlay.CaptureMouse() | Out-Null
+                $e.Handled = $true
+            }.GetNewClosure())
+
+            $handle = New-Object System.Windows.Shapes.Ellipse
+            $handle.Width = 13
+            $handle.Height = 13
+            $handle.Fill = Get-CaptionBrush -Hex $script:CaptionOverlaySelectBrush -Fallback "#6FD8FF"
+            $handle.Stroke = Get-CaptionBrush -Hex "#12161C" -Fallback "#000000"
+            $handle.StrokeThickness = 1.5
+            $handle.Cursor = [System.Windows.Input.Cursors]::SizeNWSE
+            [System.Windows.Controls.Canvas]::SetLeft($handle, $left + $ew - 6.5)
+            [System.Windows.Controls.Canvas]::SetTop($handle, $top + $eh - 6.5)
+            $handle.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                $p = $e.GetPosition($canvasCaptionOverlay)
+                Start-CaptionOverlayDrag -Id $thisId -Mode "size" -StartX $p.X -StartY $p.Y
+                $canvasCaptionOverlay.CaptureMouse() | Out-Null
+                # Handled, so the box's own move-drag underneath does not also start and
+                # turn a resize into a reposition.
+                $e.Handled = $true
+            }.GetNewClosure())
+            $canvasCaptionOverlay.Children.Add($handle) | Out-Null
+        }
+    }
+
+    # Same shape as the lane's drag lifecycle, and for the same reasons: the snapshot is
+    # taken when the drag BEGINS and pushed only on release, and only if something actually
+    # moved -- one undo step per drag, none for a click that just selects.
+    function Start-CaptionOverlayDrag {
+        param([string]$Id, [string]$Mode, [double]$StartX, [double]$StartY)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        $script:CaptionOverlayDrag = @{
+            Id       = $Id
+            Mode     = $Mode
+            StartX   = $StartX
+            StartY   = $StartY
+            OrigX    = [double]$cap.X
+            OrigY    = [double]$cap.Y
+            OrigSize = [double]$cap.FontSizeFrac
+            Snapshot = New-TrimUndoSnapshot
+        }
+    }
+
+    function Test-CaptionOverlayDrag {
+        return ($null -ne $script:CaptionOverlayDrag)
+    }
+
+    # Deltas are applied against the drag's ORIGINAL values, never accumulated, so a clamped
+    # edge cannot eat motion and dragging back out returns to where it started.
+    function Update-CaptionOverlayDrag {
+        param([double]$CurrentX, [double]$CurrentY)
+        $drag = $script:CaptionOverlayDrag
+        if ($null -eq $drag) { return }
+        if ($null -eq $canvasCaptionOverlay) { return }
+        $w = $canvasCaptionOverlay.ActualWidth
+        $h = $canvasCaptionOverlay.ActualHeight
+        if ($w -le 0 -or $h -le 0) { return }
+        if ($drag.Mode -eq "size") {
+            # Dragging the handle down grows the caption: the vertical delta is read as a
+            # fraction of the preview height, the same unit FontSizeFrac is stored in.
+            Set-CaptionSize -Id $drag.Id -FontSizeFrac ($drag.OrigSize + (($CurrentY - $drag.StartY) / $h))
+        } else {
+            Set-CaptionPosition -Id $drag.Id `
+                -X ($drag.OrigX + (($CurrentX - $drag.StartX) / $w)) `
+                -Y ($drag.OrigY + (($CurrentY - $drag.StartY) / $h))
+        }
+    }
+
+    function Complete-CaptionOverlayDrag {
+        $drag = $script:CaptionOverlayDrag
+        $script:CaptionOverlayDrag = $null
+        if ($null -eq $drag) { return }
+        $cap = Get-TrimCaptionById -Id $drag.Id
+        if ($null -eq $cap) { return }
+        if ([math]::Abs([double]$cap.X - $drag.OrigX) -lt 1e-4 -and
+            [math]::Abs([double]$cap.Y - $drag.OrigY) -lt 1e-4 -and
+            [math]::Abs([double]$cap.FontSizeFrac - $drag.OrigSize) -lt 1e-4) { return }
+        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        # No sidebar refresh: position and size have no field in the properties column, so
+        # nothing there can have gone stale.
     }
 
     # ---- Fade preview proxies ----
@@ -1905,6 +2143,9 @@ try {
                 $mediaTrimFadePreview.Pause()
                 $mediaTrimFadePreview.Visibility = "Collapsed"
                 $script:TrimFadeOverlayKey = $null
+                # Captions are suppressed while a fade proxy is up; the fade has just ended,
+                # so bring them back rather than waiting for the next thing that redraws.
+                Update-CaptionOverlay -SourceSeconds $SourceSeconds
             }
             return
         }
@@ -2027,16 +2268,178 @@ try {
         if ($null -eq (Get-TrimSelectedCaption)) { Hide-CaptionSidebar } else { Show-CaptionSidebar }
     }
 
-    # Task 10 fills these in: they own the caption properties sidebar (populating its
-    # fields from the selected caption and showing/hiding the column). Defined here as
-    # no-ops so every call site that has to move the sidebar already exists and Task 10
-    # only replaces the bodies.
+    # ---- Caption properties sidebar ----
+    #
+    # The column edits whatever caption is selected. Every field writes straight through to
+    # the caption object and refreshes the lane and the preview overlay, so the three views
+    # of a caption never disagree.
+
+    # Not Format-TrimTime: that one is built on $ts.Minutes and truncates to whole seconds
+    # (a pre-existing int-overload bug, deliberately not touched here), which would make the
+    # time boxes lose the milliseconds of every caption they round-trip. TotalMinutes also
+    # keeps working past the hour mark, where $ts.Minutes silently wraps.
+    function Format-CaptionTime {
+        param([double]$Seconds)
+        $ts = [timespan]::FromSeconds([math]::Max(0.0, $Seconds))
+        return ("{0:D2}:{1:D2}.{2:D3}" -f [int][math]::Floor($ts.TotalMinutes), $ts.Seconds, $ts.Milliseconds)
+    }
+
+    # MM:SS.mmm -> seconds, or $null if the text is not exactly that. Returning $null rather
+    # than a best guess is the point: the caller reverts the box from the model instead of
+    # applying something the user did not type.
+    function ConvertFrom-CaptionTime {
+        param([string]$Text)
+        if ($Text -notmatch '^(\d+):([0-5]\d)\.(\d{3})$') { return $null }
+        return ([double]$matches[1] * 60) + [double]$matches[2] + ([double]$matches[3] / 1000)
+    }
+
+    function Test-CaptionSidebarLoading {
+        return $script:CaptionSidebarLoading
+    }
+
+    function Set-CaptionSidebarLoading {
+        param([bool]$Value)
+        $script:CaptionSidebarLoading = $Value
+    }
+
+    # Single write path for every sidebar field. Refreshing the lane also refreshes the
+    # preview overlay (Update-TrimCaptionLane calls it first thing), so one call keeps both
+    # views in step without drawing the overlay twice per keystroke.
+    function Update-CaptionField {
+        param([string]$Id, [string]$Field, $Value)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        $cap.$Field = $Value
+        Update-TrimCaptionLane
+    }
+
     function Show-CaptionSidebar {
-        # Task 10 fills this
+        if ($null -eq $panelCaptionSidebar) { return }
+        $cap = Get-TrimSelectedCaption
+        # Asked to show the properties of nothing: collapse rather than leave the previous
+        # caption's values on screen attached to no caption at all.
+        if ($null -eq $cap) { Hide-CaptionSidebar; return }
+        Set-CaptionSidebarLoading -Value $true
+        try {
+            if ($null -ne $textCaptionText) { $textCaptionText.Text = [string]$cap.Text }
+            if ($null -ne $comboCaptionFont) { $comboCaptionFont.SelectedItem = [string]$cap.FontFamily }
+            if ($null -ne $checkCaptionBold) { $checkCaptionBold.IsChecked = [bool]$cap.Bold }
+            if ($null -ne $textCaptionFill) { $textCaptionFill.Text = [string]$cap.FillColor }
+            if ($null -ne $textCaptionOutline) { $textCaptionOutline.Text = [string]$cap.OutlineColor }
+            if ($null -ne $sliderCaptionOutlineW) { $sliderCaptionOutlineW.Value = [double]$cap.OutlineWidth }
+            if ($null -ne $checkCaptionBounce) { $checkCaptionBounce.IsChecked = [bool]$cap.BounceIn }
+            if ($null -ne $textCaptionStart) { $textCaptionStart.Text = Format-CaptionTime ([double]$cap.Start) }
+            if ($null -ne $textCaptionEnd) { $textCaptionEnd.Text = Format-CaptionTime ([double]$cap.End) }
+        } finally {
+            # finally, not a trailing assignment: a throw anywhere in the fill would
+            # otherwise leave the flag set and silently deaden every handler for the rest
+            # of the session.
+            Set-CaptionSidebarLoading -Value $false
+        }
+        $panelCaptionSidebar.Visibility = "Visible"
     }
 
     function Hide-CaptionSidebar {
-        # Task 10 fills this
+        Set-CaptionSidebarLoading -Value $false
+        if ($null -eq $panelCaptionSidebar) { return }
+        $panelCaptionSidebar.Visibility = "Collapsed"
+    }
+
+    # Re-fills one box from the model without the write-back a plain assignment would
+    # trigger. Used by every reject path: bad input leaves the model alone and the box shows
+    # what the caption actually holds.
+    function Reset-CaptionSidebarField {
+        param($Box, [string]$Text)
+        if ($null -eq $Box) { return }
+        Set-CaptionSidebarLoading -Value $true
+        try { $Box.Text = $Text } finally { Set-CaptionSidebarLoading -Value $false }
+    }
+
+    # A text edit is one undo step per focus session, not per keystroke: the snapshot is
+    # taken on GotFocus and pushed on LostFocus only if the text ended up different.
+    function Start-CaptionTextEdit {
+        $cap = Get-TrimSelectedCaption
+        if ($null -eq $cap) { $script:CaptionTextEdit = $null; return }
+        $script:CaptionTextEdit = @{ Id = $cap.Id; Text = [string]$cap.Text; Snapshot = New-TrimUndoSnapshot }
+    }
+
+    function Complete-CaptionTextEdit {
+        $edit = $script:CaptionTextEdit
+        $script:CaptionTextEdit = $null
+        if ($null -eq $edit) { return }
+        $cap = Get-TrimCaptionById -Id $edit.Id
+        if ($null -eq $cap) { return }
+        if ([string]$cap.Text -eq $edit.Text) { return }
+        Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+    }
+
+    # The slider raises ValueChanged on every tick of a drag; the snapshot is taken when it
+    # grabs the mouse and pushed when it lets go, so a drag across the range is one step.
+    function Start-CaptionSliderEdit {
+        $cap = Get-TrimSelectedCaption
+        if ($null -eq $cap) { $script:CaptionSliderEdit = $null; return }
+        $script:CaptionSliderEdit = @{ Id = $cap.Id; Value = [double]$cap.OutlineWidth; Snapshot = New-TrimUndoSnapshot }
+    }
+
+    function Complete-CaptionSliderEdit {
+        $edit = $script:CaptionSliderEdit
+        $script:CaptionSliderEdit = $null
+        if ($null -eq $edit) { return }
+        $cap = Get-TrimCaptionById -Id $edit.Id
+        if ($null -eq $cap) { return }
+        if ([math]::Abs([double]$cap.OutlineWidth - $edit.Value) -lt 1e-9) { return }
+        Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+    }
+
+    # #RRGGBB only, stored uppercase (ConvertTo-AssColor uppercases on export anyway, and a
+    # consistent case makes the "did it change" test a plain string compare). Anything else
+    # is rejected outright and the box goes back to the model's value.
+    function Set-CaptionColorFromBox {
+        param($Box, [string]$Field)
+        if ($null -eq $Box) { return }
+        $cap = Get-TrimSelectedCaption
+        if ($null -eq $cap) { return }
+        $current = [string]$cap.$Field
+        $typed = ([string]$Box.Text).Trim()
+        if ($typed -notmatch '^#[0-9A-Fa-f]{6}$') { Reset-CaptionSidebarField -Box $Box -Text $current; return }
+        $value = $typed.ToUpper()
+        if ($value -eq $current) { Reset-CaptionSidebarField -Box $Box -Text $current; return }
+        Push-TrimUndo
+        Update-CaptionField -Id $cap.Id -Field $Field -Value $value
+        Reset-CaptionSidebarField -Box $Box -Text $value
+    }
+
+    # One box retimes one end; the other end comes from the model. Validated BEFORE any undo
+    # is pushed, because Set-TrimCaptionTimes rejects a pair under the minimum length and a
+    # pre-emptive push would leave an undo step for a change that never happened.
+    function Set-CaptionTimeFromBox {
+        param($Box, [string]$Edge)
+        if ($null -eq $Box) { return }
+        $cap = Get-TrimSelectedCaption
+        if ($null -eq $cap) { return }
+        $start = [double]$cap.Start
+        $end = [double]$cap.End
+        $parsed = ConvertFrom-CaptionTime -Text ([string]$Box.Text).Trim()
+        $ok = $null -ne $parsed
+        if ($ok) {
+            if ($Edge -eq "start") { $start = $parsed } else { $end = $parsed }
+            $ok = ($start -ge 0) -and ($end -le $script:TrimDuration) -and
+                  (($end - $start) -ge ($script:TrimCaptionMinLength - 1e-6))
+        }
+        if (-not $ok) {
+            $revert = if ($Edge -eq "start") { [double]$cap.Start } else { [double]$cap.End }
+            Reset-CaptionSidebarField -Box $Box -Text (Format-CaptionTime $revert)
+            return
+        }
+        if ([math]::Abs($start - [double]$cap.Start) -lt 1e-9 -and
+            [math]::Abs($end - [double]$cap.End) -lt 1e-9) { return }
+        Push-TrimUndo
+        Set-TrimCaptionTimes -Id $cap.Id -Start $start -End $end
+        Update-TrimCaptionLane
+        # Straight back from the model: Set-TrimCaptionTimes clamps, so what landed is not
+        # necessarily what was typed and the box must not claim otherwise.
+        $applied = if ($Edge -eq "start") { [double]$cap.Start } else { [double]$cap.End }
+        Reset-CaptionSidebarField -Box $Box -Text (Format-CaptionTime $applied)
     }
 
     function Invoke-TrimAddCaption {
@@ -2256,6 +2659,19 @@ try {
             param($eventSource, $e)
             if ($e.NewSize.Width -gt 0) {
                 $mediaTrimPreview.Height = $e.NewSize.Width * 9 / 16
+                # The caption overlay has to be the VIDEO box, not the cell it shares with
+                # the preview. Left to stretch, it takes the height of the tallest thing in
+                # that Grid -- which is the 500px properties sidebar the moment a caption is
+                # selected -- and every caption is then drawn against a box 170px taller
+                # than the picture, landing well below where the export puts it. Pinned to
+                # the same 16:9 box as the preview and centred on it, a caption at Y=0.78
+                # sits at 78% of the frame here and at 78% of the frame in the export.
+                if ($null -ne $canvasCaptionOverlay) {
+                    $canvasCaptionOverlay.HorizontalAlignment = "Center"
+                    $canvasCaptionOverlay.VerticalAlignment = "Center"
+                    $canvasCaptionOverlay.Width = $e.NewSize.Width
+                    $canvasCaptionOverlay.Height = $e.NewSize.Width * 9 / 16
+                }
             }
         })
 
@@ -2313,6 +2729,9 @@ try {
             Update-TrimPosition
             Update-TrimTimeline
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+            # After the fade overlay, not before: the fade owns the picture while it is up
+            # and Update-CaptionOverlay reads the key it just set.
+            Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
         })
 
         $buttonTrimPlay.Add_Click({
@@ -2354,6 +2773,8 @@ try {
             Update-TrimTimeline
             # Scrubbing into a fade shows the blended frame too, not just playback.
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+            # Scrubbing across a caption's window shows it appear and disappear on time.
+            Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
         })
 
         # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
@@ -2411,8 +2832,117 @@ try {
 
             $canvasTrimCaptions.Add_SizeChanged({ Update-TrimCaptionLane })
         }
+        # Preview-overlay drags. Capture lives on the overlay canvas for the same reason it
+        # lives on the lane canvas: the overlay is rebuilt on every move, so a capture held
+        # by the caption element itself would die after the first one. No GetNewClosure()
+        # here either -- these read and write $script: state through top-level functions and
+        # capture nothing.
+        if ($null -ne $canvasCaptionOverlay) {
+            $canvasCaptionOverlay.Add_MouseMove({
+                param($eventSource, $e)
+                if (-not (Test-CaptionOverlayDrag)) { return }
+                $p = $e.GetPosition($canvasCaptionOverlay)
+                Update-CaptionOverlayDrag -CurrentX $p.X -CurrentY $p.Y
+                Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+            })
+
+            $canvasCaptionOverlay.Add_MouseLeftButtonUp({
+                param($eventSource, $e)
+                if (-not (Test-CaptionOverlayDrag)) { return }
+                $canvasCaptionOverlay.ReleaseMouseCapture()
+                Complete-CaptionOverlayDrag
+                Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+            })
+
+            # Opening or closing the sidebar takes 240px off the preview, so every X/Y
+            # already converted to pixels is wrong until the next redraw.
+            $canvasCaptionOverlay.Add_SizeChanged({ Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead })
+        }
+
         if ($null -ne $buttonTrimAddCaption) { $buttonTrimAddCaption.Add_Click({ Invoke-TrimAddCaption }) }
         if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
+
+        # ---- Caption sidebar handlers ----
+        #
+        # Every one of these bails on the loading flag first: WPF raises the same events for
+        # a programmatic fill as for a user edit, so without that first line selecting a
+        # caption would write all nine fields back and push undo steps for edits nobody made.
+        if ($null -ne $comboCaptionFont) {
+            # Once, at startup: enumerating installed fonts is not free and the list cannot
+            # change while the window is open. Strings rather than FontFamily objects so the
+            # combo's SelectedItem compares equal to the caption's stored name.
+            $comboCaptionFont.ItemsSource = @(
+                [System.Windows.Media.Fonts]::SystemFontFamilies | Sort-Object Source | ForEach-Object { $_.Source }
+            )
+            $comboCaptionFont.Add_SelectionChanged({
+                if (Test-CaptionSidebarLoading) { return }
+                $cap = Get-TrimSelectedCaption
+                if ($null -eq $cap) { return }
+                $font = [string]$comboCaptionFont.SelectedItem
+                if ([string]::IsNullOrEmpty($font) -or $font -eq [string]$cap.FontFamily) { return }
+                Push-TrimUndo
+                Update-CaptionField -Id $cap.Id -Field "FontFamily" -Value $font
+            })
+        }
+
+        if ($null -ne $textCaptionText) {
+            $textCaptionText.Add_TextChanged({
+                if (Test-CaptionSidebarLoading) { return }
+                $cap = Get-TrimSelectedCaption
+                if ($null -eq $cap) { return }
+                Update-CaptionField -Id $cap.Id -Field "Text" -Value ([string]$textCaptionText.Text)
+            })
+            # One undo step per visit to the box, not one per keystroke.
+            $textCaptionText.Add_GotFocus({ Start-CaptionTextEdit })
+            $textCaptionText.Add_LostFocus({ Complete-CaptionTextEdit })
+        }
+
+        if ($null -ne $checkCaptionBold) {
+            $checkCaptionBold.Add_Click({
+                if (Test-CaptionSidebarLoading) { return }
+                $cap = Get-TrimSelectedCaption
+                if ($null -eq $cap) { return }
+                Push-TrimUndo
+                Update-CaptionField -Id $cap.Id -Field "Bold" -Value ([bool]$checkCaptionBold.IsChecked)
+            })
+        }
+
+        if ($null -ne $checkCaptionBounce) {
+            $checkCaptionBounce.Add_Click({
+                if (Test-CaptionSidebarLoading) { return }
+                $cap = Get-TrimSelectedCaption
+                if ($null -eq $cap) { return }
+                Push-TrimUndo
+                Update-CaptionField -Id $cap.Id -Field "BounceIn" -Value ([bool]$checkCaptionBounce.IsChecked)
+            })
+        }
+
+        if ($null -ne $sliderCaptionOutlineW) {
+            $sliderCaptionOutlineW.Add_ValueChanged({
+                if (Test-CaptionSidebarLoading) { return }
+                $cap = Get-TrimSelectedCaption
+                if ($null -eq $cap) { return }
+                Update-CaptionField -Id $cap.Id -Field "OutlineWidth" -Value ([double]$sliderCaptionOutlineW.Value)
+            })
+            # Undo brackets the whole drag: ValueChanged fires on every tick of one.
+            $sliderCaptionOutlineW.Add_GotMouseCapture({ Start-CaptionSliderEdit })
+            $sliderCaptionOutlineW.Add_LostMouseCapture({ Complete-CaptionSliderEdit })
+        }
+
+        # Colours and times are validated on the way OUT of the box, not per keystroke:
+        # "#00FF0" is a legitimate intermediate state of typing "#00FF00".
+        if ($null -ne $textCaptionFill) {
+            $textCaptionFill.Add_LostFocus({ Set-CaptionColorFromBox -Box $textCaptionFill -Field "FillColor" })
+        }
+        if ($null -ne $textCaptionOutline) {
+            $textCaptionOutline.Add_LostFocus({ Set-CaptionColorFromBox -Box $textCaptionOutline -Field "OutlineColor" })
+        }
+        if ($null -ne $textCaptionStart) {
+            $textCaptionStart.Add_LostFocus({ Set-CaptionTimeFromBox -Box $textCaptionStart -Edge "start" })
+        }
+        if ($null -ne $textCaptionEnd) {
+            $textCaptionEnd.Add_LostFocus({ Set-CaptionTimeFromBox -Box $textCaptionEnd -Edge "end" })
+        }
 
         $buttonTrimSplit.Add_Click({ Invoke-TrimSplit })
         $buttonTrimDelete.Add_Click({ Invoke-TrimDelete })
