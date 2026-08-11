@@ -36,6 +36,9 @@ function Read-TrimProject {
     try {
         $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($null -eq $doc -or $null -eq $doc.CutList -or $null -eq $doc.Captions) { return $null }
+        # A file written by a newer schema is not ours to guess at -- the caller reports
+        # "couldn't read the saved project" and starts fresh rather than half-loading it.
+        if ($doc.Version -ne 1) { return $null }
 
         # ConvertFrom-Json yields PSCustomObjects; fades come back as an object whose
         # properties are the boundary keys -- rebuild the hashtable the panel expects.

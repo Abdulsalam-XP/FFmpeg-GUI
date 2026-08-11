@@ -27,6 +27,10 @@ function New-Caption {
 # ASS stores colours blue-first (&H00BBGGRR); the UI stores web-order #RRGGBB.
 function ConvertTo-AssColor {
     param([Parameter(Mandatory = $true)][string]$Hex)
+    # Hand-edited project files reach this path with anything at all in the colour
+    # fields; the preview already hardens the same boundary, so match it here rather
+    # than letting Substring throw in the middle of an export.
+    if ($Hex -notmatch '^#[0-9A-Fa-f]{6}$') { $Hex = "#FFFFFF" }
     $r = $Hex.Substring(1, 2); $g = $Hex.Substring(3, 2); $b = $Hex.Substring(5, 2)
     return ("&H00{0}{1}{2}" -f $b.ToUpper(), $g.ToUpper(), $r.ToUpper())
 }

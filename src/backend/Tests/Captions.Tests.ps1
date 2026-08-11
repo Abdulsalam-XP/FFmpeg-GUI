@@ -30,6 +30,9 @@ Describe "ConvertTo-AssColor" {
         ConvertTo-AssColor -Hex "#FFFFFF" | Should Be "&H00FFFFFF"
         ConvertTo-AssColor -Hex "#000000" | Should Be "&H00000000"
     }
+    It "falls back to white for a malformed colour instead of throwing" {
+        ConvertTo-AssColor -Hex "red" | Should Be "&H00FFFFFF"
+    }
 }
 
 Describe "ConvertTo-AssTime" {

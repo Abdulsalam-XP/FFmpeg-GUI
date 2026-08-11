@@ -864,6 +864,8 @@ try {
     $checkCaptionBold     = $panelTrim.FindName("CheckCaptionBold")
     $textCaptionFill      = $panelTrim.FindName("TextCaptionFill")
     $textCaptionOutline   = $panelTrim.FindName("TextCaptionOutline")
+    $panelCaptionFillSwatches    = $panelTrim.FindName("PanelCaptionFillSwatches")
+    $panelCaptionOutlineSwatches = $panelTrim.FindName("PanelCaptionOutlineSwatches")
     $sliderCaptionOutlineW = $panelTrim.FindName("SliderCaptionOutlineW")
     $checkCaptionBounce   = $panelTrim.FindName("CheckCaptionBounce")
     $textCaptionStart     = $panelTrim.FindName("TextCaptionStart")
@@ -1382,7 +1384,11 @@ try {
         if ($playheadVisible) {
             $head = New-Object System.Windows.Shapes.Rectangle
             $head.Style = $ctx.Window.FindResource("TimelinePlayheadStyle")
-            $head.Height = $h
+            # +20, the waveform row's fixed height: the playhead is meant to read as one
+            # line across the whole track, and stopping it at the filmstrip's bottom edge
+            # left the waveform with no position marker at all. The enclosing Border clips
+            # it, so it can never spill past the track.
+            $head.Height = $h + 20
             [System.Windows.Controls.Canvas]::SetLeft($head, $playX - 1)
             [System.Windows.Controls.Canvas]::SetTop($head, 0)
             $canvasTrimTimeline.Children.Add($head) | Out-Null
@@ -1868,6 +1874,24 @@ try {
             }
 
             $canvasTrimCaptions.Children.Add($block) | Out-Null
+        }
+
+        # Second playhead, drawn last so it sits above the blocks. The main one cannot be
+        # stretched down to here -- the caption lane is a separate Border with its own
+        # clip, not another row of the track's grid -- so the line is redrawn at the same
+        # x instead. Not hit-testable: it lies across every block, and a hit-testable strip
+        # would swallow clicks and drags aimed at the caption underneath it.
+        $laneHeadTimeline = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $timelinePieces
+        $laneHeadX = Convert-TrimTimeToX -Seconds $laneHeadTimeline
+        if ($laneHeadX -ge 0 -and $laneHeadX -le $laneWidth) {
+            $laneHead = New-Object System.Windows.Shapes.Rectangle
+            $laneHead.Style = $ctx.Window.FindResource("TimelinePlayheadStyle")
+            $laneHead.Width = 3
+            $laneHead.Height = $laneHeight
+            $laneHead.IsHitTestVisible = $false
+            [System.Windows.Controls.Canvas]::SetLeft($laneHead, $laneHeadX - 1)
+            [System.Windows.Controls.Canvas]::SetTop($laneHead, 0)
+            $canvasTrimCaptions.Children.Add($laneHead) | Out-Null
         }
     }
 
@@ -2496,6 +2520,63 @@ try {
         Reset-CaptionSidebarField -Box $Box -Text $value
     }
 
+    # The palette route into the same write path as a valid hex entry: apply uppercased,
+    # sync the box so the two views never disagree, one undo step per click. A top-level
+    # function because the swatch click handlers are .GetNewClosure()'d (they each capture
+    # their own colour) and a bare $script: write from inside one lands in the closure's
+    # own module.
+    function Set-CaptionColorFromSwatch {
+        param([string]$Color, [string]$Field)
+        # The palette is populated once at startup, but Show-CaptionSidebar's fill can
+        # still be running if a click lands mid-refresh; same guard every other field uses.
+        if (Test-CaptionSidebarLoading) { return }
+        $cap = Get-TrimSelectedCaption
+        if ($null -eq $cap) { return }
+        $box = if ($Field -eq "FillColor") { $textCaptionFill } else { $textCaptionOutline }
+        $value = ([string]$Color).ToUpper()
+        $current = [string]$cap.$Field
+        if ($value -eq $current) { return }
+        Push-TrimUndo
+        Update-CaptionField -Id $cap.Id -Field $Field -Value $value
+        Reset-CaptionSidebarField -Box $box -Text $value
+        Request-TrimProjectSave
+    }
+
+    # Spec palette: twelve common caption colours, with the hex box left in place for
+    # anything else.
+    $script:CaptionPalette = @(
+        "#FFFFFF", "#000000", "#FFD65A", "#FF4D4D", "#4DFF6E", "#4DA6FF",
+        "#FF8A00", "#FF4DDB", "#00E5FF", "#A64DFF", "#1A1A1A", "#E0C48F"
+    )
+
+    function Add-CaptionSwatches {
+        param($Panel, [string]$Field)
+        if ($null -eq $Panel) { return }
+        $Panel.Children.Clear()
+        foreach ($color in $script:CaptionPalette) {
+            $btn = New-Object System.Windows.Controls.Button
+            # The keyed style carries the 16x16 / 2px margin / thin #33FFFFFF border and,
+            # crucially, a template that actually paints the button's own Background --
+            # the stock WPF chrome ignores it and every swatch would come out grey.
+            $swatchStyle = $ctx.Window.TryFindResource("CaptionSwatchButtonStyle")
+            if ($null -ne $swatchStyle) { $btn.Style = $swatchStyle }
+            $btn.Width = 16
+            $btn.Height = 16
+            $btn.Margin = New-Object System.Windows.Thickness(2)
+            $btn.Background = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString($color))
+            $btn.ToolTip = $color
+            $btn.Cursor = "Hand"
+            # GetNewClosure is required, exactly as on the lane blocks: without it every
+            # swatch would capture the loop variable's final value and all twelve would
+            # paint the last colour in the list.
+            $thisColor = $color
+            $thisField = $Field
+            $btn.Add_Click({ Set-CaptionColorFromSwatch -Color $thisColor -Field $thisField }.GetNewClosure())
+            [void]$Panel.Children.Add($btn)
+        }
+    }
+
     # One box retimes one end; the other end comes from the model. Validated BEFORE any undo
     # is pushed, because Set-TrimCaptionTimes rejects a pair under the minimum length and a
     # pre-emptive push would leave an undo step for a change that never happened.
@@ -2545,6 +2626,19 @@ try {
         Set-TrimSelectedCaption -Id $cap.Id
         Update-TrimTimeline
         Show-CaptionSidebar
+        # A new caption is empty, so the only useful next action is typing into it --
+        # the spec asks for the text box to take focus rather than making the user click it.
+        # Posted at Input priority rather than called inline: Show-CaptionSidebar has only
+        # just flipped the column to Visible, and Focus() on an element whose container has
+        # not been laid out yet silently does nothing.
+        if ($null -ne $textCaptionText) {
+            $textCaptionText.Dispatcher.BeginInvoke(
+                [System.Windows.Threading.DispatcherPriority]::Input,
+                # GetNewClosure: the block runs after this call has returned, so a plain
+                # scriptblock would resolve $textCaptionText against a call stack that is
+                # gone. Read-only capture, so no $script: write lands in the wrong module.
+                [action]({ $textCaptionText.Focus() | Out-Null }.GetNewClosure())) | Out-Null
+        }
         Request-TrimProjectSave
     }
 
@@ -3042,6 +3136,12 @@ try {
 
         # Colours and times are validated on the way OUT of the box, not per keystroke:
         # "#00FF0" is a legitimate intermediate state of typing "#00FF00".
+        # Built once at startup, not per selection: the palette is fixed, and rebuilding it
+        # on every Show-CaptionSidebar would throw away twelve buttons and their handlers
+        # on each click of a lane block.
+        Add-CaptionSwatches -Panel $panelCaptionFillSwatches -Field "FillColor"
+        Add-CaptionSwatches -Panel $panelCaptionOutlineSwatches -Field "OutlineColor"
+
         if ($null -ne $textCaptionFill) {
             $textCaptionFill.Add_LostFocus({ Set-CaptionColorFromBox -Box $textCaptionFill -Field "FillColor" })
         }
@@ -3086,6 +3186,17 @@ try {
     $onTrimFile = {
         param($path)
         if (-not $script:TrimEditorReady) { return $false }
+
+        # Flush the pending debounced save for the OUTGOING file before anything below
+        # touches state -- same unconditional, timer-bypassed flush the window's Closed
+        # handler does, and for the same reason. Without it, switching videos within a
+        # second of an edit loses that edit, and worse, the still-armed timer would fire
+        # later and write the NEW video's fresh state over the old file's project.
+        if ($script:ProjectSaveTimer) { $script:ProjectSaveTimer.Stop() }
+        if ($script:TrimInputFile) {
+            Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
+                -Fades $script:TrimFades -Captions @($script:TrimCaptions) | Out-Null
+        }
 
         $props = Get-VideoProperties -inputFile $path
         if (-not $props) {

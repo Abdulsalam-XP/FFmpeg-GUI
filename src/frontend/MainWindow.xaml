@@ -435,8 +435,12 @@
                                             <CheckBox x:Name="CheckCaptionBold" Content="Bold" Margin="0,8,0,0"
                                                       Foreground="{StaticResource BrushTextBody}"/>
                                             <TextBlock Text="FILL COLOR (#RRGGBB)" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <!-- Swatch buttons are added from code at startup; the hex box below stays
+                                                 the free entry route for any colour not in the palette. -->
+                                            <WrapPanel x:Name="PanelCaptionFillSwatches" Margin="0,2,0,4"/>
                                             <TextBox x:Name="TextCaptionFill"/>
                                             <TextBlock Text="OUTLINE COLOR" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <WrapPanel x:Name="PanelCaptionOutlineSwatches" Margin="0,2,0,4"/>
                                             <TextBox x:Name="TextCaptionOutline"/>
                                             <TextBlock Text="OUTLINE WIDTH" Style="{StaticResource SidebarLabelStyle}"/>
                                             <Slider x:Name="SliderCaptionOutlineW" Minimum="0" Maximum="8" TickFrequency="0.5"
@@ -471,7 +475,10 @@
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="*"/><RowDefinition Height="20"/>
                                     </Grid.RowDefinitions>
-                                    <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Background="Transparent"/>
+                                    <!-- ZIndex 1: the playhead is drawn taller than this row so it
+                                         crosses the waveform strip below, and the strip's own
+                                         background would otherwise paint over it. -->
+                                    <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Panel.ZIndex="1" Background="Transparent"/>
                                     <!-- Waveform strip: painted from code with per piece renders. -->
                                     <Canvas x:Name="CanvasTrimWave" Grid.Row="1" Background="#CC070B14" IsHitTestVisible="False"/>
                                 </Grid>

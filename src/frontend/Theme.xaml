@@ -1163,6 +1163,30 @@
         </Setter>
     </Style>
 
+    <!-- Caption colour palette swatch. The template honours the button's own Background,
+         which is the colour itself, set from code when the palette is built. -->
+    <Style x:Key="CaptionSwatchButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="16"/>
+        <Setter Property="Height" Value="16"/>
+        <Setter Property="Margin" Value="2"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Swatch" CornerRadius="3"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Swatch" Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="TimelineRulerTickStyle" TargetType="Rectangle">
         <Setter Property="Fill" Value="{StaticResource BrushTextMuted}"/>
         <Setter Property="Width" Value="1"/>

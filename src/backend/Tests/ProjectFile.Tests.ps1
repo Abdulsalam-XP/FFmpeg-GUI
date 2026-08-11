@@ -51,5 +51,11 @@ Describe "Save-TrimProject / Read-TrimProject round trip" {
         Set-Content -Path (Get-TrimProjectPath -VideoPath $wt) -Value '{"Version":1,"CutList":[{"Start":"abc","End":5}],"Fades":{},"Captions":[]}'
         Read-TrimProject -VideoPath $wt | Should Be $null
     }
+    It "returns null for a project written by a newer schema version" {
+        $v2 = Join-Path $tmp "future.mp4"
+        Set-Content -Path $v2 -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $v2) -Value '{"Version":2,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
+        Read-TrimProject -VideoPath $v2 | Should Be $null
+    }
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
