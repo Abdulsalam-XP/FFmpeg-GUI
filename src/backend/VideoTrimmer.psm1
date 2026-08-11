@@ -1,5 +1,6 @@
 Import-Module "$PSScriptRoot/UI.psm1"
 Import-Module "$PSScriptRoot/ToolPaths.psm1"
+Import-Module "$PSScriptRoot/Captions.psm1"
 
 # Keyframe times for the trim timeline. Cuts can only start on a keyframe without
 # re-encoding, so the timeline snaps to these and the panel reports their spacing --
@@ -62,14 +63,27 @@ function Get-TrimSourceProfile {
 
     $ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
 
+    # Field ORDER in the csv is ffprobe's own (the order the fields appear in its stream
+    # struct), NOT the order they are requested in -- verified against these recordings:
+    # codec_name,width,height,time_base. Adding a field can therefore shift the index of
+    # every field after it, which is why each one below is read by its fixed position.
     $videoRaw = & $ffprobe -v error -select_streams v:0 `
-        -show_entries stream=codec_name,time_base -of csv=p=0 $InputFile 2>&1
+        -show_entries stream=codec_name,width,height,time_base -of csv=p=0 $InputFile 2>&1
     $videoParts = ("$videoRaw").Trim() -split ','
     $codec = if ($videoParts.Count -ge 1) { $videoParts[0].Trim() } else { "" }
 
+    # Burned captions are positioned as a fraction of the frame, so the .ass needs the
+    # real frame size to turn those fractions back into pixels. Defaults match the DVR
+    # recordings this app is built around rather than something arbitrary, so an
+    # unreadable probe still lands captions in roughly the right place.
+    $width = 2560
+    $height = 1440
+    if ($videoParts.Count -ge 2 -and $videoParts[1].Trim() -match '^\d+$') { $width = [int]$videoParts[1].Trim() }
+    if ($videoParts.Count -ge 3 -and $videoParts[2].Trim() -match '^\d+$') { $height = [int]$videoParts[2].Trim() }
+
     # time_base arrives as "1/90000"; the denominator is the timescale.
     $timeScale = 90000
-    if ($videoParts.Count -ge 2 -and $videoParts[1] -match '^\s*\d+\s*/\s*(\d+)\s*$') {
+    if ($videoParts.Count -ge 4 -and $videoParts[3] -match '^\s*\d+\s*/\s*(\d+)\s*$') {
         $timeScale = [int]$Matches[1]
     }
 
@@ -95,6 +109,8 @@ function Get-TrimSourceProfile {
         VideoCodec   = $codec
         VideoEncoder = $encoder
         TimeScale    = $timeScale
+        Width        = $width
+        Height       = $height
         AudioStreams = $audioRaw.Count
         SampleRate   = $sampleRate
         Channels     = $channels
@@ -152,6 +168,18 @@ function Get-TrimSegmentPlan {
     return ,@($segments)
 }
 
+# A Windows path as ffmpeg's filter parser wants to see it inside ass='...'.
+#
+# Two separate escapes, both required: the filter graph is parsed before the filter's own
+# arguments, so a backslash is a graph-level escape character and "C:\Users" would eat the
+# U -- forward slashes avoid that entirely. The colon then still has to be escaped because
+# it is the filter's own option separator, so "C:/x" would be read as filter "C" with an
+# option list starting at "/x".
+function ConvertTo-AssFilterPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (($Path -replace '\\', '/') -replace ':', '\:')
+}
+
 # Exports the surviving pieces as one file.
 #
 # One ffmpeg pass per piece, then one to join them. The obvious single-pass alternative
@@ -166,6 +194,9 @@ function Export-CutListAsync {
         [Parameter(Mandatory = $true)][object[]]$Pieces,
         # One entry per internal boundary, in seconds; 0 means a plain cut there.
         [double[]]$FadeLengths = @(),
+        # Caption objects (New-Caption shape) in SOURCE time. Empty means nothing burns
+        # and every non-transition segment still stream-copies.
+        [object[]]$Captions = @(),
         [scriptblock]$OnFinished = $null
     )
 
@@ -188,6 +219,13 @@ function Export-CutListAsync {
     # runs a single step against a bogus segment -- with or without fades. Assigning the
     # call directly is what keeps it a real list.
     $work = Get-TrimSegmentPlan -Pieces $Pieces -FadeLengths $FadeLengths
+    # Captions split copy segments further: the stretches with text on screen become
+    # "burn" segments that re-encode with the .ass baked in, and everything else still
+    # stream-copies, so a two-second caption costs two seconds of encoding rather than
+    # the whole export. Same return-shape trap as above -- assigned directly, never
+    # @(...)-wrapped. $stepCount is computed AFTER the split because the split is what
+    # decides how many ffmpeg runs there actually are.
+    $work = Split-TrimSegmentsForCaptions -Segments $work -Captions $Captions
     $stepCount = $work.Count + 1
     $profile = Get-TrimSourceProfile -InputFile $InputFile
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-cut-" + [guid]::NewGuid().ToString("N"))
@@ -198,6 +236,24 @@ function Export-CutListAsync {
         $tempFiles += (Join-Path $tempDir ("piece{0:D3}.mp4" -f $i))
     }
 
+    # One segment-local .ass per burning segment, all written up front rather than inside
+    # the step runner: the runner's steps execute later from timer callbacks, where a
+    # failed write would surface as an ffmpeg error with no obvious cause.
+    #
+    # Times are shifted by the segment's start because each segment is extracted with -ss
+    # and therefore begins at t=0 in its own file. UTF-8 WITH a BOM -- libass wants one;
+    # the concat list further down must NOT have one. Do not unify the two.
+    for ($i = 0; $i -lt $work.Count; $i++) {
+        $seg = $work[$i]
+        if (($seg.Kind -eq "burn" -or $seg.Kind -eq "transition") -and $seg.Captions) {
+            $assPath = Join-Path $tempDir ("seg{0:D3}.ass" -f $i)
+            $assDoc = New-AssDocument -Captions $seg.Captions -PlayResX $profile.Width `
+                -PlayResY $profile.Height -TimeOffset $seg.Start
+            [System.IO.File]::WriteAllText($assPath, $assDoc, (New-Object System.Text.UTF8Encoding($true)))
+            $seg.AssFile = $assPath
+        }
+    }
+
     # The maps depend only on how many audio streams the source has, which cannot change
     # mid-export, so they are built once. The filter graph itself cannot be: each
     # transition now carries its own length.
@@ -206,13 +262,22 @@ function Export-CutListAsync {
     # mic) and both have to survive a fade, or a crossfaded export would silently lose a
     # track that a plain export keeps.
     $audioStreamCount = $profile.AudioStreams
-    $fadeMaps = @("-map", "`"[v]`"")
+    # Audio maps only. The video map is chosen per transition, because a transition that
+    # also burns captions ends on a different filter label than one that does not.
+    $fadeAudioMaps = @()
     for ($a = 0; $a -lt $audioStreamCount; $a++) {
-        $fadeMaps += @("-map", "`"[a$a]`"")
+        $fadeAudioMaps += @("-map", "`"[a$a]`"")
     }
     $buildFadeFilter = {
-        param([double]$Seconds)
+        param([double]$Seconds, [string]$AssFile = "")
         $graph = "[0:v][1:v]xfade=transition=fade:duration=$Seconds`:offset=0[v]"
+        # A transition already re-encodes, so a caption that overlaps one rides along on
+        # the same pass: the ass filter is chained onto the crossfade's own output instead
+        # of splitting the transition into further segments (which is impossible anyway --
+        # the two halves come from two different places in the source).
+        if ($AssFile) {
+            $graph += ";[v]ass='$(ConvertTo-AssFilterPath -Path $AssFile)'[v2]"
+        }
         for ($a = 0; $a -lt $audioStreamCount; $a++) {
             $graph += ";[0:a:$a][1:a:$a]acrossfade=d=$Seconds[a$a]"
         }
@@ -257,7 +322,7 @@ function Export-CutListAsync {
         $stepCount = $stepCount
         $profile = $profile
         $buildFadeFilter = $buildFadeFilter
-        $fadeMaps = $fadeMaps
+        $fadeAudioMaps = $fadeAudioMaps
 
         if ($StepIndex -lt $work.Count) {
             $segment = $work[$StepIndex]
@@ -270,12 +335,35 @@ function Export-CutListAsync {
                 # without it the encoder picks its own timescale and the join collapses
                 # neighbouring frames onto duplicate timestamps.
                 $fadeLength = $segment.Duration
+                $assFile = if ($segment.AssFile) { $segment.AssFile } else { "" }
+                # The ass filter renames the video output, so the map has to follow it.
+                $videoLabel = if ($assFile) { "[v2]" } else { "[v]" }
                 $args = @("-hide_banner",
                           "-ss", $segment.Start, "-t", $fadeLength, "-i", "`"$InputFile`"",
                           "-ss", $segment.NextStart, "-t", $fadeLength, "-i", "`"$InputFile`"",
-                          "-filter_complex", "`"$(& $buildFadeFilter $fadeLength)`"") +
-                        $fadeMaps +
+                          "-filter_complex", "`"$(& $buildFadeFilter $fadeLength $assFile)`"",
+                          "-map", "`"$videoLabel`"") +
+                        $fadeAudioMaps +
                         @("-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                          "-pix_fmt", "yuv420p",
+                          "-video_track_timescale", $profile.TimeScale,
+                          "-c:a", "aac", "-b:a", "256k",
+                          "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                          "`"$($tempFiles[$StepIndex])`"", "-y")
+            } elseif ($segment.Kind -eq "burn") {
+                # A stretch of the timeline with a caption on screen. Re-encoded under the
+                # same encoder/timescale contract as a transition, which is what keeps the
+                # final concat a stream copy rather than a whole-file re-encode.
+                #
+                # -map 0:v -map 0:a rather than -map 0: the source's data/timecode streams
+                # cannot survive a filtered re-encode, and mapping them would make this
+                # segment's stream layout differ from the copied ones and break the concat.
+                $assEsc = ConvertTo-AssFilterPath -Path $segment.AssFile
+                $args = @("-hide_banner",
+                          "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
+                          "-vf", "`"ass='$assEsc'`"",
+                          "-map", "0:v", "-map", "0:a",
+                          "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                           "-pix_fmt", "yuv420p",
                           "-video_track_timescale", $profile.TimeScale,
                           "-c:a", "aac", "-b:a", "256k",
@@ -315,6 +403,10 @@ function Export-CutListAsync {
                     # Named separately because it is the slow step: the only one that
                     # re-encodes, so a stall here is expected rather than a symptom.
                     "blending cut ($($StepIndex + 1) of $($work.Count))"
+                } elseif ($work[$StepIndex].Kind -eq "burn") {
+                    # Also a re-encoding step, and named for the same reason: the user
+                    # should be able to tell a slow caption burn from a stalled export.
+                    "burning captions ($($StepIndex + 1) of $($work.Count))"
                 } else {
                     "cutting piece $($StepIndex + 1) of $($work.Count)"
                 }
@@ -401,4 +493,5 @@ function Export-TrimThumbnail {
 }
 
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
-    Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy
+    Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
+    ConvertTo-AssFilterPath

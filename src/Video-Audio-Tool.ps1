@@ -50,6 +50,7 @@ $requiredModules = @(
     "backend\VideoProcessing.psm1",
     "backend\AudioProcessing.psm1",
     "backend\YouTubeDownload.psm1",
+    "backend\Captions.psm1",
     "backend\VideoTrimmer.psm1"
 )
 
@@ -2089,16 +2090,29 @@ try {
             # the whole window down, since this runs inside the message loop.
             $fadeLengths = Get-TrimFadeLengths -Pieces $pieces
             $anyFade = @($fadeLengths | Where-Object { $_ -gt 0 }).Count -gt 0
-            if ($anyFade) {
-                # A crossfade has to be re-encoded, and only h264/hevc have an encoder
-                # mapped. Anything else would splice a differently-coded segment between
-                # copied ones and produce a file that changes codec halfway through.
+
+            # Task 9 replaces this with @($script:TrimCaptions) once the caption list
+            # exists; until then the export runs with nothing to burn, which is exactly
+            # the old behaviour (every non-transition segment stream-copies).
+            # [object[]] cast for the same reason Get-TrimFadeLengths casts: an empty
+            # bare @() binds to a typed array parameter as $null.
+            $captions = [object[]]@()
+            $anyCaption = @($captions | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Text) }).Count -gt 0
+
+            if ($anyFade -or $anyCaption) {
+                # Both crossfades and burned captions re-encode the segments they touch,
+                # and only h264/hevc have an encoder mapped. Anything else would splice a
+                # differently-coded segment between copied ones and produce a file that
+                # changes codec halfway through.
                 $sourceProfile = Get-TrimSourceProfile -InputFile $script:TrimInputFile
                 if (-not $sourceProfile.VideoEncoder) {
+                    $reason = if ($anyFade) { "Fades need to re-encode across each cut" } else { "Burning captions needs to re-encode the parts they cover" }
                     Show-PanelMessage -Block $textTrimMeta -IsError -Text (
-                        "Fades need to re-encode across each cut, and this file's video codec ({0}) is not one this app can re-encode. Turn the fades off to export with a plain cut." -f $sourceProfile.VideoCodec)
+                        "{0}, and this file's video codec ({1}) is not one this app can re-encode. Remove them to export with plain cuts." -f $reason, $sourceProfile.VideoCodec)
                     return
                 }
+            }
+            if ($anyFade) {
                 $problem = Get-TrimFadeProblem -Pieces $pieces
                 if ($problem) {
                     Show-PanelMessage -Block $textTrimMeta -IsError -Text $problem
@@ -2108,7 +2122,7 @@ try {
 
             Show-PanelMessage -Block $textTrimMeta -Text ""
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
-                -FadeLengths $fadeLengths `
+                -FadeLengths $fadeLengths -Captions $captions `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
         })
     }
