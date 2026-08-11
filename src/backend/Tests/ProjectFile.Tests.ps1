@@ -52,10 +52,10 @@ Describe "Save-TrimProject / Read-TrimProject round trip" {
         Read-TrimProject -VideoPath $wt | Should Be $null
     }
     It "returns null for a project written by a newer schema version" {
-        $v2 = Join-Path $tmp "future.mp4"
-        Set-Content -Path $v2 -Value "fake"
-        Set-Content -Path (Get-TrimProjectPath -VideoPath $v2) -Value '{"Version":2,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
-        Read-TrimProject -VideoPath $v2 | Should Be $null
+        $v3 = Join-Path $tmp "future.mp4"
+        Set-Content -Path $v3 -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $v3) -Value '{"Version":3,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
+        Read-TrimProject -VideoPath $v3 | Should Be $null
     }
     It "round-trips zoom keyframes" {
         Import-Module (Join-Path $PSScriptRoot "..\Zooms.psm1") -Force
@@ -91,6 +91,45 @@ Describe "Save-TrimProject / Read-TrimProject round trip" {
         $r = Read-TrimProject -VideoPath $zc
         @($r.Zooms).Count | Should Be 1
         $r.DroppedZooms | Should Be 1
+    }
+    Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Describe "Save-TrimProject / Read-TrimProject schema v2 (tracks + unlinked)" {
+    $tmp = Join-Path $env:TEMP ("pf-v2-test-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $video = Join-Path $tmp "clip.mp4"
+    Set-Content -Path $video -Value "fake"
+
+    It "round-trips tracks and the unlinked flag as schema v2" {
+        Import-Module (Join-Path $PSScriptRoot "..\Tracks.psm1") -Force
+        $t = New-TrimTrack -Kind "audio-source" -Path $video -StreamIdx 1 -Label "Game" -GainDb -4.5
+        (Save-TrimProject -VideoPath $video -CutList @() -Fades @{} -Captions @() -Zooms @() -Tracks @($t) -Unlinked $true) | Should Be $true
+        $r = Read-TrimProject -VideoPath $video
+        @($r.Tracks).Count | Should Be 1
+        $r.Tracks[0].GainDb | Should Be (-4.5)
+        $r.Unlinked | Should Be $true
+    }
+    It "loads v1 files with null Tracks so the app builds defaults" {
+        $v1 = Join-Path $tmp "v1.mp4"
+        Set-Content -Path $v1 -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $v1) -Value '{"Version":1,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
+        $r = Read-TrimProject -VideoPath $v1
+        $r.Tracks | Should Be $null
+    }
+    It "drops corrupt track entries and counts them" {
+        $tc = Join-Path $tmp "tc.mp4"
+        Set-Content -Path $tc -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $tc) -Value '{"Version":2,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[],"Zooms":[],"Unlinked":false,"Tracks":[{"Kind":"banana"},{"Id":"b","Kind":"audio-source","Path":"x","StreamIdx":1,"Label":"g","Offset":0,"InStart":0,"InEnd":0,"GainDb":0,"Muted":false}]}'
+        $r = Read-TrimProject -VideoPath $tc
+        @($r.Tracks).Count | Should Be 1
+        $r.DroppedTracks | Should Be 1
+    }
+    It "refuses v3" {
+        $v3 = Join-Path $tmp "v3.mp4"
+        Set-Content -Path $v3 -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $v3) -Value '{"Version":3,"CutList":[],"Fades":{},"Captions":[]}'
+        Read-TrimProject -VideoPath $v3 | Should Be $null
     }
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

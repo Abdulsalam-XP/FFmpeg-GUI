@@ -53,6 +53,7 @@ $requiredModules = @(
     "backend\Captions.psm1",
     "backend\Zooms.psm1",
     "backend\ProjectFile.psm1",
+    "backend\Tracks.psm1",
     "backend\VideoTrimmer.psm1"
 )
 
@@ -875,6 +876,7 @@ try {
     $buttonTrimBrowse     = $panelTrim.FindName("ButtonTrimBrowse")
     $buttonTrimOpenAnother = $panelTrim.FindName("ButtonTrimOpenAnother")
     $buttonTrimAddZoom    = $panelTrim.FindName("ButtonTrimAddZoom")
+    $buttonTrimUnlink     = $panelTrim.FindName("ButtonTrimUnlink")
     $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
     $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
     $canvasCaptionOverlay = $panelTrim.FindName("CanvasCaptionOverlay")
@@ -985,6 +987,19 @@ try {
     # 100x zoom nobody asked for, and reading it as a click is the safer interpretation.
     $script:ZoomBoxMinWidth = 40.0
 
+    # Track stack state. Declared here beside the zoom/caption state and for the same
+    # reason: the app must never hand -Tracks $null to Export-CutListAsync (the PS 5.1
+    # @($null).Count -eq 1 trap that binds it to audio-only mode), so this is always an
+    # ArrayList, never left $null, from the moment the editor exists.
+    $script:TrimTracks = New-Object System.Collections.ArrayList
+    # U toggles this: linked (the default) keeps every audio-source riding the video's own
+    # cut list; unlinked lets each track's own Offset/InStart/InEnd take over independently.
+    $script:TrimTracksUnlinked = $false
+    # A track Id string (or $null), never an index -- same reasoning as TrimSelectedZoom:
+    # indexes shift on add/delete and a drag re-sorts nothing here, but Task 8's lane drag
+    # will move things around the same way the zoom lane does.
+    $script:TrimSelectedTrack = $null
+
     # Project persistence. The save failure is reported once per file, not once per edit:
     # a read-only folder would otherwise repaint the same error over the panel every
     # second for as long as the user keeps working.
@@ -1000,7 +1015,7 @@ try {
         if (-not $script:TrimInputFile) { return }
         $ok = Save-TrimProject -VideoPath $script:TrimInputFile `
             -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions) `
-            -Zooms @($script:TrimZooms)
+            -Zooms @($script:TrimZooms) -Tracks @($script:TrimTracks) -Unlinked $script:TrimTracksUnlinked
         if (-not $ok -and -not $script:ProjectSaveWarned) {
             $script:ProjectSaveWarned = $true
             Show-PanelMessage -Block $textTrimMeta -IsError `
@@ -2086,6 +2101,114 @@ try {
         if ($null -eq $script:TrimSelectedZoom) { return }
         $script:TrimSelectedZoom = $null
         Update-TrimZoomLane
+    }
+
+    # Track stack write-throughs. Top-level functions for the usual reason: several of the
+    # callers below live inside .GetNewClosure()'d handlers, where a bare $script: write
+    # would land in the closure's own private module and never reach the real state.
+
+    # Field by field rather than PSObject.Copy(), like Copy-TrimZoom/Copy-TrimCaption: undo
+    # has to hold a genuinely independent track and not a second reference to the one a
+    # future lane drag (Task 8) or the sidebar is about to mutate in place. Pip is a nested
+    # hashtable, so it needs its own shallow clone or two tracks would share one mutable box.
+    function Copy-TrimTrack {
+        param($Track)
+        $pip = $null
+        if ($null -ne $Track.Pip) {
+            $pip = @{}
+            foreach ($k in $Track.Pip.Keys) { $pip[$k] = $Track.Pip[$k] }
+        }
+        return [PSCustomObject]@{
+            Id        = $Track.Id
+            Kind      = $Track.Kind
+            Path      = $Track.Path
+            StreamIdx = [int]$Track.StreamIdx
+            Label     = $Track.Label
+            Offset    = [double]$Track.Offset
+            InStart   = [double]$Track.InStart
+            InEnd     = [double]$Track.InEnd
+            GainDb    = [double]$Track.GainDb
+            Muted     = [bool]$Track.Muted
+            Pip       = $pip
+        }
+    }
+
+    function Set-TrimTracks {
+        param([object[]]$Tracks = @())
+        $list = New-Object System.Collections.ArrayList
+        foreach ($t in @($Tracks)) { if ($null -ne $t) { [void]$list.Add($t) } }
+        $script:TrimTracks = $list
+    }
+
+    function Get-TrimTrackById {
+        param([string]$Id)
+        foreach ($t in $script:TrimTracks) { if ($t.Id -eq $Id) { return $t } }
+        return $null
+    }
+
+    # One write-through for every mutable field a track carries, mirroring Update-CaptionField:
+    # only the parameters the caller actually bound are applied, via $PSBoundParameters --
+    # everything else on the track is left exactly as it was rather than stomped back to a
+    # param default.
+    function Set-TrimTrackValues {
+        param(
+            [Parameter(Mandatory = $true)][string]$Id,
+            [double]$GainDb,
+            [bool]$Muted,
+            [double]$Offset,
+            [double]$InStart,
+            [double]$InEnd,
+            [double]$PipX,
+            [double]$PipY,
+            [double]$PipW,
+            [double]$PipH
+        )
+        $t = Get-TrimTrackById -Id $Id
+        if ($null -eq $t) { return }
+        if ($PSBoundParameters.ContainsKey("GainDb")) { $t.GainDb = [math]::Max(-30.0, [math]::Min(30.0, $GainDb)) }
+        if ($PSBoundParameters.ContainsKey("Muted")) { $t.Muted = $Muted }
+        if ($PSBoundParameters.ContainsKey("Offset")) { $t.Offset = [math]::Max(0.0, $Offset) }
+        if ($PSBoundParameters.ContainsKey("InStart")) { $t.InStart = [math]::Max(0.0, $InStart) }
+        if ($PSBoundParameters.ContainsKey("InEnd")) { $t.InEnd = [math]::Max(0.0, $InEnd) }
+        if ($PSBoundParameters.ContainsKey("PipX") -or $PSBoundParameters.ContainsKey("PipY") -or
+            $PSBoundParameters.ContainsKey("PipW") -or $PSBoundParameters.ContainsKey("PipH")) {
+            if ($null -eq $t.Pip) { $t.Pip = @{ X = 0.5; Y = 0.5; W = 0.3; H = 0.3 } }
+            if ($PSBoundParameters.ContainsKey("PipX")) { $t.Pip.X = $PipX }
+            if ($PSBoundParameters.ContainsKey("PipY")) { $t.Pip.Y = $PipY }
+            if ($PSBoundParameters.ContainsKey("PipW")) { $t.Pip.W = $PipW }
+            if ($PSBoundParameters.ContainsKey("PipH")) { $t.Pip.H = $PipH }
+        }
+        Update-TrimTrackLanes
+        Request-TrimProjectSave
+    }
+
+    function Remove-TrimTrack {
+        param([Parameter(Mandatory = $true)][string]$Id)
+        $t = Get-TrimTrackById -Id $Id
+        if ($null -eq $t) { return }
+        [void]$script:TrimTracks.Remove($t)
+        if ($script:TrimSelectedTrack -eq $Id) { $script:TrimSelectedTrack = $null }
+        Update-TrimTrackLanes
+        Request-TrimProjectSave
+    }
+
+    # U's handler. Flips the linked/unlinked flag for the whole stack -- individual tracks
+    # do not carry their own linked bit, the session does, exactly like ZoomMagnet is a tool
+    # mode rather than a per-keyframe setting.
+    function Invoke-TrimToggleUnlink {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        $script:TrimTracksUnlinked = -not $script:TrimTracksUnlinked
+        Update-TrimTrackLanes
+        Request-TrimProjectSave
+    }
+
+    # No-op stub: Task 8 draws the real per-track lanes on a canvas that does not exist in
+    # the XAML yet. Guarded exactly like the rest of this file guards a lookup that can come
+    # back $null on a partial install -- returns immediately rather than throwing, so every
+    # write-through above can call this unconditionally.
+    function Update-TrimTrackLanes {
+        $canvasTrimTracks = $panelTrim.FindName("CanvasTrimTracks")
+        if ($null -eq $canvasTrimTracks) { return }
     }
 
     # Two keyframes at the same instant are a zero-length glide, which Get-TrimZoomStateAt
@@ -3343,6 +3466,12 @@ try {
             # hand undo the very objects the edit is about to change.
             Zooms           = @(foreach ($z in $script:TrimZooms) { Copy-TrimZoom -Zoom $z })
             SelectedZoom    = $script:TrimSelectedZoom
+            # Cloned for the same reason as the zooms: a future lane drag (Task 8) and the
+            # sidebar both edit track objects IN PLACE, so an uncloned snapshot would hand
+            # undo the very objects the edit is about to change.
+            Tracks          = @(foreach ($t in $script:TrimTracks) { Copy-TrimTrack -Track $t })
+            Unlinked        = $script:TrimTracksUnlinked
+            SelectedTrack   = $script:TrimSelectedTrack
         }
     }
 
@@ -3437,6 +3566,15 @@ try {
             # line above has just restored. A snapshot already records a consistent pair, so
             # the restore writes both straight through.
             $script:TrimSelectedZoom = $last.SelectedZoom
+        }
+        # Same "only restore what was recorded" rule for tracks: entries pushed before the
+        # track stack existed carry no Tracks key, and treating that as "no tracks" would
+        # wipe the stack down to nothing.
+        if ($last.ContainsKey("Tracks")) {
+            Set-TrimTracks -Tracks $last.Tracks
+            $script:TrimTracksUnlinked = $last.Unlinked
+            $script:TrimSelectedTrack = $last.SelectedTrack
+            Update-TrimTrackLanes
         }
         $buttonTrimDelete.IsEnabled = ($script:TrimSelected -ge 0)
         $buttonTrimUndo.IsEnabled = ($script:TrimUndoStack.Count -gt 0)
@@ -4338,6 +4476,7 @@ try {
         if ($null -ne $buttonTrimAddCaption) { $buttonTrimAddCaption.Add_Click({ Invoke-TrimAddCaption }) }
         if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
         if ($null -ne $buttonTrimAddZoom) { $buttonTrimAddZoom.Add_Click({ Invoke-TrimAddZoom }) }
+        if ($null -ne $buttonTrimUnlink) { $buttonTrimUnlink.Add_Click({ Invoke-TrimToggleUnlink }) }
 
         # ---- Caption sidebar handlers ----
         #
@@ -4469,6 +4608,7 @@ try {
             if ($e.Key -eq [System.Windows.Input.Key]::S -and -not $ctrl) { Invoke-TrimSplit; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::C -and -not $ctrl) { Invoke-TrimAddCaption; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::Z -and -not $ctrl) { Invoke-TrimAddZoom; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::U -and -not $ctrl) { Invoke-TrimToggleUnlink; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::Delete) {
                 # A selected zoom keyframe wins. Selecting one clears the caption selection
                 # and vice versa, so at most one of these is ever armed -- but a piece can be
@@ -4501,7 +4641,8 @@ try {
         if ($script:ProjectSaveTimer) { $script:ProjectSaveTimer.Stop() }
         if ($script:TrimInputFile) {
             Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
-                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) | Out-Null
+                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) `
+                -Tracks @($script:TrimTracks) -Unlinked $script:TrimTracksUnlinked | Out-Null
         }
 
         $props = Get-VideoProperties -inputFile $path
@@ -4534,6 +4675,12 @@ try {
         $script:TrimZooms = New-Object System.Collections.ArrayList
         $script:TrimSelectedZoom = $null
         $script:TrimZoomDrag = $null
+        # Tracks belong to the file they were probed against for exactly the same reason --
+        # never left $null (the Export-CutListAsync audio-only trap), always reset to an
+        # empty ArrayList here and filled in below once the project/default stack is known.
+        $script:TrimTracks = New-Object System.Collections.ArrayList
+        $script:TrimTracksUnlinked = $false
+        $script:TrimSelectedTrack = $null
         # Whatever the previous file's glide left on the preview would otherwise sit over the
         # new file's first frame until something happens to redraw it.
         Update-PreviewZoom -SourceSeconds 0.0
@@ -4573,6 +4720,22 @@ try {
             if ($project.DroppedZooms -gt 0) { $droppedZooms = [int]$project.DroppedZooms }
         } elseif (Test-Path -LiteralPath (Get-TrimProjectPath -VideoPath $path)) {
             $projectUnreadable = $true
+        }
+
+        # Track stack: probe the file's own audio streams so the default stack (and every
+        # audio-source track's StreamIdx) reflects THIS file, not whatever the previous one
+        # had. Synchronous, same as the ffprobe call Get-VideoProperties already made above --
+        # both are quick metadata reads, not the frame decode the keyframe scan needs async.
+        $streams = Get-TrimAudioStreams -InputFile $path
+        if ($project -and $null -ne $project.Tracks -and @($project.Tracks).Count -gt 0) {
+            Set-TrimTracks -Tracks @($project.Tracks)
+            $script:TrimTracksUnlinked = [bool]$project.Unlinked
+        } else {
+            # No v2 project (a v1 file, no file at all, or a v2 file saved before any track
+            # existed) -- the app builds the same default stack Task 6's export path assumes:
+            # one video-main plus one audio-source per stream this file actually has.
+            Set-TrimTracks -Tracks @(Get-DefaultTrackStack -Path $path -AudioStreams $streams)
+            $script:TrimTracksUnlinked = $false
         }
 
         # A second file's thumbnails are for a different source and must not be served
@@ -5192,7 +5355,8 @@ try {
         # swallows its own failures, and there is no panel left to report one to anyway.
         if ($script:TrimInputFile) {
             Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
-                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) | Out-Null
+                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) `
+                -Tracks @($script:TrimTracks) -Unlinked $script:TrimTracksUnlinked | Out-Null
         }
         foreach ($dir in @($script:TrimThumbDir, $script:TrimFadeProxyDir)) {
             if ($dir -and (Test-Path $dir)) {

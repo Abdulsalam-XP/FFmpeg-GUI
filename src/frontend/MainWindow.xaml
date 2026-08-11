@@ -583,6 +583,12 @@
                                         <TextBlock Text="Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
+                                <Button x:Name="ButtonTrimUnlink" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Unlink audio"/>
+                                        <TextBlock Text="U" Style="{StaticResource ShortcutHintStyle}"/>
+                                    </StackPanel>
+                                </Button>
                                 <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Split"/>
