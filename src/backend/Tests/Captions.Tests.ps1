@@ -38,6 +38,9 @@ Describe "ConvertTo-AssTime" {
         ConvertTo-AssTime -Seconds 74.35 | Should Be "0:01:14.35"
     }
     It "formats hours" { ConvertTo-AssTime -Seconds 3723.5 | Should Be "1:02:03.50" }
+    It "truncates rather than rounds centiseconds at the edge" {
+        ConvertTo-AssTime -Seconds 74.999 | Should Be "0:01:14.99"
+    }
 }
 
 Describe "ConvertTo-AssText" {

@@ -33,12 +33,9 @@ function ConvertTo-AssColor {
 
 function ConvertTo-AssTime {
     param([Parameter(Mandatory = $true)][double]$Seconds)
-    $s = [math]::Max([double]0, $Seconds)
-    $hours = [int][math]::Floor($s / 3600)
-    $minutes = [int][math]::Floor(($s % 3600) / 60)
-    $secs = [int][math]::Floor($s % 60)
-    $cs = [int]($s * 100) % 100
-    return ("{0}:{1:D2}:{2:D2}.{3:D2}" -f $hours, $minutes, $secs, $cs)
+    $ts = [timespan]::FromSeconds([math]::Max([double]0, $Seconds))
+    $cs = [math]::Floor($ts.Milliseconds / 10)
+    return ("{0}:{1:D2}:{2:D2}.{3:D2}" -f [int][math]::Floor($ts.TotalHours), $ts.Minutes, $ts.Seconds, [int]$cs)
 }
 
 # Braces open ASS override blocks; a user typing "{" must not be able to inject tags.
