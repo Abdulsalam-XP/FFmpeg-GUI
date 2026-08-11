@@ -126,7 +126,13 @@ function New-TrimAudioMixPlan {
         $k = 0
         foreach ($src in $sources) {
             $vol = if ([math]::Abs([double]$src.GainDb) -gt 0.0001) { ",volume={0}dB" -f (fmt ([double]$src.GainDb)) } else { "" }
-            $graph += ,("[0:a:{0}]atrim=start={1}:end={2},asetpts=PTS-STARTPTS{3}[s{4}_{5}]" -f `
+            # [0:{StreamIdx}] -- the ABSOLUTE ffprobe stream index, not "0:a:N" (0-based
+            # within audio streams). StreamIdx means "ffprobe absolute stream index"
+            # everywhere in the track model (probe parsing, project file), and an
+            # audio-relative remapping computed from surviving tracks was rejected: a
+            # lane's rank would shift whenever the user deletes another lane, silently
+            # repointing every remaining track at the wrong stream.
+            $graph += ,("[0:{0}]atrim=start={1}:end={2},asetpts=PTS-STARTPTS{3}[s{4}_{5}]" -f `
                 ([int]$src.StreamIdx), (fmt $S), (fmt $E), $vol, $i, $k)
             $inputs += "[s${i}_${k}]"; $k++
         }

@@ -121,15 +121,15 @@ Describe "New-TrimAudioMixPlan" {
         $r = New-TrimAudioMixPlan -Tracks @($main,$game,$mic) -Pieces $p1 -FadeLengths @() -ClipDurations @{}
         $r.InputPaths[0] | Should Be "C:\v\main.mp4"
         $r.FilterComplex | Should Match ([regex]::Escape("anullsrc=r=48000:cl=stereo,atrim=0:10[b0]"))
-        $r.FilterComplex | Should Match ([regex]::Escape("[0:a:1]atrim=start=10:end=20,asetpts=PTS-STARTPTS[s0_0]"))
-        $r.FilterComplex | Should Match ([regex]::Escape("[0:a:2]atrim=start=10:end=20,asetpts=PTS-STARTPTS,volume=-6dB[s0_1]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:1]atrim=start=10:end=20,asetpts=PTS-STARTPTS[s0_0]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:2]atrim=start=10:end=20,asetpts=PTS-STARTPTS,volume=-6dB[s0_1]"))
         $r.FilterComplex | Should Match ([regex]::Escape("amix=inputs=3:duration=first:normalize=0"))
         $r.OutputLabel | Should Be "[aout]"
     }
     It "excludes muted tracks from the mix" {
         $m = New-TrimTrack -Kind "audio-source" -Path "C:\v\main.mp4" -StreamIdx 2 -Muted $true
         $r = New-TrimAudioMixPlan -Tracks @($main,$game,$m) -Pieces $p1 -FadeLengths @() -ClipDurations @{}
-        $r.FilterComplex | Should Not Match ([regex]::Escape("[0:a:2]"))
+        $r.FilterComplex | Should Not Match ([regex]::Escape("[0:2]"))
     }
     It "joins pieces with concat on a hard cut and acrossfade on a fade" {
         $r = New-TrimAudioMixPlan -Tracks @($main,$game) -Pieces $p2 -FadeLengths @(0.5) -ClipDurations @{}
