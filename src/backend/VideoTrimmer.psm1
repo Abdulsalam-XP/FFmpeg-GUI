@@ -506,8 +506,8 @@ function Export-TrimWaveform {
         [Parameter(Mandatory = $true)][double]$StartSeconds,
         [Parameter(Mandatory = $true)][double]$DurationSeconds,
         [Parameter(Mandatory = $true)][string]$OutputFile,
-        [int]$Width = 1000,
-        [int]$Height = 20
+        [int]$Width = 1600,
+        [int]$Height = 48
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     & $ffmpeg -y -hide_banner -loglevel error `

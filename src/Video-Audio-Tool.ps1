@@ -888,6 +888,10 @@ try {
     $script:TrimFades = @{}
     $script:TrimFadeSeconds = 0.5
     $script:TrimActiveFade = $null
+    # Height of the waveform row inside the timeline track. Pairs with the XAML
+    # RowDefinition in MainWindow.xaml (the track's inner Grid); the playhead overhang
+    # and the waveform fallback both read this so the three cannot silently desync.
+    $script:TrimWaveRowHeight = 34.0
     # Rendered crossfades for the preview: key -> file path, plus the in-flight set and
     # the key currently on screen so the overlay is only re-sourced when it really changes.
     $script:TrimFadeProxies = @{}
@@ -1394,7 +1398,7 @@ try {
             # line across the whole track, and stopping it at the filmstrip's bottom edge
             # left the waveform with no position marker at all. The enclosing Border clips
             # it, so it can never spill past the track.
-            $head.Height = $h + 20
+            $head.Height = $h + $script:TrimWaveRowHeight
             [System.Windows.Controls.Canvas]::SetLeft($head, $playX - 1)
             [System.Windows.Controls.Canvas]::SetTop($head, 0)
             $canvasTrimTimeline.Children.Add($head) | Out-Null
@@ -1516,7 +1520,7 @@ try {
         $waveWidth = $canvasTrimWave.ActualWidth
         if ($waveWidth -le 0) { $waveWidth = $canvasTrimTimeline.ActualWidth }
         $waveHeight = $canvasTrimWave.ActualHeight
-        if ($waveHeight -le 0) { $waveHeight = 20 }
+        if ($waveHeight -le 0) { $waveHeight = $script:TrimWaveRowHeight }
 
         foreach ($tp in @($timelinePieces)) {
             $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
@@ -1817,7 +1821,11 @@ try {
             $block = New-Object System.Windows.Controls.Border
             $block.Style = $ctx.Window.FindResource(
                 $(if ($isSelected) { "CaptionBlockSelectedStyle" } else { "CaptionBlockStyle" }))
-            $block.Width = $bounds.Width
+            # Never thinner than a clickable chip: a 2s caption on a 5-minute timeline is
+            # ~8px by pure scale, which is invisible and undraggable. The visual right
+            # edge overstates the true end a little at deep zoom-out; timing precision
+            # work happens zoomed in, where width is honest again.
+            $block.Width = [math]::Max(28.0, $bounds.Width)
             $block.Height = $blockHeight
             $block.ClipToBounds = $true
             [System.Windows.Controls.Canvas]::SetLeft($block, $bounds.Left)
@@ -3184,6 +3192,11 @@ try {
             if ($ctx.Panels.Trim.Visibility -ne "Visible") { return }
             if (-not $script:TrimInputFile) { return }
             if ([System.Windows.Input.Keyboard]::FocusedElement -is [System.Windows.Controls.TextBox]) { return }
+            # The whole caption sidebar is an input surface: typing S into the font
+            # dropdown must type-ahead to Sitka, not split the video. IsKeyboardFocusWithin
+            # covers the combo (and its popup items), the sliders and the checkboxes in
+            # one test instead of enumerating control types.
+            if ($null -ne $panelCaptionSidebar -and $panelCaptionSidebar.IsKeyboardFocusWithin) { return }
 
             $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
 

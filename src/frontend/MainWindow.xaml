@@ -1,7 +1,7 @@
 <!-- src/assets/MainWindow.xaml -->
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="FFmpeg GUI" Height="760" Width="1180" MinHeight="640" MinWidth="980"
+        Title="FFmpeg GUI" Height="920" Width="1480" MinHeight="640" MinWidth="980"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BrushShellBase}">
 
@@ -364,7 +364,10 @@
             </Grid>
 
             <Grid x:Name="PanelTrim" Visibility="Collapsed">
-                <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
+                <!-- 1400, not the 880 the other panels use: this is an editor, not a form.
+                     The preview, timeline, waveform and caption lane all scale with this,
+                     and at 880 they read as miniature on a 2560-wide screen. -->
+                <StackPanel MaxWidth="1400" HorizontalAlignment="Stretch">
                     <TextBlock Text="Video Editor" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
 
@@ -470,10 +473,12 @@
                                            VerticalAlignment="Center" Margin="14,0,0,0"/>
                             </StackPanel>
 
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="76" ClipToBounds="True">
+                            <!-- Row split pairs with $script:TrimWaveRowHeight in
+                                 Video-Audio-Tool.ps1; change them together. -->
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="118" ClipToBounds="True">
                                 <Grid>
                                     <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/><RowDefinition Height="20"/>
+                                        <RowDefinition Height="*"/><RowDefinition Height="34"/>
                                     </Grid.RowDefinitions>
                                     <!-- ZIndex 1: the playhead is drawn taller than this row so it
                                          crosses the waveform strip below, and the strip's own
@@ -484,7 +489,7 @@
                                 </Grid>
                             </Border>
                             <!-- Caption lane: one block per caption, drag to move, edge drag to retime. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="36" Margin="0,4,0,0" ClipToBounds="True">
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="54" Margin="0,4,0,0" ClipToBounds="True">
                                 <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
                             </Border>
 
