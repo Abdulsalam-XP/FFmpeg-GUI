@@ -1,5 +1,6 @@
 ﻿$modulePath = Join-Path $PSScriptRoot "..\VideoTrimmer.psm1"
 Import-Module $modulePath -Force
+Import-Module (Join-Path $PSScriptRoot "..\Tracks.psm1") -Force
 
 # Lines are shaped "<pts_time>,<flags>", matching ffprobe's
 # `-show_entries packet=pts_time,flags -of csv=p=0` output, e.g. "0.249878,K__".
@@ -255,5 +256,24 @@ Describe "Split-TrimSegmentsForPips" {
         $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
         $total = 0.0; foreach ($s in $r) { $total += $s.Duration }
         [math]::Round($total, 6) | Should Be 30.0
+    }
+}
+
+Describe "Get-TrimExportMode" {
+    $main = New-TrimTrack -Kind "video-main" -Path "a.mp4"
+    $src  = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 1
+    It "is trivial with no tracks at all (legacy callers)" {
+        Get-TrimExportMode -Tracks @() -PipSpans @() | Should Be "trivial"
+    }
+    It "is trivial for an untouched stack" {
+        Get-TrimExportMode -Tracks @($main, $src) -PipSpans @() | Should Be "trivial"
+    }
+    It "rebuilds on any gain, mute, clip or pip" {
+        $g = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 1 -GainDb 2.0
+        Get-TrimExportMode -Tracks @($main, $g) -PipSpans @() | Should Be "rebuild"
+        Get-TrimExportMode -Tracks @($main, $src) -PipSpans @(@{Start=1.0;End=2.0}) | Should Be "rebuild"
+    }
+    It "is audio-only without a video-main" {
+        Get-TrimExportMode -Tracks @($src) -PipSpans @() | Should Be "audio-only"
     }
 }
