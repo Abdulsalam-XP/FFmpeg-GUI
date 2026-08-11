@@ -67,7 +67,7 @@
                 <RadioButton x:Name="NavTrim" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="Trim">
                     <StackPanel Orientation="Horizontal">
                         <Path Style="{StaticResource NavIconStyle}" Data="{StaticResource IconTrim}"/>
-                        <TextBlock Text="Trim" VerticalAlignment="Center"/>
+                        <TextBlock Text="Video Editor" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
                 <RadioButton x:Name="NavYouTubeMP3" GroupName="Nav" Style="{StaticResource SidebarItemStyle}" Tag="YouTubeMP3">
@@ -365,7 +365,7 @@
 
             <Grid x:Name="PanelTrim" Visibility="Collapsed">
                 <StackPanel MaxWidth="880" HorizontalAlignment="Stretch">
-                    <TextBlock Text="Trim Video" FontSize="22" FontWeight="Bold"
+                    <TextBlock Text="Video Editor" FontSize="22" FontWeight="Bold"
                                Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
 
                     <Button x:Name="ButtonTrimBrowse" Style="{StaticResource DropzoneButtonStyle}" Margin="0,18,0,26">
@@ -374,7 +374,7 @@
                             <TextBlock x:Name="TextTrimDropCaption" Text="Drag and drop your video here" FontSize="16" FontWeight="Bold"
                                        Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
                                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
-                            <TextBlock Text="Cut before or after a timestamp, no re-encode" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
+                            <TextBlock Text="Cut, fade and caption your video" FontSize="11.5" FontFamily="{StaticResource FontChrome}"
                                        Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,6,0,0"/>
                             <TextBlock Text="or" FontSize="12" FontFamily="{StaticResource FontChrome}"
                                        Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Center" Margin="0,12,0,12"/>
