@@ -46,6 +46,73 @@ function ConvertTo-AssText {
     return $t
 }
 
+# Merged, sorted source-space time ranges that need caption burning, clipped to the
+# surviving pieces so a caption in deleted footage costs nothing.
+function Get-CaptionSpans {
+    param([object[]]$Captions = @(), [object[]]$Pieces = @())
+    $raw = @()
+    foreach ($cap in @($Captions)) {
+        if (-not $cap -or [string]::IsNullOrWhiteSpace($cap.Text)) { continue }
+        foreach ($p in @($Pieces)) {
+            $s = [math]::Max([double]$cap.Start, [double]$p.Start)
+            $e = [math]::Min([double]$cap.End, [double]$p.End)
+            if ($e -gt $s) { $raw += ,@{ Start = $s; End = $e } }
+        }
+    }
+    if ($raw.Count -eq 0) { return ,@() }
+    $sorted = @($raw | Sort-Object { $_.Start })
+    $merged = @($sorted[0])
+    for ($i = 1; $i -lt $sorted.Count; $i++) {
+        $last = $merged[$merged.Count - 1]
+        if ($sorted[$i].Start -le $last.End) {
+            $last.End = [math]::Max($last.End, $sorted[$i].End)
+        } else {
+            $merged += ,$sorted[$i]
+        }
+    }
+    return ,@($merged)
+}
+
+# Splits the fade-aware segment plan further so caption ranges re-encode.
+# Cut segments split at span boundaries; transitions already re-encode, so an
+# overlapping caption just rides along on them via a Captions list.
+function Split-TrimSegmentsForCaptions {
+    param([object[]]$Segments = @(), [object[]]$Captions = @())
+
+    $active = @(@($Captions) | Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace($_.Text) })
+    $result = @()
+    foreach ($seg in @($Segments)) {
+        $segStart = [double]$seg.Start
+        $segEnd = $segStart + [double]$seg.Duration
+
+        $overlapping = @($active | Where-Object { [double]$_.Start -lt $segEnd -and [double]$_.End -gt $segStart })
+
+        if ($seg.Kind -ne "cut") {
+            if ($overlapping.Count -gt 0) { $seg.Captions = $overlapping }
+            $result += ,$seg
+            continue
+        }
+        if ($overlapping.Count -eq 0) { $result += ,$seg; continue }
+
+        # Span math local to this segment, using already-merged caption windows.
+        $fakePiece = @([PSCustomObject]@{ Start = $segStart; End = $segEnd })
+        $spans = Get-CaptionSpans -Captions $overlapping -Pieces $fakePiece
+        $cursor = $segStart
+        foreach ($span in $spans) {
+            if ($span.Start -gt $cursor) {
+                $result += ,@{ Kind = "cut"; Start = $cursor; Duration = ($span.Start - $cursor) }
+            }
+            $burnCaps = @($active | Where-Object { [double]$_.Start -lt $span.End -and [double]$_.End -gt $span.Start })
+            $result += ,@{ Kind = "burn"; Start = $span.Start; Duration = ($span.End - $span.Start); Captions = $burnCaps }
+            $cursor = $span.End
+        }
+        if ($cursor -lt $segEnd - 0.0005) {
+            $result += ,@{ Kind = "cut"; Start = $cursor; Duration = ($segEnd - $cursor) }
+        }
+    }
+    return ,@($result)
+}
+
 # Builds a complete .ass document. TimeOffset shifts caption times into segment-local
 # time (the export burns per-segment files whose t=0 is the segment start).
 function New-AssDocument {
@@ -104,4 +171,4 @@ function New-AssDocument {
     return (($header + $styleLines + $mid + $eventLines) -join "`r`n") + "`r`n"
 }
 
-Export-ModuleMember -Function New-Caption, ConvertTo-AssColor, ConvertTo-AssTime, ConvertTo-AssText, New-AssDocument
+Export-ModuleMember -Function New-Caption, ConvertTo-AssColor, ConvertTo-AssTime, ConvertTo-AssText, Get-CaptionSpans, Split-TrimSegmentsForCaptions, New-AssDocument

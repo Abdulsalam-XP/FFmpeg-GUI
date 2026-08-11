@@ -118,3 +118,84 @@ Describe "New-AssDocument" {
         }
     }
 }
+
+Describe "Get-CaptionSpans" {
+    $pieces = @([PSCustomObject]@{ Start = 0.0; End = 100.0 })
+    It "returns one span per caption, clipped to pieces" {
+        $c = New-Caption -Start 10 -End 12 -Text "x"
+        $r = Get-CaptionSpans -Captions @($c) -Pieces $pieces
+        $r.Count | Should Be 1
+        $r[0].Start | Should Be 10
+        $r[0].End | Should Be 12
+    }
+    It "merges overlapping captions into one span" {
+        $a = New-Caption -Start 10 -End 14 -Text "a"
+        $b = New-Caption -Start 12 -End 16 -Text "b"
+        $r = Get-CaptionSpans -Captions @($a, $b) -Pieces $pieces
+        $r.Count | Should Be 1
+        $r[0].End | Should Be 16
+    }
+    It "drops a caption wholly inside deleted footage" {
+        $twoPieces = @([PSCustomObject]@{Start=0.0;End=10.0}, [PSCustomObject]@{Start=50.0;End=60.0})
+        $c = New-Caption -Start 20 -End 25 -Text "gone"
+        (Get-CaptionSpans -Captions @($c) -Pieces $twoPieces).Count | Should Be 0
+    }
+    It "clips a caption straddling a piece edge" {
+        $p = @([PSCustomObject]@{Start=0.0;End=10.0})
+        $c = New-Caption -Start 8 -End 15 -Text "clip me"
+        $r = Get-CaptionSpans -Captions @($c) -Pieces $p
+        $r[0].End | Should Be 10
+    }
+    It "ignores empty-text captions" {
+        $e = New-Caption -Start 1 -End 2
+        (Get-CaptionSpans -Captions @($e) -Pieces $pieces).Count | Should Be 0
+    }
+    It "keeps its shape when assigned directly (return-shape guard)" {
+        $c = New-Caption -Start 1 -End 2 -Text "x"
+        $r = Get-CaptionSpans -Captions @($c) -Pieces $pieces
+        $r.Count | Should Be 1
+        $r[0] -is [hashtable] | Should Be $true
+    }
+}
+
+Describe "Split-TrimSegmentsForCaptions" {
+    It "splits a cut segment into copy-burn-copy around a caption" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 60.0 })
+        $c = New-Caption -Start 20 -End 25 -Text "x"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c)
+        $r.Count | Should Be 3
+        $r[0].Kind | Should Be "cut";  $r[0].Start | Should Be 0;  $r[0].Duration | Should Be 20
+        $r[1].Kind | Should Be "burn"; $r[1].Start | Should Be 20; $r[1].Duration | Should Be 5
+        @($r[1].Captions).Count | Should Be 1
+        $r[2].Kind | Should Be "cut";  $r[2].Start | Should Be 25; $r[2].Duration | Should Be 35
+    }
+    It "leaves segments untouched with no captions" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 60.0 })
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @()
+        $r.Count | Should Be 1
+        $r[0].Kind | Should Be "cut"
+    }
+    It "attaches captions to an overlapping transition instead of splitting it" {
+        $segs = @(@{ Kind = "transition"; Start = 9.5; NextStart = 50.0; Duration = 0.5 })
+        $c = New-Caption -Start 9.0 -End 9.8 -Text "over the fade"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c)
+        $r.Count | Should Be 1
+        $r[0].Kind | Should Be "transition"
+        @($r[0].Captions).Count | Should Be 1
+    }
+    It "produces a burn covering the whole segment when the caption does" {
+        $segs = @(@{ Kind = "cut"; Start = 10.0; Duration = 5.0 })
+        $c = New-Caption -Start 8 -End 20 -Text "wide"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c)
+        $r.Count | Should Be 1
+        $r[0].Kind | Should Be "burn"
+    }
+    It "handles two separate captions in one segment" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 100.0 })
+        $a = New-Caption -Start 10 -End 15 -Text "a"
+        $b = New-Caption -Start 40 -End 45 -Text "b"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($a, $b)
+        $r.Count | Should Be 5
+        ($r | Where-Object { $_.Kind -eq "burn" }).Count | Should Be 2
+    }
+}
