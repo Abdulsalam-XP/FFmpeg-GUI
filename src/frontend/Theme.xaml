@@ -1102,6 +1102,36 @@
         <Setter Property="Foreground" Value="#06121F"/>
     </Style>
 
+    <!-- Caption blocks on their lane: gold family, distinct from the blue video
+         pieces, with visible edge grips for retiming. -->
+    <Style x:Key="CaptionBlockStyle" TargetType="Border">
+        <Setter Property="Background" Value="#4D6B5320"/>
+        <Setter Property="BorderBrush" Value="#B3D3A24C"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="5"/>
+        <Setter Property="Cursor" Value="SizeAll"/>
+    </Style>
+    <Style x:Key="CaptionBlockSelectedStyle" TargetType="Border" BasedOn="{StaticResource CaptionBlockStyle}">
+        <Setter Property="Background" Value="#806B5320"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="BorderThickness" Value="2"/>
+    </Style>
+    <Style x:Key="CaptionBlockTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="7,0"/>
+        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+    <!-- Sidebar field label + row spacing for the caption properties column. -->
+    <Style x:Key="SidebarLabelStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="Margin" Value="0,10,0,3"/>
+    </Style>
+
     <!-- Small segmented picker for the fade length. Selection is set from code by
          swapping to the "selected" variant, the same approach the timeline pieces use. -->
     <Style x:Key="FadeLengthButtonStyle" TargetType="Button">

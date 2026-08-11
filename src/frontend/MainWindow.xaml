@@ -404,23 +404,58 @@
                                  either letterboxes (box too wide) or crops (box too narrow).
                                  Driving it off ActualWidth keeps it exactly 16:9 and full-width. -->
                             <Grid>
-                                <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform"
-                                              HorizontalAlignment="Stretch"
-                                              LoadedBehavior="Manual" UnloadedBehavior="Manual"
-                                              ScrubbingEnabled="True"/>
-
-                                <!-- Plays a pre-rendered copy of one crossfade, on top of the
-                                     main preview, while the playhead is inside that fade. A
-                                     crossfade is two source positions blended at once, which a
-                                     single decoder cannot produce, so the alternative to this
-                                     overlay is showing a straight cut and hoping the export
-                                     looks right. Silent by design: the element underneath keeps
-                                     playing the real audio. -->
-                                <MediaElement x:Name="MediaTrimFadePreview" Stretch="Uniform"
-                                              HorizontalAlignment="Stretch"
-                                              LoadedBehavior="Manual" UnloadedBehavior="Manual"
-                                              ScrubbingEnabled="True" Volume="0"
-                                              Visibility="Collapsed"/>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid Grid.Column="0">
+                                    <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform" HorizontalAlignment="Stretch"
+                                                  LoadedBehavior="Manual" UnloadedBehavior="Manual" ScrubbingEnabled="True"/>
+                                    <!-- Plays a pre-rendered copy of one crossfade, on top of the
+                                         main preview, while the playhead is inside that fade. A
+                                         crossfade is two source positions blended at once, which a
+                                         single decoder cannot produce, so the alternative to this
+                                         overlay is showing a straight cut and hoping the export
+                                         looks right. Silent by design: the element underneath keeps
+                                         playing the real audio. -->
+                                    <MediaElement x:Name="MediaTrimFadePreview" Stretch="Uniform" HorizontalAlignment="Stretch"
+                                                  LoadedBehavior="Manual" UnloadedBehavior="Manual" ScrubbingEnabled="True"
+                                                  Volume="0" Visibility="Collapsed"/>
+                                    <!-- Captions render here, over the video, under the user's pointer. -->
+                                    <Canvas x:Name="CanvasCaptionOverlay" Background="Transparent"/>
+                                </Grid>
+                                <Border x:Name="PanelCaptionSidebar" Grid.Column="1" Width="240" Visibility="Collapsed"
+                                        Style="{StaticResource OptionCardBorderStyle}" Margin="14,0,0,0" Padding="12">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel>
+                                            <TextBlock Text="CAPTION" Style="{StaticResource SidebarLabelStyle}" Margin="0,0,0,3"/>
+                                            <TextBox x:Name="TextCaptionText" AcceptsReturn="True" MinHeight="52" TextWrapping="Wrap"/>
+                                            <TextBlock Text="FONT" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <ComboBox x:Name="ComboCaptionFont"/>
+                                            <CheckBox x:Name="CheckCaptionBold" Content="Bold" Margin="0,8,0,0"
+                                                      Foreground="{StaticResource BrushTextBody}"/>
+                                            <TextBlock Text="FILL COLOR (#RRGGBB)" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <TextBox x:Name="TextCaptionFill"/>
+                                            <TextBlock Text="OUTLINE COLOR" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <TextBox x:Name="TextCaptionOutline"/>
+                                            <TextBlock Text="OUTLINE WIDTH" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <Slider x:Name="SliderCaptionOutlineW" Minimum="0" Maximum="8" TickFrequency="0.5"
+                                                    IsSnapToTickEnabled="True"/>
+                                            <CheckBox x:Name="CheckCaptionBounce" Content="Bounce in" Margin="0,10,0,0"
+                                                      Foreground="{StaticResource BrushTextBody}"/>
+                                            <TextBlock Text="START / END (MM:SS.mmm)" Style="{StaticResource SidebarLabelStyle}"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="TextCaptionStart" Grid.Column="0"/>
+                                                <TextBox x:Name="TextCaptionEnd" Grid.Column="2"/>
+                                            </Grid>
+                                            <Button x:Name="ButtonCaptionDelete" Content="Delete caption"
+                                                    Style="{StaticResource PresetButtonStyle}" Margin="0,14,0,0"/>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Border>
                             </Grid>
 
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,14">
@@ -431,8 +466,19 @@
                                            VerticalAlignment="Center" Margin="14,0,0,0"/>
                             </StackPanel>
 
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="64" ClipToBounds="True">
-                                <Canvas x:Name="CanvasTrimTimeline" Background="Transparent"/>
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="76" ClipToBounds="True">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*"/><RowDefinition Height="20"/>
+                                    </Grid.RowDefinitions>
+                                    <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Background="Transparent"/>
+                                    <!-- Waveform strip: painted from code with per piece renders. -->
+                                    <Canvas x:Name="CanvasTrimWave" Grid.Row="1" Background="#CC070B14" IsHitTestVisible="False"/>
+                                </Grid>
+                            </Border>
+                            <!-- Caption lane: one block per caption, drag to move, edge drag to retime. -->
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="36" Margin="0,4,0,0" ClipToBounds="True">
+                                <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
                             </Border>
 
                             <!-- 26, not 20: the ruler now also carries the playhead time
@@ -480,7 +526,12 @@
                             </StackPanel>
 
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                                <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110">
+                                <Button x:Name="ButtonTrimAddCaption" Style="{StaticResource PresetButtonStyle}" Width="120">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="＋ Caption"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Split"/>
                                         <TextBlock Text="S" Style="{StaticResource ShortcutHintStyle}"/>
