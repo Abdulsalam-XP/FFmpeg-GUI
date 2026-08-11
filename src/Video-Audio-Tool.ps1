@@ -941,6 +941,34 @@ try {
     # release only if the keyframe really moved -- one undo step per completed drag, the
     # same rule the caption lane drag follows.
     $script:TrimZoomDrag = $null
+    # Spotlight box + floating pill state, declared here for the same "drawn during initial
+    # layout" reason as everything above it.
+    # The dim rects, the gold frame and the level badge are TRANSIENT: rebuilt from the model
+    # on every redraw and tracked here so they can be pulled out of the shared overlay canvas
+    # individually -- the captions draw on that same canvas and a blanket Children.Clear()
+    # from the zoom side would wipe them.
+    $script:ZoomBoxElements = New-Object System.Collections.ArrayList
+    # In-flight drag-to-draw: $null, or a hashtable of StartX / StartY / Moved / Rect /
+    # Snapshot. Same snapshot-at-down, push-on-release rule as every other drag here.
+    $script:ZoomBoxDrag = $null
+    # The pill, by contrast, is built ONCE and lives in the canvas for the whole session --
+    # see Clear-CaptionOverlayChildren for why it must not be torn out and re-added.
+    $script:ZoomPillBorder = $null
+    $script:ZoomPillSlider = $null
+    $script:ZoomPillValueText = $null
+    # Set while the pill is being filled from the model: WPF raises ValueChanged for a
+    # programmatic assignment exactly as it does for a user drag, so without this the redraw
+    # that follows a box drag would write the slider's snapped value straight back over it.
+    $script:ZoomUiLoading = $false
+    # One undo step per slider capture session, not per tick: snapshot taken when the slider
+    # grabs the mouse, pushed when it lets go and only if the level really changed.
+    $script:ZoomSliderEdit = $null
+    # A drag has to beat this before it counts as drawing a box; under it the press falls
+    # through to the click behaviour (deselect), so a stray click still deselects.
+    $script:ZoomBoxDragThreshold = 4.0
+    # And the finished box has to be at least this wide to be committed -- a 12px box is a
+    # 100x zoom nobody asked for, and reading it as a click is the safer interpretation.
+    $script:ZoomBoxMinWidth = 40.0
 
     # Project persistence. The save failure is reported once per file, not once per edit:
     # a read-only folder would otherwise repaint the same error over the panel every
@@ -1820,6 +1848,9 @@ try {
         # own early returns below must not suppress the preview overlay, which carries its
         # own null/no-file guards.
         Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+        # And right behind it, everywhere: Update-CaptionOverlay clears the shared overlay
+        # canvas, so the spotlight box has to be put back by whoever cleared it.
+        Update-ZoomBoxOverlay
         if ($null -eq $canvasTrimCaptions) { return }
         $canvasTrimCaptions.Children.Clear()
         if (-not $script:TrimInputFile) { return }
@@ -2037,6 +2068,10 @@ try {
         if ($null -ne $CY) { $kf.CY = [math]::Max(0.0, [math]::Min(1.0, [double]$CY)) }
         if ($null -ne $Level) { $kf.Level = [math]::Max(1.0, [math]::Min(6.0, [double]$Level)) }
         Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+        # The spotlight box IS these three numbers drawn, so it is stale the instant one of
+        # them moves. Self-contained rather than left to the caller: every write path here
+        # (box drag commit, pill slider) would otherwise need its own redraw.
+        Update-ZoomBoxOverlay
     }
 
     # Same drag lifecycle as the caption lane: snapshot at mouse-down, pushed on release only
@@ -2085,6 +2120,11 @@ try {
     # Rebuilt from scratch like the caption lane, and guarded on the canvas being non-null
     # for the same stale-XAML reason. Called at the END of Update-TrimTimeline.
     function Update-TrimZoomLane {
+        # Unconditional and first, exactly like Update-TrimCaptionLane's overlay call: this is
+        # the cheapest correct hook for "the zoom model or the zoom selection changed" (every
+        # mutation, both Clear- paths and undo pass through here), and the lane's own early
+        # returns below must not suppress the spotlight box, which carries its own guards.
+        Update-ZoomBoxOverlay
         if ($null -eq $canvasTrimZooms) { return }
         $canvasTrimZooms.Children.Clear()
         if (-not $script:TrimInputFile) { return }
@@ -2296,10 +2336,26 @@ try {
         catch { return [System.Windows.Media.ColorConverter]::ConvertFromString($Fallback) }
     }
 
+    # Everything the caption redraw owns, and the transient zoom-box shapes with it (they are
+    # rebuilt from the model by Update-ZoomBoxOverlay, which runs right after every call to
+    # Update-CaptionOverlay). The zoom PILL is deliberately left in place: it is a live
+    # control, and pulling it out of the visual tree while its slider holds the mouse capture
+    # -- which the 20x/sec playback tick would do mid-drag -- kills the capture and the drag
+    # dies halfway across the range.
+    function Clear-CaptionOverlayChildren {
+        if ($null -eq $canvasCaptionOverlay) { return }
+        for ($i = $canvasCaptionOverlay.Children.Count - 1; $i -ge 0; $i--) {
+            $child = $canvasCaptionOverlay.Children[$i]
+            if ($null -ne $script:ZoomPillBorder -and [object]::ReferenceEquals($child, $script:ZoomPillBorder)) { continue }
+            $canvasCaptionOverlay.Children.RemoveAt($i)
+        }
+        $script:ZoomBoxElements.Clear()
+    }
+
     function Update-CaptionOverlay {
         param([double]$SourceSeconds)
         if ($null -eq $canvasCaptionOverlay) { return }
-        $canvasCaptionOverlay.Children.Clear()
+        Clear-CaptionOverlayChildren
         if (-not $script:TrimInputFile) { return }
         # A rendered crossfade is playing on top of the live preview; the captions belong
         # under it, not floating over a frame from a different position. Leave the overlay
@@ -2465,6 +2521,367 @@ try {
         # nothing there can have gone stale.
     }
 
+    # ---- Zoom spotlight box + floating pill ----
+    #
+    # Drawn on CanvasCaptionOverlay, the UNZOOMED layer, on purpose: the box has to show
+    # where the zoom is being aimed within the whole frame, and a box drawn inside the zoomed
+    # picture would be a box drawn inside its own result.
+    #
+    # Element ownership on that shared canvas: the box shapes are transient and tracked in
+    # $script:ZoomBoxElements so they can be removed one by one (a Children.Clear() here
+    # would take the captions with them); the pill is persistent and exempt from the caption
+    # redraw's clear (see Clear-CaptionOverlayChildren).
+    $script:ZoomBoxDimBrush = "#8C04070E"
+    $script:ZoomBoxStrokeBrush = "#E0C48F"
+
+    function Remove-ZoomBoxElements {
+        if ($null -eq $canvasCaptionOverlay) { return }
+        foreach ($el in @($script:ZoomBoxElements)) {
+            if ($canvasCaptionOverlay.Children.Contains($el)) { $canvasCaptionOverlay.Children.Remove($el) }
+        }
+        $script:ZoomBoxElements.Clear()
+    }
+
+    function Add-ZoomBoxElement {
+        param($Element, [double]$Left, [double]$Top)
+        [System.Windows.Controls.Canvas]::SetLeft($Element, $Left)
+        [System.Windows.Controls.Canvas]::SetTop($Element, $Top)
+        # None of the box furniture is hit-testable: a press anywhere inside the preview has
+        # to reach the canvas itself, because that is what starts a new box (and what the
+        # existing deselect handler tests OriginalSource for).
+        $Element.IsHitTestVisible = $false
+        $canvasCaptionOverlay.Children.Add($Element) | Out-Null
+        [void]$script:ZoomBoxElements.Add($Element)
+    }
+
+    function Add-ZoomBoxDimRect {
+        param([double]$Left, [double]$Top, [double]$Width, [double]$Height)
+        # Degenerate strips happen constantly -- a box pinned to the top edge has no top
+        # dim -- and a Rectangle with a negative Width throws.
+        if ($Width -le 0.5 -or $Height -le 0.5) { return }
+        $r = New-Object System.Windows.Shapes.Rectangle
+        $r.Width = $Width
+        $r.Height = $Height
+        $r.Fill = Get-CaptionBrush -Hex $script:ZoomBoxDimBrush -Fallback "#8C000000"
+        Add-ZoomBoxElement -Element $r -Left $Left -Top $Top
+    }
+
+    # The frame a keyframe describes, in overlay pixels. A Canvas has no box-shadow, so the
+    # "everything outside is dimmed" look is composed from four rectangles around this rect.
+    function Get-ZoomBoxRect {
+        param([double]$CX, [double]$CY, [double]$Level, [double]$Width, [double]$Height)
+        $lvl = [math]::Max(1.0, [double]$Level)
+        $bw = $Width / $lvl
+        $bh = $Height / $lvl
+        # Clamped inside the frame: a box hanging off the edge would be asking for footage
+        # that is not there.
+        $left = [math]::Max(0.0, [math]::Min($Width - $bw, ([double]$CX * $Width) - ($bw / 2.0)))
+        $top = [math]::Max(0.0, [math]::Min($Height - $bh, ([double]$CY * $Height) - ($bh / 2.0)))
+        return @{ Left = $left; Top = $top; Width = $bw; Height = $bh }
+    }
+
+    # Redrawn from the model, exactly like the lane and the caption overlay, and called right
+    # after every Update-CaptionOverlay (which clears the canvas underneath it) plus at the
+    # end of Update-TrimZoomLane (which is what a selection change redraws).
+    function Update-ZoomBoxOverlay {
+        if ($null -eq $canvasCaptionOverlay) { return }
+        Remove-ZoomBoxElements
+
+        $kf = Get-TrimSelectedZoom
+        $drag = $script:ZoomBoxDrag
+        $forming = ($null -ne $drag -and $drag.Moved -and $null -ne $drag.Rect)
+        if ($null -eq $kf -or -not $script:TrimInputFile) {
+            Hide-ZoomPill
+            return
+        }
+
+        $w = [double]$canvasCaptionOverlay.ActualWidth
+        $h = [double]$canvasCaptionOverlay.ActualHeight
+        if ($w -le 0 -or $h -le 0) { Hide-ZoomPill; return }
+
+        # Mid-drag the box on screen is the one being drawn, not the one stored: the commit
+        # only happens on release, so until then the model still holds the old framing.
+        if ($forming) {
+            $rect = $drag.Rect
+            $level = [math]::Max(1.0, [math]::Min(6.0, $w / [math]::Max(1.0, [double]$rect.Width)))
+        } else {
+            $level = [double]$kf.Level
+            $rect = Get-ZoomBoxRect -CX ([double]$kf.CX) -CY ([double]$kf.CY) -Level $level -Width $w -Height $h
+        }
+
+        # At 1x the box IS the whole frame, so there is nothing outside it to dim -- four
+        # zero-width strips. The frame and the badge are still drawn, because a fresh 1x
+        # keyframe with nothing on screen would look like the selection had not taken.
+        if ($level -gt 1.001) {
+            Add-ZoomBoxDimRect -Left 0.0 -Top 0.0 -Width $w -Height $rect.Top
+            Add-ZoomBoxDimRect -Left 0.0 -Top ($rect.Top + $rect.Height) -Width $w -Height ($h - $rect.Top - $rect.Height)
+            Add-ZoomBoxDimRect -Left 0.0 -Top $rect.Top -Width $rect.Left -Height $rect.Height
+            Add-ZoomBoxDimRect -Left ($rect.Left + $rect.Width) -Top $rect.Top `
+                -Width ($w - $rect.Left - $rect.Width) -Height $rect.Height
+        }
+
+        $frame = New-Object System.Windows.Controls.Border
+        $frame.BorderBrush = Get-CaptionBrush -Hex $script:ZoomBoxStrokeBrush -Fallback "#E0C48F"
+        $frame.BorderThickness = New-Object System.Windows.Thickness(2)
+        $frame.Width = [math]::Max(1.0, $rect.Width)
+        $frame.Height = [math]::Max(1.0, $rect.Height)
+        Add-ZoomBoxElement -Element $frame -Left $rect.Left -Top $rect.Top
+
+        # Level badge, top-right INSIDE the box: outside it would fall off the frame for a
+        # box pinned to the top edge, which is where most zooms end up.
+        $badge = New-Object System.Windows.Controls.Border
+        $badge.Background = Get-CaptionBrush -Hex "#D9090D1A" -Fallback "#000000"
+        $badge.CornerRadius = New-Object System.Windows.CornerRadius(4)
+        $badge.Padding = New-Object System.Windows.Thickness(5, 1, 5, 1)
+        $badgeText = New-Object System.Windows.Controls.TextBlock
+        $badgeText.Text = "{0:N1}x" -f $level
+        $badgeText.FontSize = 11
+        $badgeText.Foreground = Get-CaptionBrush -Hex $script:ZoomBoxStrokeBrush -Fallback "#E0C48F"
+        $badge.Child = $badgeText
+        $badge.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+        $bw = $badge.DesiredSize.Width
+        $bh = $badge.DesiredSize.Height
+        Add-ZoomBoxElement -Element $badge `
+            -Left ([math]::Max(0.0, [math]::Min($w - $bw, $rect.Left + $rect.Width - $bw - 4.0))) `
+            -Top ([math]::Max(0.0, [math]::Min($h - $bh, $rect.Top + 4.0)))
+
+        Show-ZoomPill -Level $level -Rect $rect -Width $w -Height $h
+    }
+
+    function Hide-ZoomPill {
+        if ($null -eq $script:ZoomPillBorder) { return }
+        $script:ZoomPillBorder.Visibility = "Collapsed"
+    }
+
+    # Position and sync only -- the pill itself is built once by Initialize-ZoomPill.
+    function Show-ZoomPill {
+        param([double]$Level, $Rect, [double]$Width, [double]$Height)
+        if ($null -eq $script:ZoomPillBorder) { return }
+        $script:ZoomPillBorder.Visibility = "Visible"
+        # The whole point of the loading flag: this assignment raises ValueChanged exactly as
+        # a user drag does, and the handler behind it would write the value straight back
+        # (snapped to the nearest tick) over the level the box drag just committed.
+        Set-ZoomUiLoading -Value $true
+        try {
+            if ($null -ne $script:ZoomPillSlider) { $script:ZoomPillSlider.Value = [double]$Level }
+            if ($null -ne $script:ZoomPillValueText) { $script:ZoomPillValueText.Text = "{0:N1}x" -f $Level }
+        } finally {
+            # finally, not a trailing assignment: a throw in the fill would otherwise leave
+            # the flag set and deaden the pill for the rest of the session.
+            Set-ZoomUiLoading -Value $false
+        }
+
+        # Frozen in place while the slider is being dragged: the box shrinks as the level
+        # rises, so re-anchoring the pill to it per tick would walk the thumb out from under
+        # the pointer that is dragging it.
+        if ($null -ne $script:ZoomPillSlider -and $script:ZoomPillSlider.IsMouseCaptureWithin) { return }
+
+        $script:ZoomPillBorder.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+        $pw = $script:ZoomPillBorder.DesiredSize.Width
+        $ph = $script:ZoomPillBorder.DesiredSize.Height
+        $left = ([double]$Rect.Left + ([double]$Rect.Width / 2.0)) - ($pw / 2.0)
+        $top = [double]$Rect.Top + [double]$Rect.Height + 8.0
+        # Under the box normally; above it when the box runs to the bottom of the frame, so
+        # the pill is never half off the picture.
+        if ($top + $ph -gt $Height) { $top = [double]$Rect.Top - $ph - 8.0 }
+        [System.Windows.Controls.Canvas]::SetLeft($script:ZoomPillBorder, [math]::Max(0.0, [math]::Min($Width - $pw, $left)))
+        [System.Windows.Controls.Canvas]::SetTop($script:ZoomPillBorder, [math]::Max(0.0, [math]::Min($Height - $ph, $top)))
+    }
+
+    function Test-ZoomUiLoading {
+        return $script:ZoomUiLoading
+    }
+
+    function Set-ZoomUiLoading {
+        param([bool]$Value)
+        $script:ZoomUiLoading = $Value
+    }
+
+    # ---- Drag-to-draw ----
+    #
+    # A press on the bare overlay while a zoom is selected is ambiguous: it is either the
+    # start of a new box or the click that deselects. It is treated as a box until the
+    # release proves otherwise, which is why nothing is committed on the way down.
+    function Start-ZoomBoxDrag {
+        param([double]$StartX, [double]$StartY)
+        $script:ZoomBoxDrag = @{
+            StartX   = $StartX
+            StartY   = $StartY
+            Moved    = $false
+            Rect     = $null
+            Snapshot = New-TrimUndoSnapshot
+        }
+    }
+
+    function Test-ZoomBoxDrag {
+        return ($null -ne $script:ZoomBoxDrag)
+    }
+
+    # 16:9-locked from the larger of the two deltas, in whatever direction the pointer went.
+    # The overlay canvas is itself exactly 16:9 (it is pinned to the video box), so clamping
+    # the WIDTH to the canvas is enough -- the height that follows can never overflow.
+    function Update-ZoomBoxDrag {
+        param([double]$CurrentX, [double]$CurrentY)
+        $drag = $script:ZoomBoxDrag
+        if ($null -eq $drag) { return }
+        if ($null -eq $canvasCaptionOverlay) { return }
+        $w = [double]$canvasCaptionOverlay.ActualWidth
+        $h = [double]$canvasCaptionOverlay.ActualHeight
+        if ($w -le 0 -or $h -le 0) { return }
+
+        $dx = $CurrentX - [double]$drag.StartX
+        $dy = $CurrentY - [double]$drag.StartY
+        if (-not $drag.Moved -and
+            ([math]::Abs($dx) -gt $script:ZoomBoxDragThreshold -or [math]::Abs($dy) -gt $script:ZoomBoxDragThreshold)) {
+            $drag.Moved = $true
+        }
+        # 0.0 in every clamp, never 0: [math]::Max(0, <double>) binds the int overload and
+        # truncates, which is exactly what quantised the caption drags to whole seconds.
+        $bw = [math]::Min($w, [math]::Max([math]::Abs($dx), [math]::Abs($dy) * 16.0 / 9.0))
+        $bh = $bw * 9.0 / 16.0
+        $left = if ($dx -lt 0) { [double]$drag.StartX - $bw } else { [double]$drag.StartX }
+        $top = if ($dy -lt 0) { [double]$drag.StartY - $bh } else { [double]$drag.StartY }
+        $drag.Rect = @{
+            Left   = [math]::Max(0.0, [math]::Min($w - $bw, $left))
+            Top    = [math]::Max(0.0, [math]::Min($h - $bh, $top))
+            Width  = $bw
+            Height = $bh
+        }
+    }
+
+    # Release. Anything smaller than the minimum -- including a drag that never really
+    # started -- is read as the click it looks like and falls through to the deselect the
+    # overlay did before zooms existed.
+    function Complete-ZoomBoxDrag {
+        $drag = $script:ZoomBoxDrag
+        $script:ZoomBoxDrag = $null
+        if ($null -eq $drag) { return }
+        $kf = Get-TrimSelectedZoom
+        if ($null -eq $kf) { return }
+        if ($null -eq $canvasCaptionOverlay) { return }
+        $w = [double]$canvasCaptionOverlay.ActualWidth
+        $h = [double]$canvasCaptionOverlay.ActualHeight
+        if (-not $drag.Moved -or $null -eq $drag.Rect -or
+            [double]$drag.Rect.Width -lt $script:ZoomBoxMinWidth -or $w -le 0 -or $h -le 0) {
+            Clear-TrimZoomSelection
+            return
+        }
+        $rect = $drag.Rect
+        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        Set-TrimZoomValues -Id ([string]$kf.Id) `
+            -CX (([double]$rect.Left + ([double]$rect.Width / 2.0)) / $w) `
+            -CY (([double]$rect.Top + ([double]$rect.Height / 2.0)) / $h) `
+            -Level ($w / [math]::Max(1.0, [double]$rect.Width))
+        # One save per completed drag, like every other drag here.
+        Request-TrimProjectSave
+    }
+
+    # ---- The floating pill ----
+    #
+    # Built once, in code rather than XAML, because it lives inside a Canvas whose contents
+    # are otherwise entirely data-driven, and because its position is recomputed from the box
+    # on every redraw.
+    function Initialize-ZoomPill {
+        if ($null -eq $canvasCaptionOverlay) { return }
+        if ($null -ne $script:ZoomPillBorder) { return }
+
+        $border = New-Object System.Windows.Controls.Border
+        $border.Style = $ctx.Window.FindResource("ZoomPillStyle")
+        $border.Visibility = "Collapsed"
+        # Above the caption elements, which are re-added on every redraw while this one just
+        # sits there: without an explicit z-index the pill would sink under a caption drawn
+        # over the same part of the picture.
+        [System.Windows.Controls.Panel]::SetZIndex($border, 50)
+
+        $row = New-Object System.Windows.Controls.StackPanel
+        $row.Orientation = "Horizontal"
+
+        $minLabel = New-Object System.Windows.Controls.TextBlock
+        $minLabel.Style = $ctx.Window.FindResource("ZoomPillTextStyle")
+        $minLabel.Text = "1x"
+        $row.Children.Add($minLabel) | Out-Null
+
+        $slider = New-Object System.Windows.Controls.Slider
+        $slider.Minimum = 1.0
+        $slider.Maximum = 6.0
+        $slider.TickFrequency = 0.1
+        $slider.IsSnapToTickEnabled = $true
+        $slider.Width = 130
+        $slider.VerticalAlignment = "Center"
+        $slider.Margin = New-Object System.Windows.Thickness(8, 0, 8, 0)
+        $row.Children.Add($slider) | Out-Null
+
+        $valueText = New-Object System.Windows.Controls.TextBlock
+        $valueText.Style = $ctx.Window.FindResource("ZoomPillTextStyle")
+        $valueText.Text = "1.0x"
+        $valueText.MinWidth = 34
+        $row.Children.Add($valueText) | Out-Null
+
+        $deleteButton = New-Object System.Windows.Controls.Button
+        $deleteButton.Style = $ctx.Window.FindResource("PresetButtonStyle")
+        $deleteButton.Content = "Delete"
+        $deleteButton.Padding = New-Object System.Windows.Thickness(9, 3, 9, 3)
+        $deleteButton.FontSize = 11
+        $deleteButton.Margin = New-Object System.Windows.Thickness(10, 0, 0, 0)
+        $deleteButton.VerticalAlignment = "Center"
+        $row.Children.Add($deleteButton) | Out-Null
+
+        $border.Child = $row
+        $canvasCaptionOverlay.Children.Add($border) | Out-Null
+
+        # Assigned through the script scope BEFORE the handlers below are attached: the
+        # handlers reach the controls through these fields, and a handler that ran against a
+        # still-null field would silently do nothing.
+        $script:ZoomPillBorder = $border
+        $script:ZoomPillSlider = $slider
+        $script:ZoomPillValueText = $valueText
+
+        # No GetNewClosure on any of these: they reach $script: state through the top-level
+        # functions only, and a closure would rebind those writes into its own private module.
+        $slider.Add_ValueChanged({
+            if (Test-ZoomUiLoading) { return }
+            Set-ZoomLevelFromPill
+        })
+        # Undo brackets the whole drag, exactly as it does on the caption outline slider:
+        # ValueChanged fires on every tick of one.
+        $slider.Add_GotMouseCapture({ Start-ZoomSliderEdit })
+        $slider.Add_LostMouseCapture({ Complete-ZoomSliderEdit })
+        $deleteButton.Add_Click({ Invoke-TrimDeleteZoom })
+    }
+
+    function Set-ZoomLevelFromPill {
+        $kf = Get-TrimSelectedZoom
+        if ($null -eq $kf) { return }
+        if ($null -eq $script:ZoomPillSlider) { return }
+        # Level only: the pill tightens or loosens the framing the box drag chose, it does
+        # not move it.
+        Set-TrimZoomValues -Id ([string]$kf.Id) -Level ([double]$script:ZoomPillSlider.Value)
+        if ($null -ne $script:ZoomPillValueText) {
+            $script:ZoomPillValueText.Text = "{0:N1}x" -f [double]$kf.Level
+        }
+        # The lane's ramps are drawn from the levels, so they are stale the moment one
+        # changes -- and this redraws the box and the preview with them.
+        Update-TrimZoomLane
+        # Debounced, which is what makes it safe on a per-tick handler.
+        Request-TrimProjectSave
+    }
+
+    function Start-ZoomSliderEdit {
+        $kf = Get-TrimSelectedZoom
+        if ($null -eq $kf) { $script:ZoomSliderEdit = $null; return }
+        $script:ZoomSliderEdit = @{ Id = [string]$kf.Id; Level = [double]$kf.Level; Snapshot = New-TrimUndoSnapshot }
+    }
+
+    function Complete-ZoomSliderEdit {
+        $edit = $script:ZoomSliderEdit
+        $script:ZoomSliderEdit = $null
+        if ($null -eq $edit) { return }
+        $kf = Get-TrimZoomById -Id $edit.Id
+        if ($null -eq $kf) { return }
+        if ([math]::Abs([double]$kf.Level - [double]$edit.Level) -lt 1e-9) { return }
+        Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+    }
+
     # ---- Fade preview proxies ----
     #
     # Keyed on everything that changes what the render looks like: both sides of the cut
@@ -2576,6 +2993,7 @@ try {
                 # Captions are suppressed while a fade proxy is up; the fade has just ended,
                 # so bring them back rather than waiting for the next thing that redraws.
                 Update-CaptionOverlay -SourceSeconds $SourceSeconds
+                Update-ZoomBoxOverlay
             }
             return
         }
@@ -2823,6 +3241,7 @@ try {
         Hide-CaptionSidebar
         Update-TrimCaptionLane
         Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+        Update-ZoomBoxOverlay
     }
 
     # Re-fills one box from the model without the write-back a plain assignment would
@@ -3303,6 +3722,8 @@ try {
             # After the fade overlay, not before: the fade owns the picture while it is up
             # and Update-CaptionOverlay reads the key it just set.
             Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+            # The caption redraw just cleared the overlay canvas the spotlight box lives on.
+            Update-ZoomBoxOverlay
             # After the captions: the zoom transform is what makes the glide visible during
             # playback, and it has its own identity fast-path so a clip with no keyframes
             # pays almost nothing for being asked 20x a second.
@@ -3352,6 +3773,7 @@ try {
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
             # Scrubbing across a caption's window shows it appear and disappear on time.
             Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+            Update-ZoomBoxOverlay
             # And scrubbing across a glide shows the picture move with it, paused.
             Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
         })
@@ -3474,28 +3896,67 @@ try {
             $canvasCaptionOverlay.Add_MouseLeftButtonDown({
                 param($eventSource, $e)
                 if ($e.OriginalSource -ne $canvasCaptionOverlay) { return }
+                # With a zoom keyframe selected the same press means something else: it is
+                # the corner of a new spotlight box. Nothing is decided here -- a press that
+                # never travels far enough is settled as a plain click on release and falls
+                # through to the deselect below.
+                if ($null -ne (Get-TrimSelectedZoom)) {
+                    $p = $e.GetPosition($canvasCaptionOverlay)
+                    Start-ZoomBoxDrag -StartX $p.X -StartY $p.Y
+                    $canvasCaptionOverlay.CaptureMouse() | Out-Null
+                    return
+                }
                 Clear-TrimCaptionSelection
             })
 
             $canvasCaptionOverlay.Add_MouseMove({
                 param($eventSource, $e)
+                # The zoom box first: the two drags cannot both be live (selecting a zoom
+                # clears the caption selection), and this one is the cheaper test.
+                if (Test-ZoomBoxDrag) {
+                    $p = $e.GetPosition($canvasCaptionOverlay)
+                    Update-ZoomBoxDrag -CurrentX $p.X -CurrentY $p.Y
+                    # Box only: the forming rectangle is drawn straight from the drag, and
+                    # nothing is written to the model until the button comes up.
+                    Update-ZoomBoxOverlay
+                    return
+                }
                 if (-not (Test-CaptionOverlayDrag)) { return }
                 $p = $e.GetPosition($canvasCaptionOverlay)
                 Update-CaptionOverlayDrag -CurrentX $p.X -CurrentY $p.Y
                 Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+                Update-ZoomBoxOverlay
             })
 
             $canvasCaptionOverlay.Add_MouseLeftButtonUp({
                 param($eventSource, $e)
+                if (Test-ZoomBoxDrag) {
+                    $canvasCaptionOverlay.ReleaseMouseCapture()
+                    Complete-ZoomBoxDrag
+                    # Full redraw: the level changed, so the lane's ramps did too -- and this
+                    # is what puts the committed box back on screen in place of the forming
+                    # one, through Update-TrimZoomLane.
+                    Update-TrimTimeline
+                    return
+                }
                 if (-not (Test-CaptionOverlayDrag)) { return }
                 $canvasCaptionOverlay.ReleaseMouseCapture()
                 Complete-CaptionOverlayDrag
                 Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+                Update-ZoomBoxOverlay
             })
 
             # Opening or closing the sidebar takes 240px off the preview, so every X/Y
-            # already converted to pixels is wrong until the next redraw.
-            $canvasCaptionOverlay.Add_SizeChanged({ Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead })
+            # already converted to pixels is wrong until the next redraw -- and the box and
+            # its pill are positioned in those same pixels.
+            $canvasCaptionOverlay.Add_SizeChanged({
+                Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
+                Update-ZoomBoxOverlay
+            })
+
+            # Once, at startup: the pill is a live control, not a redrawn shape, and lives in
+            # the canvas for the whole session with only its visibility and position changing.
+            Initialize-ZoomPill
         }
 
         if ($null -ne $buttonTrimAddCaption) { $buttonTrimAddCaption.Add_Click({ Invoke-TrimAddCaption }) }
@@ -3607,6 +4068,10 @@ try {
             # covers the combo (and its popup items), the sliders and the checkboxes in
             # one test instead of enumerating control types.
             if ($null -ne $panelCaptionSidebar -and $panelCaptionSidebar.IsKeyboardFocusWithin) { return }
+            # Same reasoning for the floating zoom pill: its slider takes arrow keys and its
+            # Delete button takes Space, and both of those would otherwise be read as the
+            # panel shortcuts (scrub/split, play/pause) while the pointer is in the pill.
+            if ($null -ne $script:ZoomPillBorder -and $script:ZoomPillBorder.IsKeyboardFocusWithin) { return }
 
             $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
 
