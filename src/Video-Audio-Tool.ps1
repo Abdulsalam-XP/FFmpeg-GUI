@@ -838,6 +838,7 @@ try {
     $canvasTrimRuler     = $panelTrim.FindName("CanvasTrimRuler")
     $canvasTrimWave      = $panelTrim.FindName("CanvasTrimWave")
     $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
+    $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
     $textTrimFadeNote    = $panelTrim.FindName("TextTrimFadeNote")
     $textTrimFadeScope   = $panelTrim.FindName("TextTrimFadeScope")
@@ -853,6 +854,9 @@ try {
     $buttonTrimDelete    = $panelTrim.FindName("ButtonTrimDelete")
     $buttonTrimUndo      = $panelTrim.FindName("ButtonTrimUndo")
     $buttonTrimExport    = $panelTrim.FindName("ButtonTrimExport")
+    $buttonTrimAddCaption = $panelTrim.FindName("ButtonTrimAddCaption")
+    $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
+    $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
 
     # An install updated in place can run new code against old XAML, in which case every
     # lookup above is $null and the first handler to fire takes the app down. Same guard
@@ -873,6 +877,19 @@ try {
     $script:TrimFadeProxyPending = @{}
     $script:TrimFadeProxyDir = $null
     $script:TrimFadeOverlayKey = $null
+
+    # Caption state. Declared beside the fade state and for the same reason: the lane is
+    # drawn by Update-TrimTimeline, which runs during initial layout before any file has
+    # been picked, so both of these have to exist by then.
+    # $script:TrimSelectedCaption is a caption Id string (or $null), never an index --
+    # indexes shift on add/delete the same way the fade keys avoid.
+    $script:TrimCaptions = New-Object System.Collections.ArrayList
+    $script:TrimSelectedCaption = $null
+    # In-flight lane drag: $null when nothing is being dragged, otherwise a hashtable of
+    # Id / Mode ("move" | "start" | "end") / StartX / OrigStart / OrigEnd / Snapshot.
+    # The undo snapshot is taken when the drag BEGINS and only pushed on release, so a
+    # drag costs exactly one undo step no matter how many MouseMove events it produced.
+    $script:TrimCaptionDrag = $null
 
     function Format-TrimTime {
         param([double]$Seconds)
@@ -1056,6 +1073,71 @@ try {
     function Set-TrimActiveFade {
         param([double]$SourceSeconds, [bool]$HasFade)
         $script:TrimActiveFade = if ($HasFade) { $SourceSeconds } else { $null }
+    }
+
+    # ---- Caption state write-throughs ----
+    #
+    # Same rule as Set-TrimSelection and Set-TrimFade: every read and write of the caption
+    # state goes through a top-level function, because the per-block handlers below are
+    # .GetNewClosure()'d (they must be -- each captures its own caption Id) and a bare
+    # $script: read OR write inside one of those resolves against the closure's own
+    # private dynamic module, not this scope. A read there returns $null and a write is
+    # invisible to the drawing code.
+
+    # Flat objects, but each field is copied by name rather than via PSObject.Copy() so it
+    # is obvious at the call site that undo gets a genuinely independent caption and not a
+    # second reference to the one the sidebar is about to edit.
+    function Copy-TrimCaption {
+        param($Caption)
+        return [PSCustomObject]@{
+            Id           = $Caption.Id
+            Text         = $Caption.Text
+            Start        = [double]$Caption.Start
+            End          = [double]$Caption.End
+            X            = [double]$Caption.X
+            Y            = [double]$Caption.Y
+            FontSizeFrac = [double]$Caption.FontSizeFrac
+            FontFamily   = $Caption.FontFamily
+            Bold         = [bool]$Caption.Bold
+            FillColor    = $Caption.FillColor
+            OutlineColor = $Caption.OutlineColor
+            OutlineWidth = [double]$Caption.OutlineWidth
+            BounceIn     = [bool]$Caption.BounceIn
+        }
+    }
+
+    function Set-TrimCaptions {
+        param([object[]]$Captions = @())
+        $list = New-Object System.Collections.ArrayList
+        foreach ($c in @($Captions)) { if ($null -ne $c) { [void]$list.Add($c) } }
+        $script:TrimCaptions = $list
+    }
+
+    function Set-TrimSelectedCaption {
+        param($Id)
+        $script:TrimSelectedCaption = $Id
+    }
+
+    function Get-TrimSelectedCaption {
+        foreach ($c in $script:TrimCaptions) {
+            if ($c.Id -eq $script:TrimSelectedCaption) { return $c }
+        }
+        return $null
+    }
+
+    function Get-TrimCaptionById {
+        param([string]$Id)
+        foreach ($c in $script:TrimCaptions) { if ($c.Id -eq $Id) { return $c } }
+        return $null
+    }
+
+    # Pixels on the lane are the same pixels as the timeline track above it (both canvases
+    # share the card's width), so a drag reads in the current view's seconds-per-pixel.
+    function Convert-TrimPixelsToSeconds {
+        param([double]$Pixels)
+        $w = $canvasTrimTimeline.ActualWidth
+        if ($w -le 0) { return 0.0 }
+        return ($Pixels / $w) * $script:TrimViewSpan
     }
 
     # One length per internal boundary, in piece order -- the shape Export-CutListAsync
@@ -1344,6 +1426,7 @@ try {
         $buttonTrimExport.IsEnabled = ($pieces.Count -gt 0 -and $null -ne $script:TrimInputFile)
 
         Update-TrimWaveform
+        Update-TrimCaptionLane
     }
 
     # Waveform strip under the filmstrip, one image per piece that is at least partly on
@@ -1519,6 +1602,210 @@ try {
         }
     }
 
+    # ---- Caption lane ----
+    #
+    # Captions are stored in SOURCE seconds (the same space Get-CaptionSpans clips them
+    # against on export), so a block's x is the same two-step conversion the playhead uses:
+    # source -> timeline (compacted) -> pixels. A caption sitting inside deleted footage
+    # collapses onto the cut, which is honest -- that is exactly where the export would
+    # show it, if at all.
+    function Get-TrimCaptionBounds {
+        param($Caption, [object[]]$TimelinePieces)
+        $tl = @($TimelinePieces)
+        $x1 = Convert-TrimTimeToX -Seconds (Convert-TrimSourceToTimeline -SourceSeconds ([double]$Caption.Start) -TimelinePieces $tl)
+        $x2 = Convert-TrimTimeToX -Seconds (Convert-TrimSourceToTimeline -SourceSeconds ([double]$Caption.End) -TimelinePieces $tl)
+        return [PSCustomObject]@{ Left = $x1; Width = [math]::Max(2.0, $x2 - $x1) }
+    }
+
+    # A caption shorter than this is unhittable on the lane and useless on screen, so an
+    # edge drag stops here rather than letting a caption be dragged out of existence.
+    $script:TrimCaptionMinLength = 0.2
+
+    # Block drag: both ends move together, so the caption keeps its length and only the
+    # start is clamped (against duration minus length, not duration).
+    function Move-TrimCaption {
+        param([string]$Id, [double]$DeltaSeconds, [double]$OrigStart, [double]$OrigEnd)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        $length = $OrigEnd - $OrigStart
+        # 0.0 rather than 0, in every clamp below as well: [math]::Max(0, <double>) binds
+        # the INT overload and silently truncates, which quantised every caption drag to
+        # whole seconds -- the block jumped a second at a time instead of tracking the
+        # pointer, and an edge drag could not reach the 0.2s minimum at all.
+        $limit = [math]::Max(0.0, $script:TrimDuration - $length)
+        $start = [math]::Max(0.0, [math]::Min($limit, $OrigStart + $DeltaSeconds))
+        $cap.Start = $start
+        $cap.End = $start + $length
+    }
+
+    # Absolute retime, used by the edge grips and (from Task 10) the sidebar's time boxes.
+    # Rejects rather than silently truncating anything under the minimum length: the caller
+    # already clamps, so reaching this guard means the request was not a sane one.
+    function Set-TrimCaptionTimes {
+        param([string]$Id, [double]$Start, [double]$End)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        $s = [math]::Max(0.0, [math]::Min($script:TrimDuration, $Start))
+        $e = [math]::Max(0.0, [math]::Min($script:TrimDuration, $End))
+        # 1e-6 of slack, not a bare comparison: an edge drag clamped to exactly the minimum
+        # arrives as OrigStart + 0.2, and in binary that subtracts back to 0.19999999999999,
+        # so a strict test rejected the very request the clamp had just made safe -- the
+        # grip stopped responding a long way short of the minimum instead of at it.
+        if ($e - $s -lt $script:TrimCaptionMinLength - 1e-6) { return }
+        $cap.Start = $s
+        $cap.End = $e
+    }
+
+    # The undo snapshot is taken HERE, at the start of the drag, and pushed only if the
+    # caption actually ended up somewhere else -- so one drag is one undo step, and a
+    # click that merely selects a block costs none.
+    function Start-TrimCaptionDrag {
+        param([string]$Id, [string]$Mode, [double]$StartX)
+        $cap = Get-TrimCaptionById -Id $Id
+        if ($null -eq $cap) { return }
+        $script:TrimCaptionDrag = @{
+            Id        = $Id
+            Mode      = $Mode
+            StartX    = $StartX
+            OrigStart = [double]$cap.Start
+            OrigEnd   = [double]$cap.End
+            Snapshot  = New-TrimUndoSnapshot
+        }
+    }
+
+    function Test-TrimCaptionDrag {
+        return ($null -ne $script:TrimCaptionDrag)
+    }
+
+    # Always applied against the drag's ORIGINAL times rather than the caption's current
+    # ones: accumulating per-move deltas would drift, and worse, would let a clamped edge
+    # "eat" motion so dragging back out no longer returns to where it started.
+    function Update-TrimCaptionDrag {
+        param([double]$CurrentX)
+        $drag = $script:TrimCaptionDrag
+        if ($null -eq $drag) { return }
+        $dt = Convert-TrimPixelsToSeconds -Pixels ($CurrentX - $drag.StartX)
+        switch ($drag.Mode) {
+            "start" {
+                $maxStart = $drag.OrigEnd - $script:TrimCaptionMinLength
+                $newStart = [math]::Max(0.0, [math]::Min($maxStart, $drag.OrigStart + $dt))
+                Set-TrimCaptionTimes -Id $drag.Id -Start $newStart -End $drag.OrigEnd
+            }
+            "end" {
+                $minEnd = $drag.OrigStart + $script:TrimCaptionMinLength
+                $newEnd = [math]::Max($minEnd, [math]::Min($script:TrimDuration, $drag.OrigEnd + $dt))
+                Set-TrimCaptionTimes -Id $drag.Id -Start $drag.OrigStart -End $newEnd
+            }
+            default {
+                Move-TrimCaption -Id $drag.Id -DeltaSeconds $dt -OrigStart $drag.OrigStart -OrigEnd $drag.OrigEnd
+            }
+        }
+    }
+
+    function Complete-TrimCaptionDrag {
+        $drag = $script:TrimCaptionDrag
+        $script:TrimCaptionDrag = $null
+        if ($null -eq $drag) { return }
+        $cap = Get-TrimCaptionById -Id $drag.Id
+        if ($null -eq $cap) { return }
+        # Sub-millisecond differences are the mouse jitter of a plain click, not a move.
+        if ([math]::Abs($cap.Start - $drag.OrigStart) -lt 0.001 -and
+            [math]::Abs($cap.End - $drag.OrigEnd) -lt 0.001) { return }
+        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+    }
+
+    # Rebuilt from scratch like the rest of the timeline. Guarded on the canvas being
+    # non-null: it is $null on XAML that predates this task, same stale-XAML rule the
+    # waveform and fade rows carry.
+    function Update-TrimCaptionLane {
+        if ($null -eq $canvasTrimCaptions) { return }
+        $canvasTrimCaptions.Children.Clear()
+        if (-not $script:TrimInputFile) { return }
+
+        $laneWidth = $canvasTrimCaptions.ActualWidth
+        if ($laneWidth -le 0) { $laneWidth = $canvasTrimTimeline.ActualWidth }
+        $laneHeight = $canvasTrimCaptions.ActualHeight
+        if ($laneHeight -le 0) { $laneHeight = 36 }
+        $blockHeight = [math]::Max(6.0, $laneHeight - 10)
+
+        $timelinePieces = (Get-TrimTimelineState).TimelinePieces
+
+        foreach ($c in @($script:TrimCaptions)) {
+            $bounds = Get-TrimCaptionBounds -Caption $c -TimelinePieces $timelinePieces
+            # Fully off-view: nothing to draw, and a block hundreds of thousands of pixels
+            # wide at a deep zoom is worth not building at all.
+            if ($bounds.Left + $bounds.Width -lt 0 -or $bounds.Left -gt $laneWidth) { continue }
+
+            $isSelected = ($c.Id -eq $script:TrimSelectedCaption)
+            $block = New-Object System.Windows.Controls.Border
+            $block.Style = $ctx.Window.FindResource(
+                $(if ($isSelected) { "CaptionBlockSelectedStyle" } else { "CaptionBlockStyle" }))
+            $block.Width = $bounds.Width
+            $block.Height = $blockHeight
+            $block.ClipToBounds = $true
+            [System.Windows.Controls.Canvas]::SetLeft($block, $bounds.Left)
+            [System.Windows.Controls.Canvas]::SetTop($block, 5)
+
+            $inner = New-Object System.Windows.Controls.Grid
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Style = $ctx.Window.FindResource("CaptionBlockTextStyle")
+            # A caption is created empty and named later, so a blank block needs to still
+            # look like something you can click.
+            $label.Text = if ([string]::IsNullOrWhiteSpace($c.Text)) { "(empty)" } else { $c.Text }
+            $inner.Children.Add($label) | Out-Null
+            $block.Child = $inner
+
+            $thisId = $c.Id
+
+            # GetNewClosure is required, exactly as on the piece and fade handlers: without
+            # it every block captures the loop variable's final value and dragging any
+            # block moves the last caption. Mouse capture goes on the CANVAS, not on the
+            # block: the lane is redrawn on every MouseMove, which destroys the block
+            # element mid-drag, and a capture held by a destroyed element is lost.
+            $block.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                $x = ($e.GetPosition($canvasTrimCaptions)).X
+                Set-TrimSelectedCaption -Id $thisId
+                Start-TrimCaptionDrag -Id $thisId -Mode "move" -StartX $x
+                $canvasTrimCaptions.CaptureMouse() | Out-Null
+                $e.Handled = $true
+                Show-CaptionSidebar
+                Update-TrimCaptionLane
+            }.GetNewClosure())
+
+            # Edge grips: 6px transparent strips inside the block that retime one end
+            # instead of moving the whole caption. Transparent rather than unset -- a
+            # Rectangle with no Fill is not hit-testable at all. Dropped on blocks too
+            # narrow to hold them, where they would leave no draggable middle.
+            if ($bounds.Width -ge 20) {
+                foreach ($side in @("start", "end")) {
+                    $grip = New-Object System.Windows.Shapes.Rectangle
+                    $grip.Width = 6
+                    $grip.Fill = [System.Windows.Media.Brushes]::Transparent
+                    $grip.Cursor = [System.Windows.Input.Cursors]::SizeWE
+                    $grip.HorizontalAlignment = if ($side -eq "start") { "Left" } else { "Right" }
+                    $grip.VerticalAlignment = "Stretch"
+                    $thisSide = $side
+                    $grip.Add_MouseLeftButtonDown({
+                        param($eventSource, $e)
+                        $x = ($e.GetPosition($canvasTrimCaptions)).X
+                        Set-TrimSelectedCaption -Id $thisId
+                        Start-TrimCaptionDrag -Id $thisId -Mode $thisSide -StartX $x
+                        $canvasTrimCaptions.CaptureMouse() | Out-Null
+                        # Handled, so the block's own move-drag handler underneath does not
+                        # also fire and overwrite the retime with a move.
+                        $e.Handled = $true
+                        Show-CaptionSidebar
+                        Update-TrimCaptionLane
+                    }.GetNewClosure())
+                    $inner.Children.Add($grip) | Out-Null
+                }
+            }
+
+            $canvasTrimCaptions.Children.Add($block) | Out-Null
+        }
+    }
+
     # ---- Fade preview proxies ----
     #
     # Keyed on everything that changes what the render looks like: both sides of the cut
@@ -1648,11 +1935,30 @@ try {
     }
 
     # Snapshot before every change. Cloning matters: the pieces are objects and a shallow
-    # copy of the array would let undo hand back a list whose contents were mutated.
-    function Push-TrimUndo {
-        $snapshot = @(@($script:TrimCutList) | ForEach-Object { [PSCustomObject]@{ Start = $_.Start; End = $_.End } })
-        [void]$script:TrimUndoStack.Add(@{ List = $snapshot; Selected = $script:TrimSelected })
+    # copy of the array would let undo hand back a list whose contents were mutated. The
+    # captions need the same treatment for a stronger reason -- a lane drag and the Task 10
+    # sidebar both edit caption objects IN PLACE, so an uncloned snapshot would hand undo
+    # the very objects the edit is about to change.
+    function New-TrimUndoSnapshot {
+        return @{
+            List            = @(@($script:TrimCutList) | ForEach-Object { [PSCustomObject]@{ Start = $_.Start; End = $_.End } })
+            Selected        = $script:TrimSelected
+            Captions        = @(foreach ($c in $script:TrimCaptions) { Copy-TrimCaption -Caption $c })
+            SelectedCaption = $script:TrimSelectedCaption
+        }
+    }
+
+    # Split out from Push-TrimUndo so a drag can take its snapshot when it BEGINS and push
+    # that same snapshot on release -- one undo step per completed drag rather than one per
+    # mouse move.
+    function Push-TrimUndoSnapshot {
+        param($Snapshot)
+        [void]$script:TrimUndoStack.Add($Snapshot)
         $buttonTrimUndo.IsEnabled = $true
+    }
+
+    function Push-TrimUndo {
+        Push-TrimUndoSnapshot -Snapshot (New-TrimUndoSnapshot)
     }
 
     function Invoke-TrimSplit {
@@ -1706,10 +2012,56 @@ try {
         $script:TrimUndoStack.RemoveAt($script:TrimUndoStack.Count - 1)
         $script:TrimCutList = @($last.List)
         $script:TrimSelected = $last.Selected
+        # Entries pushed before captions existed have no Captions key; treating a missing
+        # one as "no captions" would wipe the lane, so only restore what was recorded.
+        if ($last.ContainsKey("Captions")) {
+            Set-TrimCaptions -Captions $last.Captions
+            Set-TrimSelectedCaption -Id $last.SelectedCaption
+        }
         $buttonTrimDelete.IsEnabled = ($script:TrimSelected -ge 0)
         $buttonTrimUndo.IsEnabled = ($script:TrimUndoStack.Count -gt 0)
         Update-TrimSelectionText
         Update-TrimTimeline
+        # The sidebar edits whatever is selected, so an undo that changed the selection --
+        # including one that undid an add and left nothing selected -- has to move it.
+        if ($null -eq (Get-TrimSelectedCaption)) { Hide-CaptionSidebar } else { Show-CaptionSidebar }
+    }
+
+    # Task 10 fills these in: they own the caption properties sidebar (populating its
+    # fields from the selected caption and showing/hiding the column). Defined here as
+    # no-ops so every call site that has to move the sidebar already exists and Task 10
+    # only replaces the bodies.
+    function Show-CaptionSidebar {
+        # Task 10 fills this
+    }
+
+    function Hide-CaptionSidebar {
+        # Task 10 fills this
+    }
+
+    function Invoke-TrimAddCaption {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        Push-TrimUndo
+        # Pulled back off the very end of the clip, so a caption added with the playhead
+        # parked at the end is still a caption and not a zero-length sliver.
+        $start = [math]::Max(0.0, [math]::Min($script:TrimPlayhead, $script:TrimDuration - $script:TrimCaptionMinLength))
+        # Two seconds is a readable default; a playhead parked near the end of the clip
+        # gets whatever is left rather than a caption running off the end.
+        $cap = New-Caption -Start $start -End ([math]::Min($script:TrimDuration, $start + 2.0)) -Text ""
+        [void]$script:TrimCaptions.Add($cap)
+        Set-TrimSelectedCaption -Id $cap.Id
+        Update-TrimTimeline
+        Show-CaptionSidebar
+    }
+
+    function Invoke-TrimDeleteCaption {
+        $cap = Get-TrimSelectedCaption
+        if ($null -eq $cap) { return }
+        Push-TrimUndo
+        $script:TrimCaptions.Remove($cap)
+        Set-TrimSelectedCaption -Id $null
+        Update-TrimTimeline
+        Hide-CaptionSidebar
     }
 
     function Update-TrimPosition {
@@ -2032,6 +2384,36 @@ try {
         # and a resize invalidates every x already computed.
         $canvasTrimTimeline.Add_SizeChanged({ Update-TrimTimeline })
 
+        # Lane drags are driven from the CANVAS, not from the blocks: the lane is rebuilt on
+        # every move, so a handler living on a block would be destroyed mid-drag. The canvas
+        # holds the mouse capture and survives the redraw.
+        #
+        # No GetNewClosure() on these two, deliberately -- same reason as the timeline
+        # canvas handlers above: they read and write $script: state, which a closure would
+        # rebind into its own private module, and neither needs to capture anything.
+        if ($null -ne $canvasTrimCaptions) {
+            $canvasTrimCaptions.Add_MouseMove({
+                param($eventSource, $e)
+                if (-not (Test-TrimCaptionDrag)) { return }
+                Update-TrimCaptionDrag -CurrentX ($e.GetPosition($canvasTrimCaptions)).X
+                # Lane only: a handful of borders, cheap enough to redraw per mouse move,
+                # where a full Update-TrimTimeline would re-request thumbnails.
+                Update-TrimCaptionLane
+            })
+
+            $canvasTrimCaptions.Add_MouseLeftButtonUp({
+                param($eventSource, $e)
+                if (-not (Test-TrimCaptionDrag)) { return }
+                $canvasTrimCaptions.ReleaseMouseCapture()
+                Complete-TrimCaptionDrag
+                Update-TrimTimeline
+            })
+
+            $canvasTrimCaptions.Add_SizeChanged({ Update-TrimCaptionLane })
+        }
+        if ($null -ne $buttonTrimAddCaption) { $buttonTrimAddCaption.Add_Click({ Invoke-TrimAddCaption }) }
+        if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
+
         $buttonTrimSplit.Add_Click({ Invoke-TrimSplit })
         $buttonTrimDelete.Add_Click({ Invoke-TrimDelete })
         $buttonTrimUndo.Add_Click({ Invoke-TrimUndo })
@@ -2080,6 +2462,12 @@ try {
         # keeping them across a file swap would drop fades onto unrelated timestamps.
         $script:TrimFades = @{}
         $script:TrimActiveFade = $null
+        # Captions belong to the file they were written over -- their times are source
+        # seconds, so carrying them across a file swap would strand them on unrelated
+        # footage. A drag in progress across a file pick is dropped for the same reason.
+        $script:TrimCaptions = New-Object System.Collections.ArrayList
+        $script:TrimSelectedCaption = $null
+        $script:TrimCaptionDrag = $null
         $script:TrimSelected = -1
         $script:TrimPlayhead = 0.0
         $script:TrimViewStart = 0.0
@@ -2126,6 +2514,9 @@ try {
         # Picking a second file must not leave the previous file's selection on screen,
         # nor its Delete button live against an index into a cut list that is now gone.
         $buttonTrimDelete.IsEnabled = $false
+        # Nothing is selected in the new file, so the properties column must not be left
+        # open over the previous file's caption.
+        Hide-CaptionSidebar
         Update-TrimPosition
         Update-TrimSelectionText
         Update-TrimTimeline
