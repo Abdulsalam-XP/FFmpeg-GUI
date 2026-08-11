@@ -3079,6 +3079,19 @@ try {
         $magnetButton.ToolTip = "Magnet: keep the box video-shaped while resizing. Off = free resize (stretches the picture)."
         $row.Children.Add($magnetButton) | Out-Null
 
+        # Confirms the zoom and puts the box away. Clicking empty preview does the same,
+        # but a deep zoom's box can cover essentially the whole frame, leaving nothing
+        # safe to click -- this button always exists and never moves the box.
+        $okButton = New-Object System.Windows.Controls.Button
+        $okButton.Style = $ctx.Window.FindResource("PresetButtonStyle")
+        $okButton.Content = "OK"
+        $okButton.Padding = New-Object System.Windows.Thickness(11, 3, 11, 3)
+        $okButton.FontSize = 11
+        $okButton.FontWeight = "Bold"
+        $okButton.Margin = New-Object System.Windows.Thickness(10, 0, 0, 0)
+        $okButton.VerticalAlignment = "Center"
+        $row.Children.Add($okButton) | Out-Null
+
         $deleteButton = New-Object System.Windows.Controls.Button
         $deleteButton.Style = $ctx.Window.FindResource("PresetButtonStyle")
         $deleteButton.Content = "Delete"
@@ -3113,6 +3126,9 @@ try {
         $magnetButton.Add_Click({
             Set-ZoomMagnet -Value (-not $script:ZoomMagnet)
         })
+        # Keeps the keyframe exactly as edited; only the selection (and with it the
+        # box and this pill) goes away. The values were already saved live.
+        $okButton.Add_Click({ Clear-TrimZoomSelection })
         $deleteButton.Add_Click({ Invoke-TrimDeleteZoom })
     }
 
