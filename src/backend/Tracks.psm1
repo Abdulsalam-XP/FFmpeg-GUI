@@ -100,6 +100,8 @@ function New-TrimAudioMixPlan {
         [double[]]$FadeLengths = @(),
         [hashtable]$ClipDurations = @{}
     )
+    if (@($Pieces).Count -eq 0) { throw "New-TrimAudioMixPlan: no pieces" }
+
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     function fmt([double]$v) { return $v.ToString("0.####", $inv) }
 

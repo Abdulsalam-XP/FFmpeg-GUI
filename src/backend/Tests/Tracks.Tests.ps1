@@ -114,6 +114,9 @@ Describe "New-TrimAudioMixPlan" {
     $p1   = @([PSCustomObject]@{Start=10.0;End=20.0})
     $p2   = @([PSCustomObject]@{Start=10.0;End=20.0}, [PSCustomObject]@{Start=30.0;End=35.0})
 
+    It "throws when given no pieces" {
+        { New-TrimAudioMixPlan -Tracks @($main,$game) -Pieces @() -FadeLengths @() -ClipDurations @{} } | Should Throw
+    }
     It "cuts each source stream to the piece and mixes over a silence base" {
         $r = New-TrimAudioMixPlan -Tracks @($main,$game,$mic) -Pieces $p1 -FadeLengths @() -ClipDurations @{}
         $r.InputPaths[0] | Should Be "C:\v\main.mp4"
