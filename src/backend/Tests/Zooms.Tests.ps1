@@ -24,9 +24,15 @@ Describe "Get-TrimZoomStateAt" {
         $s.Level | Should Be 1.0
         $s.CX | Should Be 0.5
     }
-    It "holds the first keyframe before it" {
+    It "is identity BEFORE the first keyframe - a zoom activates at its moment" {
         $k = New-ZoomKeyframe -Time 10 -Level 2 -CX 0.6 -CY 0.4
-        (Get-TrimZoomStateAt -Zooms @($k) -Seconds 3).Level | Should Be 2
+        $s = Get-TrimZoomStateAt -Zooms @($k) -Seconds 3
+        $s.Level | Should Be 1.0
+        $s.CX | Should Be 0.5
+    }
+    It "takes the first keyframe's value exactly at its time" {
+        $k = New-ZoomKeyframe -Time 10 -Level 2 -CX 0.6 -CY 0.4
+        (Get-TrimZoomStateAt -Zooms @($k) -Seconds 10).Level | Should Be 2
     }
     It "holds the last keyframe after it" {
         $a = New-ZoomKeyframe -Time 10 -Level 1

@@ -16,12 +16,20 @@ function New-ZoomKeyframe {
     }
 }
 
-# The glide: linear between neighbouring keyframes, held flat outside them.
+# The glide: linear between neighbouring keyframes, held flat AFTER the last one.
+# Before the FIRST keyframe the state is identity, not a hold: the user's model (stated
+# directly, 2026-08-11) is that a zoom keyframe ACTIVATES at its moment -- footage before
+# it plays unzoomed, and a lone 2x keyframe is a hard punch-in right there. A smooth
+# push-in is still two keyframes (1x then 2x). Hold-after stays: a zoom persists until
+# keyframed back out.
 function Get-TrimZoomStateAt {
     param([object[]]$Zooms = @(), [Parameter(Mandatory = $true)][double]$Seconds)
     $ks = @(@($Zooms) | Where-Object { $_ } | Sort-Object { [double]$_.Time })
     if ($ks.Count -eq 0) { return @{ Level = 1.0; CX = 0.5; CY = 0.5 } }
-    if ($Seconds -le [double]$ks[0].Time) {
+    if ($Seconds -lt [double]$ks[0].Time) {
+        return @{ Level = 1.0; CX = 0.5; CY = 0.5 }
+    }
+    if ($Seconds -eq [double]$ks[0].Time) {
         return @{ Level = [double]$ks[0].Level; CX = [double]$ks[0].CX; CY = [double]$ks[0].CY }
     }
     $last = $ks[$ks.Count - 1]
@@ -44,10 +52,10 @@ function Get-TrimZoomStateAt {
 }
 
 # Merged, sorted source-space zoom spans: consecutive keyframe pairs where either end's
-# level exceeds 1.001, plus a leading hold-before span (footage start to first keyframe)
-# when the first keyframe's level is > 1.001, plus a trailing hold-after span (last
-# keyframe to footage end) when the last keyframe's level is > 1.001. Clipped to the
-# surviving pieces, same merge idiom as Get-CaptionSpans.
+# level exceeds 1.001, plus a trailing hold-after span (last keyframe to footage end)
+# when the last keyframe's level is > 1.001. No leading span: before the first keyframe
+# the state is identity (see Get-TrimZoomStateAt) so there is nothing to re-encode there.
+# Clipped to the surviving pieces, same merge idiom as Get-CaptionSpans.
 function Get-TrimZoomSpans {
     param([object[]]$Zooms = @(), [object[]]$Pieces = @())
     $ks = @(@($Zooms) | Where-Object { $_ } | Sort-Object { [double]$_.Time })
@@ -60,15 +68,10 @@ function Get-TrimZoomSpans {
             $candidates += ,@{ Start = [double]$a.Time; End = [double]$b.Time }
         }
     }
-    $first = $ks[0]
     $last = $ks[$ks.Count - 1]
-    $footageStart = 0.0
     $footageEnd = [double]$last.Time
     foreach ($p in @($Pieces)) {
         $footageEnd = [math]::Max($footageEnd, [double]$p.End)
-    }
-    if ([double]$first.Level -gt 1.001) {
-        $candidates += ,@{ Start = $footageStart; End = [double]$first.Time }
     }
     if ([double]$last.Level -gt 1.001) {
         $candidates += ,@{ Start = [double]$last.Time; End = $footageEnd }

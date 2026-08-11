@@ -2627,6 +2627,32 @@ try {
         $frame.Height = [math]::Max(1.0, $rect.Height)
         Add-ZoomBoxElement -Element $frame -Left $rect.Left -Top $rect.Top
 
+        # The grab surface: an invisible, HIT-TESTABLE rect over the committed box so it
+        # can be dragged to a new position like a caption. Only when a real box exists
+        # (above 1x) and not mid-draw -- the forming box has nothing to grab yet. Added
+        # AFTER Add-ZoomBoxElement's blanket IsHitTestVisible=$false, deliberately undone
+        # here: this one element is the exception that rule exists to protect.
+        if (-not $forming -and $level -gt 1.001) {
+            $mover = New-Object System.Windows.Shapes.Rectangle
+            $mover.Width = [math]::Max(1.0, $rect.Width)
+            $mover.Height = [math]::Max(1.0, $rect.Height)
+            $mover.Fill = [System.Windows.Media.Brushes]::Transparent
+            $mover.Cursor = [System.Windows.Input.Cursors]::SizeAll
+            Add-ZoomBoxElement -Element $mover -Left $rect.Left -Top $rect.Top
+            $mover.IsHitTestVisible = $true
+            # No GetNewClosure: it reads no per-item loop variable (there is exactly one
+            # box), and all state flows through top-level functions.
+            $mover.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                $p = $e.GetPosition($canvasCaptionOverlay)
+                Start-ZoomBoxDrag -StartX $p.X -StartY $p.Y -Mode "move"
+                $canvasCaptionOverlay.CaptureMouse() | Out-Null
+                # Stop the bubble: the canvas press handler would read this same press as
+                # the corner of a NEW box.
+                $e.Handled = $true
+            })
+        }
+
         # Level badge, top-right INSIDE the box: outside it would fall off the frame for a
         # box pinned to the top edge, which is where most zooms end up.
         $badge = New-Object System.Windows.Controls.Border
@@ -2697,18 +2723,27 @@ try {
         $script:ZoomUiLoading = $Value
     }
 
-    # ---- Drag-to-draw ----
+    # ---- Drag-to-draw / drag-to-move ----
     #
     # A press on the bare overlay while a zoom is selected is ambiguous: it is either the
     # start of a new box or the click that deselects. It is treated as a box until the
     # release proves otherwise, which is why nothing is committed on the way down.
+    #
+    # A press INSIDE the committed box is a different gesture entirely: it grabs the box
+    # and MOVES it (Mode "move"), keeping the level -- the same way a caption is dragged.
+    # Move applies live through Set-TrimZoomValues so the zoomed preview pans under the
+    # pointer; draw commits only on release.
     function Start-ZoomBoxDrag {
-        param([double]$StartX, [double]$StartY)
+        param([double]$StartX, [double]$StartY, [string]$Mode = "draw")
+        $orig = Get-TrimSelectedZoom
         $script:ZoomBoxDrag = @{
+            Mode     = $Mode
             StartX   = $StartX
             StartY   = $StartY
             Moved    = $false
             Rect     = $null
+            OrigCX   = if ($orig) { [double]$orig.CX } else { 0.5 }
+            OrigCY   = if ($orig) { [double]$orig.CY } else { 0.5 }
             Snapshot = New-TrimUndoSnapshot
         }
     }
@@ -2735,6 +2770,24 @@ try {
             ([math]::Abs($dx) -gt $script:ZoomBoxDragThreshold -or [math]::Abs($dy) -gt $script:ZoomBoxDragThreshold)) {
             $drag.Moved = $true
         }
+
+        if ($drag.Mode -eq "move") {
+            if (-not $drag.Moved) { return }
+            $kf = Get-TrimSelectedZoom
+            if ($null -eq $kf) { return }
+            $lvl = [math]::Max(1.0, [double]$kf.Level)
+            # Nothing to move at 1x -- the box IS the frame.
+            if ($lvl -le 1.001) { return }
+            # Clamped so the box never leaves the frame: at level L the box is 1/L of the
+            # frame, so its centre lives in [0.5/L, 1 - 0.5/L] on both axes. Applied LIVE
+            # (unlike draw, which commits on release) so the zoomed preview pans with the
+            # pointer, exactly like dragging a caption.
+            $halfW = 0.5 / $lvl
+            $cx = [math]::Max($halfW, [math]::Min(1.0 - $halfW, [double]$drag.OrigCX + ($dx / $w)))
+            $cy = [math]::Max($halfW, [math]::Min(1.0 - $halfW, [double]$drag.OrigCY + ($dy / $h)))
+            Set-TrimZoomValues -Id ([string]$kf.Id) -CX $cx -CY $cy
+            return
+        }
         # 0.0 in every clamp, never 0: [math]::Max(0, <double>) binds the int overload and
         # truncates, which is exactly what quantised the caption drags to whole seconds.
         $bw = [math]::Min($w, [math]::Max([math]::Abs($dx), [math]::Abs($dy) * 16.0 / 9.0))
@@ -2759,6 +2812,18 @@ try {
         $kf = Get-TrimSelectedZoom
         if ($null -eq $kf) { return }
         if ($null -eq $canvasCaptionOverlay) { return }
+
+        if ($drag.Mode -eq "move") {
+            # The values already landed live; this settles the bookkeeping. A no-move
+            # click on the box keeps the selection -- clicking the thing you selected
+            # must never deselect it.
+            if ($drag.Moved) {
+                Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+                Request-TrimProjectSave
+            }
+            return
+        }
+
         $w = [double]$canvasCaptionOverlay.ActualWidth
         $h = [double]$canvasCaptionOverlay.ActualHeight
         if (-not $drag.Moved -or $null -eq $drag.Rect -or
