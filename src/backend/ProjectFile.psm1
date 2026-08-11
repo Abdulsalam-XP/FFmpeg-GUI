@@ -35,20 +35,20 @@ function Read-TrimProject {
     if (-not (Test-Path -LiteralPath $path)) { return $null }
     try {
         $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    } catch { return $null }
-    if ($null -eq $doc -or $null -eq $doc.CutList -or $null -eq $doc.Captions) { return $null }
+        if ($null -eq $doc -or $null -eq $doc.CutList -or $null -eq $doc.Captions) { return $null }
 
-    # ConvertFrom-Json yields PSCustomObjects; fades come back as an object whose
-    # properties are the boundary keys -- rebuild the hashtable the panel expects.
-    $fades = @{}
-    if ($doc.Fades) {
-        foreach ($p in $doc.Fades.PSObject.Properties) { $fades[$p.Name] = [double]$p.Value }
-    }
-    return @{
-        CutList  = @(@($doc.CutList) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = [double]$_.End } })
-        Fades    = $fades
-        Captions = @(@($doc.Captions) | ForEach-Object { $_ })
-    }
+        # ConvertFrom-Json yields PSCustomObjects; fades come back as an object whose
+        # properties are the boundary keys -- rebuild the hashtable the panel expects.
+        $fades = @{}
+        if ($doc.Fades) {
+            foreach ($p in $doc.Fades.PSObject.Properties) { $fades[$p.Name] = [double]$p.Value }
+        }
+        return @{
+            CutList  = @(@($doc.CutList) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = [double]$_.End } })
+            Fades    = $fades
+            Captions = @(@($doc.Captions) | ForEach-Object { $_ })
+        }
+    } catch { return $null }
 }
 
 Export-ModuleMember -Function Get-TrimProjectPath, Save-TrimProject, Read-TrimProject

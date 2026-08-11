@@ -45,5 +45,11 @@ Describe "Save-TrimProject / Read-TrimProject round trip" {
         Set-Content -Path (Get-TrimProjectPath -VideoPath $odd) -Value '{"Version":1}'
         Read-TrimProject -VideoPath $odd | Should Be $null
     }
+    It "returns null when values are the wrong type instead of throwing" {
+        $wt = Join-Path $tmp "wrongtype.mp4"
+        Set-Content -Path $wt -Value "fake"
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $wt) -Value '{"Version":1,"CutList":[{"Start":"abc","End":5}],"Fades":{},"Captions":[]}'
+        Read-TrimProject -VideoPath $wt | Should Be $null
+    }
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
