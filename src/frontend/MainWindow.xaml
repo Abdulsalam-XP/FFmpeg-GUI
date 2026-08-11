@@ -307,16 +307,46 @@
                                     Visibility="Collapsed" Margin="0,0,0,26"/>
 
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="System volume" Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" FontSize="12.5" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <ComboBox x:Name="ComboSystemVolume" Width="100" SelectedIndex="0">
-                                <ComboBoxItem Content="1.0x"/><ComboBoxItem Content="2.0x"/><ComboBoxItem Content="3.5x"/><ComboBoxItem Content="5.0x"/>
-                            </ComboBox>
-                            <TextBlock Text="Mic volume" Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}" FontSize="12.5" VerticalAlignment="Center" Margin="24,0,10,0"/>
-                            <ComboBox x:Name="ComboMicVolume" Width="100" SelectedIndex="0">
-                                <ComboBoxItem Content="1.0x"/><ComboBoxItem Content="2.0x"/><ComboBoxItem Content="3.5x"/><ComboBoxItem Content="5.0x"/>
-                            </ComboBox>
-                            <Button x:Name="ButtonMergeStart" Content="Merge" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="28,0,0,0"/>
+                        <!-- Sliders rather than the old four-step "1x / 2x / 3.5x / 5x"
+                             combos: those could only ever make a track LOUDER, and the
+                             common case (game drowning out the mic, or the other way
+                             round) needs one side pulled down. Measured in dB, the unit
+                             gain is actually additive in, which also gives the scale a
+                             natural centre at 0 = leave it alone. -->
+                        <StackPanel>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="86"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="System volume" Grid.Column="0" Foreground="{StaticResource BrushTextMuted}"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12.5" VerticalAlignment="Center"/>
+                                <Slider x:Name="SliderSystemVolume" Grid.Column="1" Style="{StaticResource GainSliderStyle}"/>
+                                <TextBlock x:Name="TextSystemVolume" Grid.Column="2" Text="0.0 dB" TextAlignment="Right"
+                                           Foreground="{StaticResource BrushGoldValue}" FontFamily="{StaticResource FontData}"
+                                           FontSize="12" VerticalAlignment="Center"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="86"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Mic volume" Grid.Column="0" Foreground="{StaticResource BrushTextMuted}"
+                                           FontFamily="{StaticResource FontChrome}" FontSize="12.5" VerticalAlignment="Center"/>
+                                <Slider x:Name="SliderMicVolume" Grid.Column="1" Style="{StaticResource GainSliderStyle}"/>
+                                <TextBlock x:Name="TextMicVolume" Grid.Column="2" Text="0.0 dB" TextAlignment="Right"
+                                           Foreground="{StaticResource BrushGoldValue}" FontFamily="{StaticResource FontData}"
+                                           FontSize="12" VerticalAlignment="Center"/>
+                            </Grid>
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock Text="0 dB leaves a track untouched -- double-click a slider to reset it"
+                                           Foreground="{StaticResource BrushTextMuted}" FontFamily="{StaticResource FontChrome}"
+                                           FontSize="10.5" FontStyle="Italic" VerticalAlignment="Center"/>
+                                <Button x:Name="ButtonMergeStart" Content="Merge" Style="{StaticResource PrimaryButtonStyle}"
+                                        Width="120" Margin="28,0,0,0"/>
+                            </StackPanel>
                         </StackPanel>
                     </Border>
 
@@ -373,10 +403,25 @@
                                  16:9, so pinning a height independent of the card's actual width
                                  either letterboxes (box too wide) or crops (box too narrow).
                                  Driving it off ActualWidth keeps it exactly 16:9 and full-width. -->
-                            <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform"
-                                          HorizontalAlignment="Stretch"
-                                          LoadedBehavior="Manual" UnloadedBehavior="Manual"
-                                          ScrubbingEnabled="True"/>
+                            <Grid>
+                                <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform"
+                                              HorizontalAlignment="Stretch"
+                                              LoadedBehavior="Manual" UnloadedBehavior="Manual"
+                                              ScrubbingEnabled="True"/>
+
+                                <!-- Plays a pre-rendered copy of one crossfade, on top of the
+                                     main preview, while the playhead is inside that fade. A
+                                     crossfade is two source positions blended at once, which a
+                                     single decoder cannot produce, so the alternative to this
+                                     overlay is showing a straight cut and hoping the export
+                                     looks right. Silent by design: the element underneath keeps
+                                     playing the real audio. -->
+                                <MediaElement x:Name="MediaTrimFadePreview" Stretch="Uniform"
+                                              HorizontalAlignment="Stretch"
+                                              LoadedBehavior="Manual" UnloadedBehavior="Manual"
+                                              ScrubbingEnabled="True" Volume="0"
+                                              Visibility="Collapsed"/>
+                            </Grid>
 
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,14">
                                 <Button x:Name="ButtonTrimPlay" Content="Play" Style="{StaticResource PresetButtonStyle}" Width="90"/>
@@ -390,7 +435,16 @@
                                 <Canvas x:Name="CanvasTrimTimeline" Background="Transparent"/>
                             </Border>
 
-                            <Canvas x:Name="CanvasTrimRuler" Height="20" Background="Transparent" ClipToBounds="True"/>
+                            <!-- 26, not 20: the ruler now also carries the playhead time
+                                 badge, which sits below the ticks and is clipped at 20. -->
+                            <Canvas x:Name="CanvasTrimRuler" Height="26" Background="Transparent" ClipToBounds="True"/>
+
+                            <!-- One fade toggle per internal cut, drawn from code at the
+                                 cut's x position. Its own row rather than pills sitting on
+                                 the track: at a tight zoom two cuts can be a few pixels
+                                 apart, and a toggle overlapping the footage would be both
+                                 unreadable and impossible to hit. -->
+                            <Canvas x:Name="CanvasTrimFades" Height="38" Background="Transparent" ClipToBounds="True"/>
 
                             <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                 <TextBlock x:Name="TextTrimPieces" Text="1 piece"
@@ -405,6 +459,24 @@
                                 <TextBlock Text="ctrl + scroll to zoom" FontFamily="{StaticResource FontChrome}"
                                            FontSize="9.5" FontStyle="Italic"
                                            Foreground="{StaticResource BrushTextMuted}" Margin="16,0,0,0"/>
+                            </StackPanel>
+
+                            <!-- Fade length belongs to one cut at a time: the picker edits
+                                 whichever fade was last clicked, named in TextTrimFadeScope
+                                 so it never looks like a global setting. -->
+                            <StackPanel x:Name="PanelTrimFadeLength" Orientation="Horizontal" Margin="0,12,0,0"
+                                        Visibility="Collapsed">
+                                <TextBlock Text="FADE LENGTH" FontFamily="{StaticResource FontData}" FontSize="10"
+                                           Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="TextTrimFadeScope" Text="" FontFamily="{StaticResource FontData}"
+                                           FontSize="10" Foreground="{StaticResource BrushGoldValue}"
+                                           VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                <Button x:Name="ButtonFade025" Content="0.25s" Style="{StaticResource FadeLengthButtonStyle}" Margin="12,0,0,0"/>
+                                <Button x:Name="ButtonFade050" Content="0.5s" Style="{StaticResource FadeLengthButtonStyle}" Margin="6,0,0,0"/>
+                                <Button x:Name="ButtonFade100" Content="1s" Style="{StaticResource FadeLengthButtonStyle}" Margin="6,0,0,0"/>
+                                <TextBlock x:Name="TextTrimFadeNote" Text="" FontFamily="{StaticResource FontChrome}"
+                                           FontSize="9.5" FontStyle="Italic" Foreground="{StaticResource BrushTextMuted}"
+                                           VerticalAlignment="Center" Margin="16,0,0,0"/>
                             </StackPanel>
 
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
@@ -426,8 +498,11 @@
                                         <TextBlock Text="Ctrl+Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimExport" Content="Export" Style="{StaticResource PrimaryButtonStyle}"
-                                        Width="130" Margin="24,0,0,0" IsEnabled="False"/>
+                                <!-- Pushed to the right edge rather than sitting flush against
+                                     Undo: the editing verbs are one group, the action that
+                                     writes a file is not part of it. -->
+                                <Button x:Name="ButtonTrimExport" Content="Export Video" Style="{StaticResource HeroButtonStyle}"
+                                        Width="170" Margin="40,0,0,0" IsEnabled="False"/>
                             </StackPanel>
                         </StackPanel>
                     </Border>

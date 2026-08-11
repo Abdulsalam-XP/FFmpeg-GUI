@@ -587,6 +587,104 @@
         </Setter>
     </Style>
 
+    <!-- Export sits in a row of same-sized secondary buttons (Split / Delete / Undo), where
+         the plain accent gradient of PrimaryButtonStyle still reads as "one more button".
+         This variant carries the gold glow permanently rather than only on hover, plus a
+         lighter inner sheen and more weight, so the one action that produces a file is
+         obvious without hovering. Separate from PrimaryButtonStyle on purpose: a glow on
+         every affirmative button in the app would cancel itself out. -->
+    <Style x:Key="HeroButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryButtonStyle}">
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="Padding" Value="30,13"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <Border x:Name="Fill" CornerRadius="9" Background="{StaticResource BrushAccentGradient}"
+                                Effect="{StaticResource EffectGoldGlow}"/>
+                        <Border x:Name="Sheen" CornerRadius="9" Background="#14FFFFFF"/>
+                        <Border x:Name="Edge" CornerRadius="9" BorderThickness="1" BorderBrush="#59FFE9C4"/>
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Sheen" Property="Background" Value="#2EFFFFFF"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Sheen" Property="Background" Value="#26000000"/>
+                        </Trigger>
+                        <!-- The glow has to go when disabled: a glowing button that does
+                             nothing on click reads as broken rather than as unavailable. -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.3"/>
+                            <Setter TargetName="Fill" Property="Effect" Value="{x:Null}"/>
+                            <Setter TargetName="Edge" Property="BorderBrush" Value="#00000000"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Bipolar gain slider for the merge panel. The stock ProgressBar/Slider chrome is
+         light-themed and system-colored, same problem the ProgressBar template solves.
+         The centre notch is a fixed 50% marker rather than a tick collection: the range
+         is symmetric (-20..+20 dB), so unity gain is always dead centre, and a notch
+         there is what makes "negative" legible as "quieter than the original". -->
+    <Style x:Key="GainSliderStyle" TargetType="Slider">
+        <Setter Property="Minimum" Value="-20"/>
+        <Setter Property="Maximum" Value="20"/>
+        <Setter Property="Value" Value="0"/>
+        <Setter Property="SmallChange" Value="0.5"/>
+        <Setter Property="LargeChange" Value="3"/>
+        <Setter Property="IsSnapToTickEnabled" Value="True"/>
+        <Setter Property="TickFrequency" Value="0.5"/>
+        <Setter Property="Height" Value="26"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Slider">
+                    <Grid Background="Transparent">
+                        <Border Height="5" CornerRadius="2.5" VerticalAlignment="Center"
+                                Background="#0D1526" BorderBrush="#1FD3A24C" BorderThickness="1"/>
+                        <Border Width="1" Height="11" VerticalAlignment="Center"
+                                HorizontalAlignment="Center" Background="#4DD3A24C"/>
+                        <Track x:Name="PART_Track">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="Slider.DecreaseLarge" Opacity="0" Focusable="False"/>
+                            </Track.DecreaseRepeatButton>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="Slider.IncreaseLarge" Opacity="0" Focusable="False"/>
+                            </Track.IncreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb x:Name="Grip" Width="16" Height="16" Focusable="False">
+                                    <Thumb.Template>
+                                        <ControlTemplate TargetType="Thumb">
+                                            <Ellipse x:Name="Knob" Fill="{StaticResource BrushAccentGradient}"
+                                                     Stroke="#66FFE9C4" StrokeThickness="1"/>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Knob" Property="Effect"
+                                                            Value="{StaticResource EffectGoldGlow}"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Thumb.Template>
+                                </Thumb>
+                            </Track.Thumb>
+                        </Track>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Settings uses a real switch rather than a tick box, per the design spec. -->
     <Style x:Key="ToggleSwitchStyle" TargetType="CheckBox">
         <Setter Property="Cursor" Value="Hand"/>
@@ -930,6 +1028,109 @@
     <Style x:Key="TimelinePlayheadStyle" TargetType="Rectangle">
         <Setter Property="Fill" Value="#6FD8FF"/>
         <Setter Property="Width" Value="3"/>
+    </Style>
+
+    <!-- Grip and time badge that ride the playhead. Same cyan as the playhead line so
+         the three read as one object: a hairline alone is easy to lose against the
+         filmstrip, and the line by itself never says WHERE it is. -->
+    <Style x:Key="TimelinePlayheadGripStyle" TargetType="Polygon">
+        <Setter Property="Fill" Value="#6FD8FF"/>
+    </Style>
+
+    <Style x:Key="TimelinePlayheadBadgeStyle" TargetType="Border">
+        <Setter Property="Background" Value="#6FD8FF"/>
+        <Setter Property="CornerRadius" Value="3"/>
+        <Setter Property="Padding" Value="5,1"/>
+    </Style>
+
+    <!-- Dark text on the cyan fill: muted-grey ruler text on this background is
+         unreadable, and the badge has to stay legible at a glance while playing. -->
+    <Style x:Key="TimelinePlayheadBadgeTextStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="#06121F"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+    </Style>
+
+    <!-- Fade toggle sitting under a cut. Off is a hollow outline, on is filled cyan: the
+         same cyan as the playhead, because both mark "something happens here" as opposed
+         to the gold that marks a cut boundary itself. -->
+    <Style x:Key="TimelineFadeToggleStyle" TargetType="Border">
+        <!-- Reads as a button rather than a caption: a lit fill instead of the panel's own
+             background, a border solid enough to see against the dark card, and enough
+             padding that the hit target is a comfortable click rather than a 9px word. -->
+        <Setter Property="Background" Value="#1B2E47"/>
+        <Setter Property="BorderBrush" Value="#8C6FD8FF"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="10"/>
+        <Setter Property="Padding" Value="13,5"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#27435F"/>
+                <Setter Property="BorderBrush" Value="#6FD8FF"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="TimelineFadeToggleOnStyle" TargetType="Border" BasedOn="{StaticResource TimelineFadeToggleStyle}">
+        <Setter Property="Background" Value="#6FD8FF"/>
+        <Setter Property="BorderBrush" Value="#6FD8FF"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#95E4FF"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="TimelineFadeToggleTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="#9FE6FF"/>
+    </Style>
+
+    <!-- Hairline from the cut down to its toggle. With the toggles in their own row there
+         is otherwise nothing tying a pill to the cut it belongs to, which matters as soon
+         as there is more than one. -->
+    <Style x:Key="TimelineFadeStemStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="#596FD8FF"/>
+        <Setter Property="Width" Value="1"/>
+    </Style>
+
+    <Style x:Key="TimelineFadeToggleTextOnStyle" TargetType="TextBlock" BasedOn="{StaticResource TimelineFadeToggleTextStyle}">
+        <Setter Property="Foreground" Value="#06121F"/>
+    </Style>
+
+    <!-- Small segmented picker for the fade length. Selection is set from code by
+         swapping to the "selected" variant, the same approach the timeline pieces use. -->
+    <Style x:Key="FadeLengthButtonStyle" TargetType="Button">
+        <Setter Property="Foreground" Value="{StaticResource BrushTextBody}"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Padding" Value="12,4"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Shell" CornerRadius="6" Background="#0D1526"
+                            BorderBrush="#1FD3A24C" BorderThickness="1">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Shell" Property="BorderBrush" Value="#59D3A24C"/>
+                        </Trigger>
+                        <Trigger Property="Tag" Value="selected">
+                            <Setter TargetName="Shell" Property="Background" Value="#1FD3A24C"/>
+                            <Setter TargetName="Shell" Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+                            <Setter Property="Foreground" Value="{StaticResource BrushGoldValue}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style x:Key="TimelineRulerTickStyle" TargetType="Rectangle">

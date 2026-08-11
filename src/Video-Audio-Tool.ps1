@@ -233,6 +233,9 @@ Test-ScriptUpdates
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 $errorBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0xE0, 0x6C, 0x6C))
+# Finished-successfully green. Distinct from both the error red and the muted grey every
+# other panel message uses, so "it worked, here is the file" is not just more grey text.
+$successBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x7A, 0xD9, 0xA5))
 
 try {
     $ctx = Initialize-MainWindow -ScriptRoot $scriptRoot
@@ -282,9 +285,15 @@ try {
     $mutedBrush = $ctx.Window.FindResource("BrushTextMuted")
 
     function Show-PanelMessage {
-        param($Block, [string]$Text, [switch]$IsError)
+        param($Block, [string]$Text, [switch]$IsError, [switch]$IsSuccess)
         $Block.Text = $Text
-        $Block.Foreground = if ($IsError) { $errorBrush } else { $mutedBrush }
+        # Error wins over success if both are somehow passed -- a wrong "done" is worse
+        # than a redundant red.
+        $Block.Foreground = if ($IsError) { $errorBrush } elseif ($IsSuccess) { $successBrush } else { $mutedBrush }
+        # Output paths are long and the meta blocks are single-line by default, so a
+        # finished-job message would otherwise be silently truncated at the card edge --
+        # cutting off the very thing the message exists to show.
+        $Block.TextWrapping = "Wrap"
     }
 
     # Every transition in this app runs 320ms with a CubicEase EaseInOut, from here.
@@ -571,6 +580,25 @@ try {
         }.GetNewClosure())
     }
 
+    # The end-of-job report: what happened, and where the file actually is. Size is read
+    # off disk rather than trusted from the job, so a zero-byte output is visible as such
+    # instead of being reported as a success.
+    function Show-JobDone {
+        param($Block, [string]$OutputPath)
+        if (-not $Block) { return }
+        $size = ""
+        try {
+            $bytes = (Get-Item -LiteralPath $OutputPath -ErrorAction Stop).Length
+            $size = " ({0:N1} MB)" -f ($bytes / 1MB)
+        } catch { }
+        # Folder and filename on separate lines: the full path on one line wraps
+        # mid-directory and is far harder to read back than "here, this file".
+        Show-PanelMessage -Block $Block -IsSuccess -Text (
+            "Done -- saved{0}`n{1}`n{2}" -f $size,
+            [System.IO.Path]::GetFileName($OutputPath),
+            (Split-Path $OutputPath -Parent))
+    }
+
     # Both the source and the output are recorded, as separate rows: the two common
     # follow-ups are running a different job on the same original, and chaining a
     # second job onto the result. Order matters -- the output is added last so it
@@ -584,6 +612,18 @@ try {
         Add-RecentFile -Path $SourcePath -Job $JobName -NoSave
         Add-RecentFile -Path $OutputPath -Job $JobName
         Update-AllRecentLists
+
+        # A finished job used to announce itself only as "100.0%", which does not say
+        # whether the file was actually written or where it went. Looked up by job name
+        # rather than passed in by each call site: these blocks are declared further down
+        # this same scope, so a hashtable built here would capture $null.
+        $block = switch ($JobName) {
+            "Compress"    { $textCompressMeta }
+            "Merge Audio" { $textMergeMeta }
+            "Trim"        { $textTrimMeta }
+            default       { $null }
+        }
+        if ($block) { Show-JobDone -Block $block -OutputPath $OutputPath }
     }
 
     # ---------------- Compress ----------------
@@ -740,17 +780,48 @@ try {
 
     Register-Dropzone -Button $panelMerge.FindName("ButtonMergeBrowse") -OnFile $onMergeFile
 
+    # Gain sliders, in dB. Both directions: the old combos could only amplify.
+    $sliderSystemVolume = $panelMerge.FindName("SliderSystemVolume")
+    $sliderMicVolume    = $panelMerge.FindName("SliderMicVolume")
+    $textSystemVolume   = $panelMerge.FindName("TextSystemVolume")
+    $textMicVolume      = $panelMerge.FindName("TextMicVolume")
+
+    # Older XAML has the ComboBoxes instead, and a stale MainWindow.xaml is a real case
+    # here -- see Update-RecentList. Everything below is skipped rather than crashing
+    # startup on .Add_ValueChanged against $null.
+    $script:MergeSlidersReady = ($null -ne $sliderSystemVolume -and $null -ne $sliderMicVolume)
+
+    if ($script:MergeSlidersReady) {
+        # An explicit sign on the positive side: "6.0 dB" and "-6.0 dB" sitting in the
+        # same column are easy to misread at a glance, "+6.0 dB" is not.
+        $formatGain = {
+            param($Value)
+            if ($Value -gt 0) { "+{0:N1} dB" -f $Value } else { "{0:N1} dB" -f $Value }
+        }
+
+        $sliderSystemVolume.Add_ValueChanged({
+            $textSystemVolume.Text = & $formatGain $sliderSystemVolume.Value
+        }.GetNewClosure())
+        $sliderMicVolume.Add_ValueChanged({
+            $textMicVolume.Text = & $formatGain $sliderMicVolume.Value
+        }.GetNewClosure())
+
+        # Double-click to return to unity. A 0.5dB-snapped slider is fiddly to land back
+        # on exactly 0 by dragging, and 0 is the value most sessions want on one of the
+        # two tracks.
+        $sliderSystemVolume.Add_MouseDoubleClick({ $sliderSystemVolume.Value = 0 }.GetNewClosure())
+        $sliderMicVolume.Add_MouseDoubleClick({ $sliderMicVolume.Value = 0 }.GetNewClosure())
+    }
+
     $panelMerge.FindName("ButtonMergeStart").Add_Click({
         if (-not $script:MergeInputFile) {
             Show-PanelMessage -Block $textMergeMeta -Text "Pick a video first." -IsError
             return
         }
-        # Index-aligned with the ComboBox items in MainWindow.xaml.
-        $volumeMap = @(1.0, 2.0, 3.5, 5.0)
-        $sysIndex = [Math]::Max(0, $panelMerge.FindName("ComboSystemVolume").SelectedIndex)
-        $micIndex = [Math]::Max(0, $panelMerge.FindName("ComboMicVolume").SelectedIndex)
+        $systemDb = if ($script:MergeSlidersReady) { $sliderSystemVolume.Value } else { 0 }
+        $micDb    = if ($script:MergeSlidersReady) { $sliderMicVolume.Value } else { 0 }
         Register-Job (Merge-AudioStreamsAsync -Context $ctx -InputVideo $script:MergeInputFile `
-            -SystemVolume $volumeMap[$sysIndex] -MicVolume $volumeMap[$micIndex] `
+            -SystemVolumeDb $systemDb -MicVolumeDb $micDb `
             -OnFinished { param($src, $out) & $recordJob "Merge Audio" $src $out }.GetNewClosure())
     })
 
@@ -759,10 +830,20 @@ try {
 
     $cardTrimEditor      = $panelTrim.FindName("CardTrimEditor")
     $mediaTrimPreview    = $panelTrim.FindName("MediaTrimPreview")
+    $mediaTrimFadePreview = $panelTrim.FindName("MediaTrimFadePreview")
     $buttonTrimPlay      = $panelTrim.FindName("ButtonTrimPlay")
     $textTrimPosition    = $panelTrim.FindName("TextTrimPosition")
     $canvasTrimTimeline  = $panelTrim.FindName("CanvasTrimTimeline")
     $canvasTrimRuler     = $panelTrim.FindName("CanvasTrimRuler")
+    $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
+    $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
+    $textTrimFadeNote    = $panelTrim.FindName("TextTrimFadeNote")
+    $textTrimFadeScope   = $panelTrim.FindName("TextTrimFadeScope")
+    $fadeLengthButtons   = @{
+        0.25 = $panelTrim.FindName("ButtonFade025")
+        0.5  = $panelTrim.FindName("ButtonFade050")
+        1.0  = $panelTrim.FindName("ButtonFade100")
+    }
     $textTrimPieces      = $panelTrim.FindName("TextTrimPieces")
     $textTrimSelection   = $panelTrim.FindName("TextTrimSelection")
     $textTrimAccuracy    = $panelTrim.FindName("TextTrimAccuracy")
@@ -775,6 +856,21 @@ try {
     # lookup above is $null and the first handler to fire takes the app down. Same guard
     # as Update-RecentList carries, for the same reason.
     $script:TrimEditorReady = ($null -ne $cardTrimEditor -and $null -ne $canvasTrimTimeline -and $null -ne $mediaTrimPreview)
+
+    # Crossfade state. Declared here, before the first Update-TrimTimeline can run during
+    # initial layout: the drawing code reads both on every pass, including the one that
+    # fires before any file has been picked.
+    # Boundary source time -> that cut's fade length in seconds. $script:TrimFadeSeconds
+    # is only the default for the next fade added, not a setting the existing ones follow.
+    $script:TrimFades = @{}
+    $script:TrimFadeSeconds = 0.5
+    $script:TrimActiveFade = $null
+    # Rendered crossfades for the preview: key -> file path, plus the in-flight set and
+    # the key currently on screen so the overlay is only re-sourced when it really changes.
+    $script:TrimFadeProxies = @{}
+    $script:TrimFadeProxyPending = @{}
+    $script:TrimFadeProxyDir = $null
+    $script:TrimFadeOverlayKey = $null
 
     function Format-TrimTime {
         param([double]$Seconds)
@@ -913,6 +1009,91 @@ try {
         $script:TrimViewSpan = $Span
     }
 
+    # Fades are stored against the SOURCE time of the boundary, not the index of the cut
+    # they sit on. Indexes shift the moment anything is split or deleted, which would
+    # silently move a fade onto a different cut; a source time is the one thing about a
+    # boundary that does not move. Boundaries that stop existing leave a stale key behind,
+    # which is harmless -- Get-TrimFadeFlags only ever reads keys for boundaries that are
+    # actually there, so a stale one is invisible unless the identical cut comes back.
+    function Get-TrimFadeKey {
+        param([double]$SourceSeconds)
+        return ("{0:N3}" -f $SourceSeconds)
+    }
+
+    function Test-TrimFade {
+        param([double]$SourceSeconds)
+        return $script:TrimFades.ContainsKey((Get-TrimFadeKey -SourceSeconds $SourceSeconds))
+    }
+
+    # Each cut carries its own length, so a montage can dissolve slowly in one place and
+    # snap in another. $script:TrimFadeSeconds is only the default applied to the NEXT
+    # fade turned on, not a global setting the existing ones follow.
+    function Get-TrimFadeLength {
+        param([double]$SourceSeconds)
+        $key = Get-TrimFadeKey -SourceSeconds $SourceSeconds
+        if ($script:TrimFades.ContainsKey($key)) { return [double]$script:TrimFades[$key] }
+        return 0.0
+    }
+
+    # Write-through, same reason as Set-TrimSelection: the toggle click handlers are
+    # inside GetNewClosure()'d blocks, where a bare $script: write lands in the closure's
+    # own private module and the drawing code never sees it.
+    function Set-TrimFade {
+        param([double]$SourceSeconds, [bool]$Enabled, [double]$Seconds = 0)
+        $key = Get-TrimFadeKey -SourceSeconds $SourceSeconds
+        if ($Enabled) {
+            $length = if ($Seconds -gt 0) { $Seconds } else { $script:TrimFadeSeconds }
+            $script:TrimFades[$key] = $length
+        } else {
+            $script:TrimFades.Remove($key)
+        }
+    }
+
+    # Which fade the length picker edits. Set by clicking a pill; cleared when that fade
+    # is switched off, since there would be nothing left to apply a length to.
+    function Set-TrimActiveFade {
+        param([double]$SourceSeconds, [bool]$HasFade)
+        $script:TrimActiveFade = if ($HasFade) { $SourceSeconds } else { $null }
+    }
+
+    # One length per internal boundary, in piece order -- the shape Export-CutListAsync
+    # wants. 0 means a plain cut at that boundary.
+    function Get-TrimFadeLengths {
+        param([object[]]$Pieces)
+        $list = @($Pieces)
+        $lengths = @()
+        for ($i = 0; $i -lt $list.Count - 1; $i++) {
+            $lengths += [double](Get-TrimFadeLength -SourceSeconds $list[$i].End)
+        }
+        # [double[]] cast, not a bare array: Export-CutListAsync types the parameter, and
+        # an empty untyped @() would bind as $null there rather than an empty array.
+        return ,([double[]]$lengths)
+    }
+
+    # A crossfade is built from footage the two neighbouring pieces give up, so a piece
+    # has to be long enough to donate its neighbours' fade lengths. Reported before the
+    # export starts rather than letting ffmpeg produce a zero-length segment and a file
+    # that is quietly missing a piece.
+    function Get-TrimFadeProblem {
+        param([object[]]$Pieces)
+        $list = @($Pieces)
+        # No @() wrapper -- see the note at the export handler.
+        $lengths = Get-TrimFadeLengths -Pieces $list
+        for ($i = 0; $i -lt $list.Count; $i++) {
+            $needed = 0.0
+            if ($i -gt 0 -and $i - 1 -lt $lengths.Count) { $needed += $lengths[$i - 1] }
+            if ($i -lt $lengths.Count) { $needed += $lengths[$i] }
+            if ($needed -le 0) { continue }
+            $length = $list[$i].End - $list[$i].Start
+            # A piece reduced to nothing would vanish from the export entirely; require a
+            # little real footage to survive on either side of what it donates.
+            if ($length -le $needed + 0.05) {
+                return ("Piece {0} is only {1:N2}s long and cannot give up {2:N2}s to its fades. Shorten those fades or turn one of them off." -f ($i + 1), $length, $needed)
+            }
+        }
+        return $null
+    }
+
     # Rebuilt from scratch on every change: a handful of pieces, so there is nothing to
     # gain from diffing and no stale-element state to get wrong.
     function Update-TrimTimeline {
@@ -952,15 +1133,80 @@ try {
             $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
             $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
             $width = [math]::Max(1, $x2 - $x1)
+            $isSelected = ($i -eq $script:TrimSelected)
 
-            $rect = New-Object System.Windows.Shapes.Rectangle
-            $styleName = if ($i -eq $script:TrimSelected) { "TimelinePieceSelectedStyle" } else { "TimelinePieceStyle" }
-            $rect.Style = $ctx.Window.FindResource($styleName)
-            $rect.Width = $width
-            $rect.Height = $h - 8
-            $rect.RadiusX = 4; $rect.RadiusY = 4
-            [System.Windows.Controls.Canvas]::SetLeft($rect, $x1)
-            [System.Windows.Controls.Canvas]::SetTop($rect, 4)
+            # A Border+Grid of Images instead of a flat Rectangle, so the piece shows the
+            # actual footage (a small filmstrip) rather than a solid color block. The
+            # style's own Fill color is kept as the Border's Background -- it shows through
+            # while thumbnails are still loading, and behind any letterboxing from a
+            # thumbnail whose aspect ratio doesn't exactly fill its slot.
+            $container = New-Object System.Windows.Controls.Border
+            $styleName = if ($isSelected) { "TimelinePieceSelectedStyle" } else { "TimelinePieceStyle" }
+            $pieceStyle = $ctx.Window.FindResource($styleName)
+            $fillSetter = $pieceStyle.Setters | Where-Object { $_.Property.Name -eq "Fill" }
+            $strokeSetter = $pieceStyle.Setters | Where-Object { $_.Property.Name -eq "Stroke" }
+            $strokeWidthSetter = $pieceStyle.Setters | Where-Object { $_.Property.Name -eq "StrokeThickness" }
+            $container.Background = $fillSetter.Value
+            $container.BorderBrush = $strokeSetter.Value
+            $container.BorderThickness = New-Object System.Windows.Thickness($strokeWidthSetter.Value)
+            $container.CornerRadius = New-Object System.Windows.CornerRadius(4)
+            $container.ClipToBounds = $true
+            $container.Width = $width
+            $container.Height = $h - 8
+            [System.Windows.Controls.Canvas]::SetLeft($container, $x1)
+            [System.Windows.Controls.Canvas]::SetTop($container, 4)
+
+            # Fixed-width thumbnail slots laid out across the VISIBLE slice of the piece,
+            # not N stretched slots across the whole piece.
+            #
+            # The whole-piece version is what made zoom look broken: zooming does not
+            # change a piece's source range, only how many pixels it is drawn across, so
+            # at a 32x zoom the piece is ~25,000px wide while the canvas still shows 793
+            # of them. Six thumbnails spread over that width meant the viewport held a
+            # fraction of a single frame, blown up -- the timeline appeared to zoom into
+            # one image instead of resolving into more frames.
+            #
+            # Anchoring the slots to the viewport instead makes the count depend on
+            # visible pixels, so zooming in genuinely subdivides: the same 793px always
+            # holds ~8 frames, and each one is sampled from a correspondingly narrower
+            # slice of the source. It also caps the work -- the visible region can never
+            # exceed the canvas, so no zoom level can ask for more than ~9 thumbnails.
+            $inner = New-Object System.Windows.Controls.Canvas
+            $visibleLeft = [math]::Max($x1, 0)
+            $visibleRight = [math]::Min($x2, $canvasTrimTimeline.ActualWidth)
+            $slotWidth = 96
+            if ($visibleRight -gt $visibleLeft) {
+                $slotCount = [math]::Max(1, [int][math]::Ceiling(($visibleRight - $visibleLeft) / $slotWidth))
+                for ($t = 0; $t -lt $slotCount; $t++) {
+                    $slotLeft = $visibleLeft + ($t * $slotWidth)
+                    # The last slot is a remainder, not a full slot.
+                    $thisWidth = [math]::Min($slotWidth, $visibleRight - $slotLeft)
+                    if ($thisWidth -le 0) { break }
+
+                    $img = New-Object System.Windows.Controls.Image
+                    $img.Stretch = "UniformToFill"
+                    $img.Width = $thisWidth
+                    $img.Height = $h - 8
+                    # Positioned relative to the container, which starts at $x1 -- and
+                    # $x1 is negative whenever the piece begins left of the viewport.
+                    [System.Windows.Controls.Canvas]::SetLeft($img, $slotLeft - $x1)
+                    [System.Windows.Controls.Canvas]::SetTop($img, 0)
+
+                    # Slot midpoint, viewport pixels -> timeline seconds -> source seconds.
+                    # Thumbnails are about the real file; the pixels they are drawn into
+                    # are timeline (compacted) space.
+                    $slotMidTimeline = Convert-TrimXToTime -X ($slotLeft + $thisWidth / 2)
+                    $srcTime = Convert-TrimTimelineToSource -TimelineSeconds $slotMidTimeline -TimelinePieces $timelinePieces
+                    $key = "{0:N2}" -f $srcTime
+                    if ($script:TrimThumbCache.ContainsKey($key)) {
+                        $img.Source = $script:TrimThumbCache[$key]
+                    } else {
+                        Request-TrimThumbnail -File $script:TrimInputFile -Seconds $srcTime
+                    }
+                    $inner.Children.Add($img) | Out-Null
+                }
+            }
+            $container.Child = $inner
 
             # GetNewClosure is required: without it every piece captures the loop
             # variable's final value and clicking any piece selects the last one. The
@@ -971,14 +1217,14 @@ try {
             # could not be scrubbed at all. A click both selects the piece and moves the
             # playhead to where it landed.
             $index = $i
-            $rect.Add_MouseLeftButtonDown({
+            $container.Add_MouseLeftButtonDown({
                 Set-TrimSelection -Index $index
                 $buttonTrimDelete.IsEnabled = $true
                 Update-TrimSelectionText
                 Update-TrimTimeline
             }.GetNewClosure())
 
-            $canvasTrimTimeline.Children.Add($rect) | Out-Null
+            $canvasTrimTimeline.Children.Add($container) | Out-Null
 
             # A cut line on every internal boundary.
             if ($i -gt 0) {
@@ -993,13 +1239,28 @@ try {
 
         $playheadTimeline = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $timelinePieces
         $playX = Convert-TrimTimeToX -Seconds $playheadTimeline
-        if ($playX -ge 0 -and $playX -le $canvasTrimTimeline.ActualWidth) {
+        $playheadVisible = ($playX -ge 0 -and $playX -le $canvasTrimTimeline.ActualWidth)
+        if ($playheadVisible) {
             $head = New-Object System.Windows.Shapes.Rectangle
             $head.Style = $ctx.Window.FindResource("TimelinePlayheadStyle")
             $head.Height = $h
             [System.Windows.Controls.Canvas]::SetLeft($head, $playX - 1)
             [System.Windows.Controls.Canvas]::SetTop($head, 0)
             $canvasTrimTimeline.Children.Add($head) | Out-Null
+
+            # Downward wedge at the top of the track. The 3px line alone disappears against
+            # the filmstrip thumbnails; this gives the playhead a shape the eye can find
+            # while the frames underneath it are changing.
+            $grip = New-Object System.Windows.Shapes.Polygon
+            $grip.Style = $ctx.Window.FindResource("TimelinePlayheadGripStyle")
+            $points = New-Object System.Windows.Media.PointCollection
+            $points.Add((New-Object System.Windows.Point(0, 0)))
+            $points.Add((New-Object System.Windows.Point(11, 0)))
+            $points.Add((New-Object System.Windows.Point(5.5, 7)))
+            $grip.Points = $points
+            [System.Windows.Controls.Canvas]::SetLeft($grip, $playX - 5.5)
+            [System.Windows.Controls.Canvas]::SetTop($grip, 0)
+            $canvasTrimTimeline.Children.Add($grip) | Out-Null
         }
 
         # Ruler: ticks + compact time labels below the track, the only way to read a
@@ -1010,6 +1271,28 @@ try {
             $canvasTrimRuler.Children.Clear()
             $rulerWidth = $canvasTrimTimeline.ActualWidth
             if ($rulerWidth -gt 0 -and $script:TrimViewSpan -gt 0) {
+                # Built (but not added) before the ruler labels so its real width is known:
+                # a label drawn underneath the badge is unreadable, so the range the badge
+                # occupies has to be reserved before any label is placed.
+                $badge = $null
+                $badgeLeft = 0.0
+                $badgeRight = -1.0
+                if ($playheadVisible) {
+                    $badge = New-Object System.Windows.Controls.Border
+                    $badge.Style = $ctx.Window.FindResource("TimelinePlayheadBadgeStyle")
+                    $badgeText = New-Object System.Windows.Controls.TextBlock
+                    $badgeText.Style = $ctx.Window.FindResource("TimelinePlayheadBadgeTextStyle")
+                    $badgeText.Text = Format-TrimTime $playheadTimeline
+                    $badge.Child = $badgeText
+                    $badge.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+                    $badgeWidth = $badge.DesiredSize.Width
+                    # Centred on the playhead, but clamped inside the canvas: at 0:00 and at
+                    # the very end an uncentred badge would hang off the edge and be clipped
+                    # exactly when the time still needs reading.
+                    $badgeLeft = [math]::Max(0, [math]::Min($rulerWidth - $badgeWidth, $playX - $badgeWidth / 2))
+                    $badgeRight = $badgeLeft + $badgeWidth
+                }
+
                 $interval = Get-TrimRulerInterval -ViewSpanSeconds $script:TrimViewSpan -CanvasWidth $rulerWidth
                 $viewEnd = $script:TrimViewStart + $script:TrimViewSpan
                 $tickTime = [math]::Ceiling($script:TrimViewStart / $interval) * $interval
@@ -1027,19 +1310,271 @@ try {
                         $label.FontFamily = $ctx.Window.FindResource("FontData")
                         $label.FontSize = 11
                         $label.Foreground = $ctx.Window.FindResource("BrushTextMuted")
-                        [System.Windows.Controls.Canvas]::SetLeft($label, $tx + 3)
-                        [System.Windows.Controls.Canvas]::SetTop($label, 7)
-                        $canvasTrimRuler.Children.Add($label) | Out-Null
+                        $label.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+                        $labelLeft = $tx + 3
+                        $labelRight = $labelLeft + $label.DesiredSize.Width
+                        # 4px of air on each side, so a label that merely touches the badge
+                        # is dropped too rather than sitting flush against it.
+                        $collides = ($labelLeft -lt $badgeRight + 4 -and $labelRight -gt $badgeLeft - 4)
+                        if (-not $collides) {
+                            [System.Windows.Controls.Canvas]::SetLeft($label, $labelLeft)
+                            [System.Windows.Controls.Canvas]::SetTop($label, 7)
+                            $canvasTrimRuler.Children.Add($label) | Out-Null
+                        }
                     }
                     $tickTime += $interval
                 }
+
+                # Added last so it paints over the ticks it straddles.
+                if ($badge) {
+                    [System.Windows.Controls.Canvas]::SetLeft($badge, $badgeLeft)
+                    [System.Windows.Controls.Canvas]::SetTop($badge, 4)
+                    $canvasTrimRuler.Children.Add($badge) | Out-Null
+                }
             }
         }
+
+        Update-TrimFadeToggles -Pieces $pieces -TimelinePieces $timelinePieces
 
         $textTrimPieces.Text = if ($pieces.Count -eq 1) { "1 piece" } else { "$($pieces.Count) pieces" }
         # The input-file test is not redundant with the count: it keeps Export disabled
         # during the first layout pass, before anything has been picked.
         $buttonTrimExport.IsEnabled = ($pieces.Count -gt 0 -and $null -ne $script:TrimInputFile)
+    }
+
+    # One toggle per internal cut, in its own row under the ruler, at the cut's x.
+    function Update-TrimFadeToggles {
+        param([object[]]$Pieces, [object[]]$TimelinePieces)
+        if ($null -eq $canvasTrimFades) { return }
+        $canvasTrimFades.Children.Clear()
+
+        $list = @($Pieces)
+        $tl = @($TimelinePieces)
+        # The whole row, including the length picker, is pointless with nothing to fade.
+        if ($null -ne $panelTrimFadeLength) {
+            $panelTrimFadeLength.Visibility = if ($list.Count -gt 1) { "Visible" } else { "Collapsed" }
+        }
+        if ($list.Count -lt 2) { return }
+
+        $fadedCount = 0
+        $fadedTotal = 0.0
+        # Right edge of the last toggle drawn. Two cuts can sit a few pixels apart at a
+        # loose zoom, and overlapping toggles are unhittable -- the later one is dropped
+        # rather than stacked, and zooming in separates them.
+        $lastRight = [double]::NegativeInfinity
+
+        for ($i = 1; $i -lt $list.Count; $i++) {
+            $boundarySource = [double]$list[$i - 1].End
+            $isOn = Test-TrimFade -SourceSeconds $boundarySource
+            $thisLength = Get-TrimFadeLength -SourceSeconds $boundarySource
+            $isActive = ($null -ne $script:TrimActiveFade -and
+                         [math]::Abs($script:TrimActiveFade - $boundarySource) -lt 0.0005)
+            if ($isOn) {
+                $fadedCount++
+                $fadedTotal += $thisLength
+                # Rendered here rather than on the toggle click so it also covers the
+                # cases that change what a fade looks like without anyone clicking a
+                # toggle: a different fade length, an undo, or a delete that moves which
+                # piece a surviving fade now blends into.
+                Request-TrimFadeProxy -OutgoingEnd $boundarySource `
+                    -IncomingStart ([double]$list[$i].Start) -FadeSeconds $thisLength
+            }
+
+            $x = Convert-TrimTimeToX -Seconds $tl[$i].TimelineStart
+            if ($x -lt 0 -or $x -gt $canvasTrimTimeline.ActualWidth) { continue }
+
+            $toggle = New-Object System.Windows.Controls.Border
+            $toggle.Style = $ctx.Window.FindResource(
+                $(if ($isOn) { "TimelineFadeToggleOnStyle" } else { "TimelineFadeToggleStyle" }))
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Style = $ctx.Window.FindResource(
+                $(if ($isOn) { "TimelineFadeToggleTextOnStyle" } else { "TimelineFadeToggleTextStyle" }))
+            # The length rides on the pill once it is on: it is the number that decides how
+            # much footage the cut gives up, and reading it off a separate picker means
+            # looking away from the thing it applies to.
+            $label.Text = if ($isOn) { "FADE {0:0.##}s" -f $thisLength } else { "+ FADE" }
+            $toggle.Child = $label
+            # The active fade is the one the length picker edits, so it has to be visible
+            # which that is -- otherwise clicking 1s looks like it did nothing, or worse,
+            # like it changed a different cut.
+            if ($isOn -and $isActive) {
+                $toggle.BorderBrush = $ctx.Window.FindResource("BrushGoldValue")
+                $toggle.BorderThickness = New-Object System.Windows.Thickness(2)
+            }
+            $toggle.Measure((New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+            $toggleWidth = $toggle.DesiredSize.Width
+            $left = $x - ($toggleWidth / 2)
+            if ($left -lt $lastRight + 4) { continue }
+            $lastRight = $left + $toggleWidth
+
+            $stem = New-Object System.Windows.Shapes.Rectangle
+            $stem.Style = $ctx.Window.FindResource("TimelineFadeStemStyle")
+            $stem.Height = 7
+            [System.Windows.Controls.Canvas]::SetLeft($stem, $x)
+            [System.Windows.Controls.Canvas]::SetTop($stem, 0)
+            $canvasTrimFades.Children.Add($stem) | Out-Null
+
+            [System.Windows.Controls.Canvas]::SetLeft($toggle, $left)
+            [System.Windows.Controls.Canvas]::SetTop($toggle, 7)
+
+            # GetNewClosure is required for the same reason the piece handlers need it:
+            # without it every toggle captures the loop variable's final value and clicking
+            # any of them flips the last cut.
+            $thisBoundary = $boundarySource
+            $thisState = $isOn
+            $toggle.Add_MouseLeftButtonDown({
+                $nowOn = -not $thisState
+                Set-TrimFade -SourceSeconds $thisBoundary -Enabled $nowOn
+                # Clicking a pill also aims the length picker at that cut, so the two
+                # controls are never out of step with each other.
+                Set-TrimActiveFade -SourceSeconds $thisBoundary -HasFade $nowOn
+                Sync-TrimFadeLengthButtons
+                Update-TrimTimeline
+                # Turning a fade OFF has to take the overlay down straight away; turning
+                # one on is picked up by Set-TrimFadeProxy once the render lands.
+                Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+            }.GetNewClosure())
+
+            $canvasTrimFades.Children.Add($toggle) | Out-Null
+        }
+
+        if ($null -ne $textTrimFadeNote) {
+            $textTrimFadeNote.Text = if ($fadedCount -gt 0) {
+                # Summed per fade rather than count x one length: each cut carries its own
+                # now. The length change is the surprising part of a crossfade, so it is
+                # stated up front rather than discovered after the export.
+                "{0} faded cut{1} -- export ends up {2:N2}s shorter" -f `
+                    $fadedCount, $(if ($fadedCount -eq 1) { "" } else { "s" }), $fadedTotal
+            } else {
+                "click FADE under a cut to blend across it"
+            }
+        }
+
+        # Says out loud which cut the picker is pointed at. Without this the buttons look
+        # like a global setting, which is exactly what they used to be.
+        if ($null -ne $textTrimFadeScope) {
+            $textTrimFadeScope.Text = if ($null -ne $script:TrimActiveFade) {
+                "for the cut at {0}" -f (Format-TrimTime (Convert-TrimSourceToTimeline `
+                    -SourceSeconds $script:TrimActiveFade -TimelinePieces $tl))
+            } else {
+                "for the next fade you add"
+            }
+        }
+    }
+
+    # ---- Fade preview proxies ----
+    #
+    # Keyed on everything that changes what the render looks like: both sides of the cut
+    # and the fade length. Changing the length, or moving the cut, therefore asks for a
+    # different file rather than silently playing the old render.
+    function Get-TrimFadeProxyKey {
+        param([double]$OutgoingEnd, [double]$IncomingStart, [double]$FadeSeconds)
+        return ("{0:N3}_{1:N3}_{2:N2}" -f $OutgoingEnd, $IncomingStart, $FadeSeconds)
+    }
+
+    # Write-through, same reason as Set-TrimThumbnail: called from a closured timer tick.
+    function Set-TrimFadeProxy {
+        param([string]$Key, [string]$FilePath)
+        $script:TrimFadeProxies[$Key] = $FilePath
+        $script:TrimFadeProxyPending.Remove($Key)
+        # A render started while the playhead was already parked inside that fade -- the
+        # common case, since turning a fade on is usually done right where you are looking.
+        # Nothing else would put the overlay up until playback moved.
+        Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+    }
+
+    function Request-TrimFadeProxy {
+        param([double]$OutgoingEnd, [double]$IncomingStart, [double]$FadeSeconds)
+        if (-not $script:TrimInputFile -or -not $script:TrimFadeProxyDir) { return }
+        $key = Get-TrimFadeProxyKey -OutgoingEnd $OutgoingEnd -IncomingStart $IncomingStart -FadeSeconds $FadeSeconds
+        if ($script:TrimFadeProxies.ContainsKey($key) -or $script:TrimFadeProxyPending.ContainsKey($key)) { return }
+        # One at a time. Unlike thumbnails these are real encodes, and toggling a few
+        # fades in a row would otherwise start several 1440p reads at once and stall the
+        # very playback they exist to improve. Whatever is skipped gets asked for again
+        # on the next redraw.
+        if ($script:TrimFadeProxyPending.Count -ge 1) { return }
+        $script:TrimFadeProxyPending[$key] = $true
+
+        $outFile = Join-Path $script:TrimFadeProxyDir ("fade{0}.mp4" -f ($key -replace '[^\d]', ''))
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $file, $outgoing, $incoming, $fade, $outFile)
+            Import-Module $modulePath -Force
+            Export-TrimFadeProxy -InputFile $file -OutgoingEnd $outgoing -IncomingStart $incoming `
+                -FadeSeconds $fade -OutputFile $outFile
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($script:TrimInputFile).
+           AddArgument($OutgoingEnd).AddArgument($IncomingStart).AddArgument($FadeSeconds).AddArgument($outFile) | Out-Null
+
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(150)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            try { $ps.EndInvoke($handle) | Out-Null } catch { }
+            $ps.Dispose()
+            if (Test-Path $outFile) { Set-TrimFadeProxy -Key $key -FilePath $outFile }
+            else { $script:TrimFadeProxyPending.Remove($key) }
+        }.GetNewClosure())
+        $watcher.Start()
+    }
+
+    # The fade the playhead is currently inside, or $null. A fade is rendered from the
+    # outgoing piece's last N seconds, so that window in SOURCE space is exactly where the
+    # export would be showing the blend. Named for the playhead, not "active", to keep it
+    # distinct from $script:TrimActiveFade, which is the unrelated question of which fade
+    # the length picker edits.
+    function Get-TrimFadeAtPlayhead {
+        param([double]$SourceSeconds)
+        if (-not $script:TrimEditorReady) { return $null }
+        $list = @($script:TrimCutList)
+        for ($i = 0; $i -lt $list.Count - 1; $i++) {
+            $end = [double]$list[$i].End
+            $length = Get-TrimFadeLength -SourceSeconds $end
+            if ($length -le 0) { continue }
+            $start = $end - $length
+            if ($SourceSeconds -ge $start -and $SourceSeconds -lt $end) {
+                $key = Get-TrimFadeProxyKey -OutgoingEnd $end -IncomingStart ([double]$list[$i + 1].Start) -FadeSeconds $length
+                return @{
+                    Key    = $key
+                    Path   = $script:TrimFadeProxies[$key]
+                    Offset = $SourceSeconds - $start
+                }
+            }
+        }
+        return $null
+    }
+
+    # Swaps the rendered fade over the live preview while the playhead is inside a fade,
+    # and takes it away again on the way out. Called from the playback tick and from
+    # scrubbing, so a paused scrub into a fade shows the blended frame too.
+    function Update-TrimFadeOverlay {
+        param([double]$SourceSeconds)
+        if ($null -eq $mediaTrimFadePreview) { return }
+        $active = Get-TrimFadeAtPlayhead -SourceSeconds $SourceSeconds
+
+        if (-not $active -or -not $active.Path) {
+            # Only touch the element when something actually changes: this runs 20x a
+            # second, and reassigning Source or calling Stop() every tick restarts the
+            # decoder continuously.
+            if ($script:TrimFadeOverlayKey) {
+                $mediaTrimFadePreview.Pause()
+                $mediaTrimFadePreview.Visibility = "Collapsed"
+                $script:TrimFadeOverlayKey = $null
+            }
+            return
+        }
+
+        if ($script:TrimFadeOverlayKey -ne $active.Key) {
+            $mediaTrimFadePreview.Source = New-Object System.Uri($active.Path)
+            $mediaTrimFadePreview.Visibility = "Visible"
+            $script:TrimFadeOverlayKey = $active.Key
+        }
+        $mediaTrimFadePreview.Position = [timespan]::FromSeconds($active.Offset)
+        # Follows the main element rather than free-running: the two have to stay lined up,
+        # and the proxy is short enough that re-seeking it every tick is cheap.
+        if ($buttonTrimPlay.Content -eq "Pause") { $mediaTrimFadePreview.Play() }
+        else { $mediaTrimFadePreview.Pause() }
     }
 
     function Update-TrimSelectionText {
@@ -1136,6 +1671,65 @@ try {
     function Set-TrimKeyframes {
         param([double[]]$Keyframes)
         $script:TrimKeyframes = $Keyframes
+    }
+
+    # Filmstrip thumbnails for the timeline pieces. Keyed by source-file second (rounded,
+    # since a piece's thumbnail times are fixed once drawn and only change on split/delete,
+    # not on zoom/pan) so the same frame is never extracted twice. $script:TrimThumbPending
+    # tracks in-flight requests so a redraw mid-extraction doesn't queue duplicates.
+    function Set-TrimThumbnail {
+        param([string]$Key, [string]$FilePath)
+        $img = New-Object System.Windows.Media.Imaging.BitmapImage
+        $img.BeginInit()
+        $img.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $img.UriSource = New-Object System.Uri($FilePath)
+        $img.EndInit()
+        $img.Freeze()
+        $script:TrimThumbCache[$Key] = $img
+        $script:TrimThumbPending.Remove($Key)
+        Update-TrimTimeline
+    }
+
+    # One background job per missing frame, same shape as Start-TrimKeyframeRead below.
+    # Extraction is cheap (a keyframe-index seek, not a decode of everything before it),
+    # and a trim session only ever needs a few dozen thumbnails at once, so there is
+    # nothing to gain from a shared worker queue here.
+    function Request-TrimThumbnail {
+        param([string]$File, [double]$Seconds)
+        $key = "{0:N2}" -f $Seconds
+        if ($script:TrimThumbCache.ContainsKey($key) -or $script:TrimThumbPending.ContainsKey($key)) { return }
+        # Ceiling on concurrent extractions. Now that thumbnail times follow the viewport,
+        # spinning the wheel through a dozen zoom levels asks for a fresh set at each one,
+        # and every request is its own runspace plus ffmpeg process. The dropped requests
+        # are not lost: the next redraw re-asks for whatever is still missing, and by then
+        # the view has settled, so what actually gets extracted is the level the user
+        # stopped on rather than every level they passed through.
+        if ($script:TrimThumbPending.Count -ge 12) { return }
+        $script:TrimThumbPending[$key] = $true
+
+        $outFile = Join-Path $script:TrimThumbDir ("t{0}.jpg" -f ($key -replace '[^\d]', ''))
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $file, $seconds, $outFile)
+            Import-Module $modulePath -Force
+            Export-TrimThumbnail -InputFile $file -Seconds $seconds -OutputFile $outFile
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($File).AddArgument($Seconds).AddArgument($outFile) | Out-Null
+
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(120)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            try { $ps.EndInvoke($handle) | Out-Null } catch { }
+            $ps.Dispose()
+            if (Test-Path $outFile) {
+                Set-TrimThumbnail -Key $key -FilePath $outFile
+            } else {
+                $script:TrimThumbPending.Remove($key)
+            }
+        }.GetNewClosure())
+        $watcher.Start()
     }
 
     # Reads keyframes off the UI thread: on a long recording this decodes the whole index
@@ -1256,6 +1850,7 @@ try {
 
             Update-TrimPosition
             Update-TrimTimeline
+            Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
         })
 
         $buttonTrimPlay.Add_Click({
@@ -1295,6 +1890,8 @@ try {
             $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
             Update-TrimPosition
             Update-TrimTimeline
+            # Scrubbing into a fade shows the blended frame too, not just playback.
+            Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
         })
 
         # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
@@ -1369,6 +1966,10 @@ try {
         $script:TrimDuration = $props.Duration.TotalSeconds
         $script:TrimCutList = New-CutList -Duration $script:TrimDuration
         $script:TrimUndoStack = New-Object System.Collections.ArrayList
+        # Fades belong to the file that was being edited: keys are source times, so
+        # keeping them across a file swap would drop fades onto unrelated timestamps.
+        $script:TrimFades = @{}
+        $script:TrimActiveFade = $null
         $script:TrimSelected = -1
         $script:TrimPlayhead = 0.0
         $script:TrimViewStart = 0.0
@@ -1376,6 +1977,32 @@ try {
         # Empty until the async read lands; Find-NearestKeyframe treats that as "no
         # snapping" rather than "cannot cut".
         $script:TrimKeyframes = @()
+
+        # A second file's thumbnails are for a different source and must not be served
+        # from the first file's cache -- keyed only by second, not by file.
+        if ($script:TrimThumbDir -and (Test-Path $script:TrimThumbDir)) {
+            Remove-Item -LiteralPath $script:TrimThumbDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $script:TrimThumbDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-thumbs-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $script:TrimThumbDir -Force | Out-Null
+        $script:TrimThumbCache = @{}
+        $script:TrimThumbPending = @{}
+
+        # Same reasoning for the rendered fades, and the overlay has to be taken down as
+        # well: it is keyed by source time, so leaving it up would show the previous
+        # file's blend over the new file's footage.
+        if ($script:TrimFadeProxyDir -and (Test-Path $script:TrimFadeProxyDir)) {
+            Remove-Item -LiteralPath $script:TrimFadeProxyDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $script:TrimFadeProxyDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-fades-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $script:TrimFadeProxyDir -Force | Out-Null
+        $script:TrimFadeProxies = @{}
+        $script:TrimFadeProxyPending = @{}
+        $script:TrimFadeOverlayKey = $null
+        if ($null -ne $mediaTrimFadePreview) {
+            $mediaTrimFadePreview.Visibility = "Collapsed"
+            $mediaTrimFadePreview.Source = $null
+        }
 
         Show-PanelMessage -Block $textTrimMeta -Text ""
         $cardTrimEditor.Visibility = "Visible"
@@ -1404,6 +2031,45 @@ try {
     Update-AllRecentLists
 
     if ($script:TrimEditorReady) {
+        # Fade length picker. Selection is carried on Tag, which the button template's
+        # trigger styles -- the same "set state from code, let the template react" shape
+        # the rest of this panel uses.
+        #
+        # It edits the ACTIVE fade (the pill last clicked), falling back to setting the
+        # default for the next one when no fade is selected. Applying to every fade at
+        # once, which is what this used to do, makes a per-cut decision impossible.
+        function Sync-TrimFadeLengthButtons {
+            $current = if ($null -ne $script:TrimActiveFade) {
+                Get-TrimFadeLength -SourceSeconds $script:TrimActiveFade
+            } else {
+                $script:TrimFadeSeconds
+            }
+            foreach ($entry in $fadeLengthButtons.GetEnumerator()) {
+                if ($null -eq $entry.Value) { continue }
+                $entry.Value.Tag = if ([math]::Abs($entry.Key - $current) -lt 0.001) { "selected" } else { "" }
+            }
+        }
+
+        function Set-TrimFadeSeconds {
+            param([double]$Seconds)
+            # Always update the default too, so the next fade added matches the last
+            # length chosen rather than snapping back to 0.5s.
+            $script:TrimFadeSeconds = $Seconds
+            if ($null -ne $script:TrimActiveFade) {
+                Set-TrimFade -SourceSeconds $script:TrimActiveFade -Enabled $true -Seconds $Seconds
+            }
+            Sync-TrimFadeLengthButtons
+            Update-TrimTimeline
+            Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
+        }
+
+        foreach ($entry in $fadeLengthButtons.GetEnumerator()) {
+            if ($null -eq $entry.Value) { continue }
+            $seconds = [double]$entry.Key
+            $entry.Value.Add_Click({ Set-TrimFadeSeconds -Seconds $seconds }.GetNewClosure())
+        }
+        Sync-TrimFadeLengthButtons
+
         $buttonTrimExport.Add_Click({
             if (-not $script:TrimInputFile) {
                 Show-PanelMessage -Block $textTrimMeta -Text "Pick a video first." -IsError
@@ -1415,8 +2081,34 @@ try {
                     -Text "Nothing left to export -- every piece was deleted."
                 return
             }
+
+            # Assigned directly, never wrapped in @(): Get-TrimFadeFlags returns a
+            # [bool[]] via ",(...)", and @() around that produces a one-element array
+            # holding the bool[] -- which then fails to bind to Export-CutListAsync's
+            # [bool[]] parameter with "cannot convert Boolean[] to Boolean" and takes
+            # the whole window down, since this runs inside the message loop.
+            $fadeLengths = Get-TrimFadeLengths -Pieces $pieces
+            $anyFade = @($fadeLengths | Where-Object { $_ -gt 0 }).Count -gt 0
+            if ($anyFade) {
+                # A crossfade has to be re-encoded, and only h264/hevc have an encoder
+                # mapped. Anything else would splice a differently-coded segment between
+                # copied ones and produce a file that changes codec halfway through.
+                $sourceProfile = Get-TrimSourceProfile -InputFile $script:TrimInputFile
+                if (-not $sourceProfile.VideoEncoder) {
+                    Show-PanelMessage -Block $textTrimMeta -IsError -Text (
+                        "Fades need to re-encode across each cut, and this file's video codec ({0}) is not one this app can re-encode. Turn the fades off to export with a plain cut." -f $sourceProfile.VideoCodec)
+                    return
+                }
+                $problem = Get-TrimFadeProblem -Pieces $pieces
+                if ($problem) {
+                    Show-PanelMessage -Block $textTrimMeta -IsError -Text $problem
+                    return
+                }
+            }
+
             Show-PanelMessage -Block $textTrimMeta -Text ""
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
+                -FadeLengths $fadeLengths `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
         })
     }
@@ -1756,6 +2448,17 @@ try {
     $toolsCancel.Add_Click({
         $toolsCancel.IsEnabled = $false
         if ($script:ToolInstallState) { & $script:ToolInstallState.Cancel }
+    })
+
+    # The trim editor's scratch directories live for the session. Thumbnails are a few
+    # hundred KB, but the rendered fades are real mp4s, so leaving a set behind per run
+    # accumulates in %TEMP% with nothing to ever clear it.
+    $ctx.Window.Add_Closed({
+        foreach ($dir in @($script:TrimThumbDir, $script:TrimFadeProxyDir)) {
+            if ($dir -and (Test-Path $dir)) {
+                Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     })
 
     Show-Panel -Context $ctx -Name "Compress"

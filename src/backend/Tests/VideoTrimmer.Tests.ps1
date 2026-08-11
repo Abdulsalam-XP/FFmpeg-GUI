@@ -1,4 +1,4 @@
-$modulePath = Join-Path $PSScriptRoot "..\VideoTrimmer.psm1"
+﻿$modulePath = Join-Path $PSScriptRoot "..\VideoTrimmer.psm1"
 Import-Module $modulePath -Force
 
 # Lines are shaped "<pts_time>,<flags>", matching ffprobe's
@@ -44,5 +44,155 @@ Describe "ConvertFrom-KeyframeOutput" {
     It "ignores an N/A timestamp among real ones" {
         $r = ConvertFrom-KeyframeOutput -Lines @("0.000000,K__", "N/A,K__", "0.250000,K__")
         @($r).Count | Should Be 2
+    }
+}
+
+# The segment plan is what turns "these pieces, with a fade on that boundary" into the
+# flat list of ffmpeg steps the export runs. A crossfade is built from footage the two
+# neighbouring pieces give up, so the arithmetic that shortens them is the part worth
+# pinning down: get it wrong and the export silently repeats or drops half a second.
+Describe "Get-TrimSegmentPlan" {
+    $pieces = @(
+        [PSCustomObject]@{ Start = 0.0;  End = 10.0 },
+        [PSCustomObject]@{ Start = 50.0; End = 60.0 },
+        [PSCustomObject]@{ Start = 90.0; End = 100.0 }
+    )
+
+    It "is one copy step per piece when nothing is faded" {
+        $r = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0, 0)
+        @($r).Count | Should Be 3
+        @($r | Where-Object { $_.Kind -eq "transition" }).Count | Should Be 0
+        $r[0].Start | Should Be 0.0
+        $r[0].Duration | Should Be 10.0
+    }
+
+    It "splices a transition between the two pieces sharing a faded boundary" {
+        $r = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0.5, 0)
+        @($r).Count | Should Be 4
+        $r[1].Kind | Should Be "transition"
+        # Built from the outgoing piece's real tail and the incoming piece's real head.
+        $r[1].Start | Should Be 9.5
+        $r[1].NextStart | Should Be 50.0
+        $r[1].Duration | Should Be 0.5
+    }
+
+    It "shortens both donor pieces by the fade length" {
+        $r = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0.5, 0)
+        $r[0].Duration | Should Be 9.5
+        $r[2].Start | Should Be 50.5
+        $r[2].Duration | Should Be 9.5
+    }
+
+    It "takes a fade off both ends of a piece caught between two faded cuts" {
+        $r = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0.5, 0.5)
+        $middle = $r[2]
+        $middle.Kind | Should Be "cut"
+        $middle.Start | Should Be 50.5
+        $middle.Duration | Should Be 9.0
+    }
+
+    It "loses exactly one fade length of total footage per faded cut" {
+        $plain = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0, 0)
+        $faded = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0.5, 0.5)
+        # Summed by hand: the segments are hashtables, and Measure-Object -Property reads
+        # object properties, not hashtable keys -- it sees nothing to sum and returns 0.
+        $plainTotal = 0.0; foreach ($s in $plain) { $plainTotal += $s.Duration }
+        $fadedTotal = 0.0; foreach ($s in $faded) { $fadedTotal += $s.Duration }
+        [math]::Round($plainTotal - $fadedTotal, 6) | Should Be 1.0
+    }
+
+    It "honours a longer fade length" {
+        $r = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(1.0, 0)
+        $r[0].Duration | Should Be 9.0
+        $r[1].Start | Should Be 9.0
+        $r[2].Start | Should Be 51.0
+    }
+
+    It "treats an omitted fade list as no fades at all" {
+        $r = Get-TrimSegmentPlan -Pieces $pieces
+        @($r).Count | Should Be 3
+        $r[0].Duration | Should Be 10.0
+    }
+
+    It "returns a single copy step for a single piece, with no boundary to fade" {
+        $r = Get-TrimSegmentPlan -Pieces @([PSCustomObject]@{ Start = 0.0; End = 5.0 }) -FadeLengths @()
+        @($r).Count | Should Be 1
+        $r[0].Kind | Should Be "cut"
+    }
+}
+
+# Get-TrimSegmentPlan returns ",@($segments)" so a single-segment plan stays a list.
+# The cost of that idiom is that the caller must NOT wrap the call in @(): the function
+# emits one object which happens to be an array, and @() around it builds a one-element
+# array holding the array. Export-CutListAsync shipped that bug for exactly one session
+# -- $work.Count came back 1 for a three-piece cut list, so the export ran a single step
+# against a segment that was really the whole plan.
+Describe "Get-TrimSegmentPlan return shape" {
+    $pieces = @(
+        [PSCustomObject]@{ Start = 0.0;  End = 10.0 },
+        [PSCustomObject]@{ Start = 50.0; End = 60.0 }
+    )
+
+    It "assigns directly to a list of segments, not a list holding a list" {
+        $plan = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0.5)
+        $plan.Count | Should Be 3
+        $plan[0] -is [hashtable] | Should Be $true
+    }
+
+    It "still counts correctly for a single-segment plan" {
+        $plan = Get-TrimSegmentPlan -Pieces @([PSCustomObject]@{ Start = 0.0; End = 5.0 })
+        $plan.Count | Should Be 1
+        $plan[0] -is [hashtable] | Should Be $true
+    }
+}
+
+
+# The whole point of a per-boundary list: two cuts in the same export can dissolve at
+# different speeds. This shipped as one global length first, which made a slow dissolve
+# into one scene and a snappy one into the next impossible to express.
+Describe "Get-TrimSegmentPlan with per-cut fade lengths" {
+    $pieces = @(
+        [PSCustomObject]@{ Start = 0.0;   End = 30.0 },
+        [PSCustomObject]@{ Start = 60.0;  End = 90.0 },
+        [PSCustomObject]@{ Start = 120.0; End = 150.0 }
+    )
+
+    It "gives each transition its own duration" {
+        $plan = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(1.0, 0.25)
+        $transitions = @($plan | Where-Object { $_.Kind -eq "transition" })
+        $transitions.Count | Should Be 2
+        $transitions[0].Duration | Should Be 1.0
+        $transitions[1].Duration | Should Be 0.25
+    }
+
+    It "takes the matching amount off each side of the piece between them" {
+        $plan = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(1.0, 0.25)
+        $middle = @($plan | Where-Object { $_.Kind -eq "cut" })[1]
+        # 1.0s donated to the fade before it, 0.25s to the fade after it.
+        $middle.Start | Should Be 61.0
+        $middle.Duration | Should Be 28.75
+    }
+
+    It "builds each transition from its own boundary" {
+        $plan = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(1.0, 0.25)
+        $transitions = @($plan | Where-Object { $_.Kind -eq "transition" })
+        $transitions[0].Start | Should Be 29.0      # 30.0 - 1.0
+        $transitions[0].NextStart | Should Be 60.0
+        $transitions[1].Start | Should Be 89.75     # 90.0 - 0.25
+        $transitions[1].NextStart | Should Be 120.0
+    }
+
+    It "shortens the export by the SUM of the fade lengths, not a multiple of one" {
+        $plain = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0, 0)
+        $mixed = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(1.0, 0.25)
+        $plainTotal = 0.0; foreach ($s in $plain) { $plainTotal += $s.Duration }
+        $mixedTotal = 0.0; foreach ($s in $mixed) { $mixedTotal += $s.Duration }
+        [math]::Round($plainTotal - $mixedTotal, 6) | Should Be 1.25
+    }
+
+    It "leaves a zero-length boundary as a plain cut between two faded ones" {
+        $plan = Get-TrimSegmentPlan -Pieces $pieces -FadeLengths @(0, 0.5)
+        @($plan | Where-Object { $_.Kind -eq "transition" }).Count | Should Be 1
+        @($plan | Where-Object { $_.Kind -eq "cut" })[0].Duration | Should Be 30.0
     }
 }
