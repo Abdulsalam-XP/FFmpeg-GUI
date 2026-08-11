@@ -222,3 +222,38 @@ Describe "ConvertTo-AssFilterPath" {
             Should Be "C\:/Users/O'\''Brien/seg.ass"
     }
 }
+
+Describe "Split-TrimSegmentsForPips" {
+    It "splits a cut at pip span edges and tags the inside part" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 30.0 })
+        $spans = @(@{ Start = 10.0; End = 15.0; Overlay = @{ TrackId = "t1"; Path = "c.mp4"; InStart = 2.0; Pip = @{X=0.5;Y=0.5;W=0.3;H=0.3} } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $r.Count | Should Be 3
+        $r[0].Duration | Should Be 10.0
+        $r[1].Duration | Should Be 5.0
+        @($r[1].Pips).Count | Should Be 1
+        $r[1].Pips[0].SegmentClipStart | Should Be 2.0
+        $r[2].ContainsKey("Pips") | Should Be $false
+    }
+    It "advances the clip-in for a part starting mid-span" {
+        # span 10..20, but a segment boundary at 14 puts part 2 at span-time 4
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 14.0 }, @{ Kind = "cut"; Start = 14.0; Duration = 16.0 })
+        $spans = @(@{ Start = 10.0; End = 20.0; Overlay = @{ TrackId = "t1"; Path = "c.mp4"; InStart = 0.0; Pip = @{X=0.5;Y=0.5;W=0.3;H=0.3} } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $inside = @($r | Where-Object { $_.ContainsKey("Pips") })
+        $inside.Count | Should Be 2
+        $inside[1].Pips[0].SegmentClipStart | Should Be 4.0
+    }
+    It "throws when a span overlaps a transition" {
+        $segs = @(@{ Kind = "transition"; Start = 9.5; NextStart = 20.0; Duration = 0.5 })
+        $spans = @(@{ Start = 0.2; End = 0.4; Overlay = @{ TrackId="t"; Path="c"; InStart=0.0; Pip=@{X=0.5;Y=0.5;W=0.3;H=0.3} } })
+        { Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans } | Should Throw
+    }
+    It "conserves total duration and passes untouched segments through" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 30.0 })
+        $spans = @(@{ Start = 5.0; End = 9.0; Overlay = @{ TrackId="t"; Path="c"; InStart=0.0; Pip=@{X=0.5;Y=0.5;W=0.3;H=0.3} } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $total = 0.0; foreach ($s in $r) { $total += $s.Duration }
+        [math]::Round($total, 6) | Should Be 30.0
+    }
+}

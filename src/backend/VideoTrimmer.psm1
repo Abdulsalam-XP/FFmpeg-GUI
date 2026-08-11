@@ -2,6 +2,7 @@ Import-Module "$PSScriptRoot/UI.psm1"
 Import-Module "$PSScriptRoot/ToolPaths.psm1"
 Import-Module "$PSScriptRoot/Captions.psm1"
 Import-Module "$PSScriptRoot/Zooms.psm1"
+Import-Module "$PSScriptRoot/Tracks.psm1"
 
 # Keyframe times for the trim timeline. Cuts can only start on a keyframe without
 # re-encoding, so the timeline snaps to these and the panel reports their spacing --
@@ -555,6 +556,56 @@ function Export-TrimWaveform {
         -frames:v 1 $OutputFile 2>&1 | Out-Null
 }
 
+function Get-TrimAudioStreams {
+    param([Parameter(Mandatory = $true)][string]$InputFile)
+    $ffprobe = Get-ToolPath -Name ffprobe
+    $lines = @(& $ffprobe -v error -select_streams a -show_entries "stream=index:stream_tags=title" -of "csv=p=0" $InputFile 2>$null)
+    return ,@(ConvertFrom-AudioStreamProbe -Lines $lines)
+}
+
+function Split-TrimSegmentsForPips {
+    param([object[]]$Segments = @(), [object[]]$PipSpans = @())
+    $result = @()
+    $cursor = 0.0
+    foreach ($seg in @($Segments)) {
+        $segT0 = $cursor
+        $segT1 = $cursor + [double]$seg.Duration
+        $cursor = $segT1
+        $overlapping = @(@($PipSpans) | Where-Object { [double]$_.Start -lt $segT1 -and [double]$_.End -gt $segT0 })
+        if ($overlapping.Count -eq 0) { $result += ,$seg; continue }
+        if ($seg.Kind -eq "transition") { throw "pip over transition reached the splitter" }
+
+        $cutsSet = New-Object System.Collections.Generic.SortedSet[double]
+        foreach ($sp in $overlapping) {
+            if ([double]$sp.Start -gt $segT0 -and [double]$sp.Start -lt $segT1) { [void]$cutsSet.Add([double]$sp.Start) }
+            if ([double]$sp.End -gt $segT0 -and [double]$sp.End -lt $segT1) { [void]$cutsSet.Add([double]$sp.End) }
+        }
+        $points = @($segT0) + @($cutsSet) + @($segT1)
+        for ($i = 0; $i -lt $points.Count - 1; $i++) {
+            $t0 = $points[$i]; $t1 = $points[$i + 1]
+            if ($t1 - $t0 -le 0.0005) { continue }
+            $part = @{}
+            foreach ($kv in $seg.GetEnumerator()) { $part[$kv.Key] = $kv.Value }
+            $part.Start = [double]$seg.Start + ($t0 - $segT0)
+            $part.Duration = ($t1 - $t0)
+            $mid = ($t0 + $t1) / 2.0
+            $pips = @()
+            foreach ($sp in $overlapping) {
+                if ($mid -gt [double]$sp.Start -and $mid -lt [double]$sp.End) {
+                    $ov = $sp.Overlay
+                    $pips += ,@{
+                        TrackId = $ov.TrackId; Path = $ov.Path; Pip = $ov.Pip
+                        SegmentClipStart = [double]$ov.InStart + ($t0 - [double]$sp.Start)
+                    }
+                }
+            }
+            if ($pips.Count -gt 0) { $part.Pips = @($pips) }
+            $result += ,$part
+        }
+    }
+    return ,@($result)
+}
+
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
-    ConvertTo-AssFilterPath, Export-TrimWaveform
+    ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimAudioStreams, Split-TrimSegmentsForPips
