@@ -836,6 +836,7 @@ try {
     $textTrimPosition    = $panelTrim.FindName("TextTrimPosition")
     $canvasTrimTimeline  = $panelTrim.FindName("CanvasTrimTimeline")
     $canvasTrimRuler     = $panelTrim.FindName("CanvasTrimRuler")
+    $canvasTrimWave      = $panelTrim.FindName("CanvasTrimWave")
     $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
     $textTrimFadeNote    = $panelTrim.FindName("TextTrimFadeNote")
@@ -1341,6 +1342,54 @@ try {
         # The input-file test is not redundant with the count: it keeps Export disabled
         # during the first layout pass, before anything has been picked.
         $buttonTrimExport.IsEnabled = ($pieces.Count -gt 0 -and $null -ne $script:TrimInputFile)
+
+        Update-TrimWaveform
+    }
+
+    # Waveform strip under the filmstrip, one image per VISIBLE timeline piece -- same
+    # x1/x2/width math as the filmstrip loop above, just one slot per piece instead of
+    # several, since a waveform strip is cheap to stretch across a whole piece. Guarded
+    # on $canvasTrimWave being non-null: it is $null on XAML that predates this task,
+    # same stale-XAML rule as the rest of the trim editor.
+    # No -TimelinePieces param, deliberately: Set-TrimWaveform calls this after a render
+    # lands, from inside a closured timer tick, and has no timeline state of its own to
+    # hand in. Computing it here via Get-TrimTimelineState makes every caller -- the end
+    # of Update-TrimTimeline and the render callback alike -- agree on current pieces
+    # instead of the redraw silently running against stale or missing ones.
+    function Update-TrimWaveform {
+        if ($null -eq $canvasTrimWave) { return }
+        $canvasTrimWave.Children.Clear()
+        if (-not $script:TrimInputFile) { return }
+
+        $timelinePieces = (Get-TrimTimelineState).TimelinePieces
+
+        $waveWidth = $canvasTrimWave.ActualWidth
+        if ($waveWidth -le 0) { $waveWidth = $canvasTrimTimeline.ActualWidth }
+        $waveHeight = $canvasTrimWave.ActualHeight
+        if ($waveHeight -le 0) { $waveHeight = 20 }
+
+        foreach ($tp in @($timelinePieces)) {
+            $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
+            $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
+            $visibleLeft = [math]::Max($x1, 0)
+            $visibleRight = [math]::Min($x2, $waveWidth)
+            if ($visibleRight -le $visibleLeft) { continue }
+            $visibleWidth = $visibleRight - $visibleLeft
+
+            $key = "{0:N2}_{1:N2}" -f $tp.SourceStart, $tp.SourceEnd
+            if ($script:TrimWaveCache.ContainsKey($key)) {
+                $img = New-Object System.Windows.Controls.Image
+                $img.Stretch = "Fill"
+                $img.Width = $visibleWidth
+                $img.Height = $waveHeight
+                $img.Source = $script:TrimWaveCache[$key]
+                [System.Windows.Controls.Canvas]::SetLeft($img, $visibleLeft)
+                [System.Windows.Controls.Canvas]::SetTop($img, 0)
+                $canvasTrimWave.Children.Add($img) | Out-Null
+            } else {
+                Request-TrimWaveform -File $script:TrimInputFile -SourceStart $tp.SourceStart -SourceEnd $tp.SourceEnd
+            }
+        }
     }
 
     # One toggle per internal cut, in its own row under the ruler, at the cut's x.
@@ -1733,6 +1782,59 @@ try {
         $watcher.Start()
     }
 
+    # Waveform strips, one per timeline piece rather than per pixel slot -- a piece's
+    # audio range is fixed once drawn (only split/delete changes it), so there is no
+    # zoom-driven churn to guard against the way the filmstrip slots need. Same
+    # write-through reasoning as Set-TrimThumbnail: called from a closured timer tick.
+    function Set-TrimWaveform {
+        param([string]$Key, [string]$FilePath)
+        $img = New-Object System.Windows.Media.Imaging.BitmapImage
+        $img.BeginInit()
+        $img.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $img.UriSource = New-Object System.Uri($FilePath)
+        $img.EndInit()
+        $img.Freeze()
+        $script:TrimWaveCache[$Key] = $img
+        $script:TrimWavePending.Remove($Key)
+        Update-TrimWaveform
+    }
+
+    # One background job per missing waveform strip, same shape as Request-TrimThumbnail.
+    function Request-TrimWaveform {
+        param([string]$File, [double]$SourceStart, [double]$SourceEnd)
+        $key = "{0:N2}_{1:N2}" -f $SourceStart, $SourceEnd
+        if ($script:TrimWaveCache.ContainsKey($key) -or $script:TrimWavePending.ContainsKey($key)) { return }
+        # Same concurrency ceiling idea as the thumbnail cap, just lower: there are far
+        # fewer pieces than filmstrip slots at once, so 4 in flight is already generous.
+        if ($script:TrimWavePending.Count -ge 4) { return }
+        $script:TrimWavePending[$key] = $true
+
+        $outFile = Join-Path $script:TrimThumbDir ("w{0}.png" -f ($key -replace '[^\d]', ''))
+        $duration = [math]::Max(0.01, $SourceEnd - $SourceStart)
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $file, $start, $duration, $outFile)
+            Import-Module $modulePath -Force
+            Export-TrimWaveform -InputFile $file -StartSeconds $start -DurationSeconds $duration -OutputFile $outFile
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($File).AddArgument($SourceStart).AddArgument($duration).AddArgument($outFile) | Out-Null
+
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(120)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            try { $ps.EndInvoke($handle) | Out-Null } catch { }
+            $ps.Dispose()
+            if (Test-Path $outFile) {
+                Set-TrimWaveform -Key $key -FilePath $outFile
+            } else {
+                $script:TrimWavePending.Remove($key)
+            }
+        }.GetNewClosure())
+        $watcher.Start()
+    }
+
     # Reads keyframes off the UI thread: on a long recording this decodes the whole index
     # and would otherwise freeze the window. Until it lands, snapping is inactive and the
     # accuracy line stays blank -- the editor is usable throughout.
@@ -1988,6 +2090,10 @@ try {
         New-Item -ItemType Directory -Path $script:TrimThumbDir -Force | Out-Null
         $script:TrimThumbCache = @{}
         $script:TrimThumbPending = @{}
+        # Waveform strips share the thumbnail temp dir (created just above) -- keyed by
+        # source range instead of a single second, since a waveform covers a whole piece.
+        $script:TrimWaveCache = @{}
+        $script:TrimWavePending = @{}
 
         # Same reasoning for the rendered fades, and the overlay has to be taken down as
         # well: it is keyed by source time, so leaving it up would show the previous

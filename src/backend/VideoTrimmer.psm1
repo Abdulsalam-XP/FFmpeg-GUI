@@ -492,6 +492,25 @@ function Export-TrimThumbnail {
     & $ffmpeg -y -ss $Seconds -i $InputFile -frames:v 1 -vf "scale=-2:$Height" -q:v 4 $OutputFile 2>&1 | Out-Null
 }
 
+# One waveform strip PNG for a source-time window, drawn by ffmpeg itself.
+# showwavespic is a single decode pass over the audio only, so this is cheap
+# even on the 3GB recordings.
+function Export-TrimWaveform {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        [Parameter(Mandatory = $true)][double]$StartSeconds,
+        [Parameter(Mandatory = $true)][double]$DurationSeconds,
+        [Parameter(Mandatory = $true)][string]$OutputFile,
+        [int]$Width = 1000,
+        [int]$Height = 20
+    )
+    $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    & $ffmpeg -y -hide_banner -loglevel error `
+        -ss $StartSeconds -t $DurationSeconds -i $InputFile `
+        -filter_complex "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84" `
+        -frames:v 1 $OutputFile 2>&1 | Out-Null
+}
+
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
-    ConvertTo-AssFilterPath
+    ConvertTo-AssFilterPath, Export-TrimWaveform
