@@ -1102,6 +1102,36 @@
         <Setter Property="Foreground" Value="#06121F"/>
     </Style>
 
+    <!-- Caption blocks on their lane: gold family, distinct from the blue video
+         pieces, with visible edge grips for retiming. -->
+    <Style x:Key="CaptionBlockStyle" TargetType="Border">
+        <Setter Property="Background" Value="#4D6B5320"/>
+        <Setter Property="BorderBrush" Value="#B3D3A24C"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="5"/>
+        <Setter Property="Cursor" Value="SizeAll"/>
+    </Style>
+    <Style x:Key="CaptionBlockSelectedStyle" TargetType="Border" BasedOn="{StaticResource CaptionBlockStyle}">
+        <Setter Property="Background" Value="#806B5320"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="BorderThickness" Value="2"/>
+    </Style>
+    <Style x:Key="CaptionBlockTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="7,0"/>
+        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+    <!-- Sidebar field label + row spacing for the caption properties column. -->
+    <Style x:Key="SidebarLabelStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="Foreground" Value="{StaticResource BrushTextMuted}"/>
+        <Setter Property="Margin" Value="0,10,0,3"/>
+    </Style>
+
     <!-- Small segmented picker for the fade length. Selection is set from code by
          swapping to the "selected" variant, the same approach the timeline pieces use. -->
     <Style x:Key="FadeLengthButtonStyle" TargetType="Button">
@@ -1133,10 +1163,104 @@
         </Setter>
     </Style>
 
+    <!-- Caption colour palette swatch. The template honours the button's own Background,
+         which is the colour itself, set from code when the palette is built. -->
+    <Style x:Key="CaptionSwatchButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="16"/>
+        <Setter Property="Height" Value="16"/>
+        <Setter Property="Margin" Value="2"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Swatch" CornerRadius="3"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="#33FFFFFF" BorderThickness="1"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Swatch" Property="BorderBrush" Value="{StaticResource BrushBorderGold}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="TimelineRulerTickStyle" TargetType="Rectangle">
         <Setter Property="Fill" Value="{StaticResource BrushTextMuted}"/>
         <Setter Property="Width" Value="1"/>
         <Setter Property="Height" Value="6"/>
+    </Style>
+
+    <!-- Zoom keyframe lane: diamonds mark keyframes, ramps show the
+         transition shape between adjacent keyframes. The spotlight box and
+         dim rects drawn on the preview overlay while editing a zoom are
+         painted from code with raw brushes, not styles, since their size
+         and position are fully data driven. -->
+    <Style x:Key="ZoomDiamondStyle" TargetType="Rectangle">
+        <Setter Property="Width" Value="13"/>
+        <Setter Property="Height" Value="13"/>
+        <Setter Property="Fill" Value="#B08CFF"/>
+        <Setter Property="Stroke" Value="#06121F"/>
+        <Setter Property="StrokeThickness" Value="2"/>
+        <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="RenderTransform">
+            <Setter.Value>
+                <RotateTransform Angle="45"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ZoomDiamondSelectedStyle" TargetType="Rectangle" BasedOn="{StaticResource ZoomDiamondStyle}">
+        <Setter Property="Stroke" Value="{StaticResource BrushGoldValue}"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#B08CFF" BlurRadius="10" ShadowDepth="0" Opacity="0.9"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ZoomRampStyle" TargetType="Rectangle">
+        <Setter Property="Fill">
+            <Setter.Value>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                    <GradientStop Color="#00B08CFF" Offset="0"/>
+                    <GradientStop Color="#73B08CFF" Offset="1"/>
+                </LinearGradientBrush>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ZoomRampDownStyle" TargetType="Rectangle">
+        <Setter Property="Fill">
+            <Setter.Value>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                    <GradientStop Color="#73B08CFF" Offset="0"/>
+                    <GradientStop Color="#00B08CFF" Offset="1"/>
+                </LinearGradientBrush>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ZoomRampHoldStyle" TargetType="Rectangle">
+        <Setter Property="Fill" Value="#4DB08CFF"/>
+    </Style>
+
+    <Style x:Key="ZoomPillStyle" TargetType="Border">
+        <Setter Property="Background" Value="#F2090D1A"/>
+        <Setter Property="BorderBrush" Value="#80B08CFF"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="9"/>
+        <Setter Property="Padding" Value="10,6"/>
+    </Style>
+
+    <Style x:Key="ZoomPillTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Foreground" Value="#D8C7FF"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
     <!-- Greyed shortcut letter beside a button label. -->

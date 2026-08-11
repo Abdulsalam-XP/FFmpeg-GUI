@@ -196,3 +196,29 @@ Describe "Get-TrimSegmentPlan with per-cut fade lengths" {
         @($plan | Where-Object { $_.Kind -eq "cut" })[0].Duration | Should Be 30.0
     }
 }
+
+# The path an `ass=` filter is given goes through two parsers before libass sees it:
+# the filter-graph parser (backslash escapes, so a Windows path must be forward-slashed)
+# and the filter's own option parser (colon separates options, so the drive colon has to
+# be escaped). Getting either wrong makes ffmpeg report a missing filter or a missing
+# file, both of which look nothing like a path-escaping problem.
+Describe "ConvertTo-AssFilterPath" {
+    It "forward-slashes a Windows path and escapes the drive colon" {
+        ConvertTo-AssFilterPath -Path "C:\Temp\ffgui\seg000.ass" |
+            Should Be "C\:/Temp/ffgui/seg000.ass"
+    }
+
+    It "leaves an already-forward-slashed path alone except for the colon" {
+        ConvertTo-AssFilterPath -Path "D:/x/y.ass" | Should Be "D\:/x/y.ass"
+    }
+
+    It "escapes every colon, not only the first" {
+        ConvertTo-AssFilterPath -Path "C:\a:b\c.ass" | Should Be "C\:/a\:b/c.ass"
+    }
+
+    It "escapes a single quote so it cannot close the filter's quoted argument" {
+        # An apostrophe in a Windows username reaches %TEMP% paths.
+        ConvertTo-AssFilterPath -Path "C:\Users\O'Brien\seg.ass" |
+            Should Be "C\:/Users/O'\''Brien/seg.ass"
+    }
+}
