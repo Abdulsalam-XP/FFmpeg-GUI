@@ -411,19 +411,25 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <Grid Grid.Column="0">
-                                    <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform" HorizontalAlignment="Stretch"
-                                                  LoadedBehavior="Manual" UnloadedBehavior="Manual" ScrubbingEnabled="True"/>
-                                    <!-- Plays a pre-rendered copy of one crossfade, on top of the
-                                         main preview, while the playhead is inside that fade. A
-                                         crossfade is two source positions blended at once, which a
-                                         single decoder cannot produce, so the alternative to this
-                                         overlay is showing a straight cut and hoping the export
-                                         looks right. Silent by design: the element underneath keeps
-                                         playing the real audio. -->
-                                    <MediaElement x:Name="MediaTrimFadePreview" Stretch="Uniform" HorizontalAlignment="Stretch"
-                                                  LoadedBehavior="Manual" UnloadedBehavior="Manual" ScrubbingEnabled="True"
-                                                  Volume="0" Visibility="Collapsed"/>
+                                <Grid Grid.Column="0" ClipToBounds="True">
+                                    <!-- Wraps only the two video surfaces: a zoom keyframe's scale/
+                                         translate transform is applied to this host so the caption
+                                         overlay below stays pinned to the frame instead of zooming
+                                         with it. -->
+                                    <Grid x:Name="PreviewZoomHost">
+                                        <MediaElement x:Name="MediaTrimPreview" Stretch="Uniform" HorizontalAlignment="Stretch"
+                                                      LoadedBehavior="Manual" UnloadedBehavior="Manual" ScrubbingEnabled="True"/>
+                                        <!-- Plays a pre-rendered copy of one crossfade, on top of the
+                                             main preview, while the playhead is inside that fade. A
+                                             crossfade is two source positions blended at once, which a
+                                             single decoder cannot produce, so the alternative to this
+                                             overlay is showing a straight cut and hoping the export
+                                             looks right. Silent by design: the element underneath keeps
+                                             playing the real audio. -->
+                                        <MediaElement x:Name="MediaTrimFadePreview" Stretch="Uniform" HorizontalAlignment="Stretch"
+                                                      LoadedBehavior="Manual" UnloadedBehavior="Manual" ScrubbingEnabled="True"
+                                                      Volume="0" Visibility="Collapsed"/>
+                                    </Grid>
                                     <!-- Captions render here, over the video, under the user's pointer. -->
                                     <Canvas x:Name="CanvasCaptionOverlay" Background="Transparent"/>
                                 </Grid>
@@ -493,6 +499,12 @@
                                 <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
                             </Border>
 
+                            <!-- Zoom keyframe lane: diamonds mark keyframes, ramps show the
+                                 transition between them. Drawn from code. -->
+                            <Border Style="{StaticResource TimelineTrackStyle}" Height="26" Margin="0,4,0,0" ClipToBounds="True">
+                                <Canvas x:Name="CanvasTrimZooms" Background="Transparent"/>
+                            </Border>
+
                             <!-- 26, not 20: the ruler now also carries the playhead time
                                  badge, which sits below the ticks and is clipped at 20. -->
                             <Canvas x:Name="CanvasTrimRuler" Height="26" Background="Transparent" ClipToBounds="True"/>
@@ -541,6 +553,11 @@
                                 <Button x:Name="ButtonTrimAddCaption" Style="{StaticResource PresetButtonStyle}" Width="120">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="＋ Caption"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimAddZoom" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="＋ Zoom"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
