@@ -2299,8 +2299,26 @@ try {
         # quantised the caption drags to whole seconds (see Move-TrimCaption).
         switch ($drag.Mode) {
             "instart" {
+                # Left-edge (in-point) trim, NLE-style: InStart alone can't keep the bar's
+                # left edge under the mouse, because Get-TrackTimelineSpan.Start is always
+                # Track.Offset, never InStart (Task 2's settled semantics, consumed by the
+                # audio mix graph's clipIn math -- not something this task changes). So the
+                # timeline delta has to be applied to BOTH fields in lockstep: InStart moves
+                # the in-point, Offset moves the bar's on-timeline position by the same
+                # amount, and Span.End (Offset + (InEnd - InStart)) is unchanged because the
+                # length shrinks by exactly what Offset grows by (or vice versa).
                 $minGap = 0.1
-                $t.InStart = [math]::Max(0.0, [math]::Min($drag.OrigInEnd - $minGap, $drag.OrigInStart + $dt))
+                # Same clamp, expressed as a bound on the DELTA rather than on InStart alone,
+                # so InStart and Offset apply the identical, already-clamped amount instead of
+                # each being clamped independently and drifting apart:
+                #   InStart + delta >= 0            -> delta >= -OrigInStart
+                #   Offset  + delta >= 0             -> delta >= -OrigOffset
+                #   InStart + delta <= InEnd - minGap -> delta <= OrigInEnd - minGap - OrigInStart
+                $deltaMin = [math]::Max(-$drag.OrigInStart, -$drag.OrigOffset)
+                $deltaMax = $drag.OrigInEnd - $minGap - $drag.OrigInStart
+                $appliedDelta = [math]::Max($deltaMin, [math]::Min($deltaMax, $dt))
+                $t.InStart = $drag.OrigInStart + $appliedDelta
+                $t.Offset = $drag.OrigOffset + $appliedDelta
             }
             "inend" {
                 $minGap = 0.1
