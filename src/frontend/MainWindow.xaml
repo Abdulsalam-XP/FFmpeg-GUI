@@ -577,6 +577,17 @@
                                            VerticalAlignment="Center" Margin="16,0,0,0"/>
                             </StackPanel>
 
+                            <!-- Track properties strip: shown only while a track lane is selected,
+                                 the same on/off rule PanelTrimFadeLength uses for a selected cut. -->
+                            <StackPanel x:Name="PanelTrimTrackProps" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
+                                <TextBlock Text="TRACK" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="TextTrackPropsName" Text="" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                <Slider x:Name="SliderTrackGain" Style="{StaticResource GainSliderStyle}" Width="220" Minimum="-30" Maximum="30" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                <TextBlock x:Name="TextTrackGain" Text="0.0 dB" FontFamily="{StaticResource FontData}" FontSize="12" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                <CheckBox x:Name="CheckTrackMute" Content="Mute" Foreground="{StaticResource BrushTextBody}" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                <Button x:Name="ButtonTrackDelete" Content="Delete track" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
+                            </StackPanel>
+
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                                 <Button x:Name="ButtonTrimAddCaption" Style="{StaticResource PresetButtonStyle}" Width="120">
                                     <StackPanel Orientation="Horizontal">

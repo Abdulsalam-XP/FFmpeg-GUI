@@ -860,6 +860,12 @@ try {
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
     $textTrimFadeNote    = $panelTrim.FindName("TextTrimFadeNote")
     $textTrimFadeScope   = $panelTrim.FindName("TextTrimFadeScope")
+    $panelTrimTrackProps = $panelTrim.FindName("PanelTrimTrackProps")
+    $textTrackPropsName  = $panelTrim.FindName("TextTrackPropsName")
+    $sliderTrackGain     = $panelTrim.FindName("SliderTrackGain")
+    $textTrackGain       = $panelTrim.FindName("TextTrackGain")
+    $checkTrackMute      = $panelTrim.FindName("CheckTrackMute")
+    $buttonTrackDelete   = $panelTrim.FindName("ButtonTrackDelete")
     $fadeLengthButtons   = @{
         0.25 = $panelTrim.FindName("ButtonFade025")
         0.5  = $panelTrim.FindName("ButtonFade050")
@@ -2497,6 +2503,11 @@ try {
                     param($eventSource, $e)
                     $x = ($e.GetPosition($barCanvas)).X
                     Set-TrimSelectedTrack -Id $thisId
+                    # Direct call, not a lane rebuild: Update-TrimTrackLanes bails out for
+                    # the whole duration of the drag that Start-TrimTrackDrag is about to
+                    # start (Test-TrimTrackDrag), so the props strip needs its own refresh
+                    # here rather than waiting for the rebuild that follows on mouse-up.
+                    Update-TrimTrackProps
                     Start-TrimTrackDrag -Id $thisId -Mode "move" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
                     $barCanvas.CaptureMouse() | Out-Null
                     $e.Handled = $true
@@ -2508,6 +2519,7 @@ try {
                         param($eventSource, $e)
                         $x = ($e.GetPosition($barCanvas)).X
                         Set-TrimSelectedTrack -Id $thisId
+                        Update-TrimTrackProps
                         Start-TrimTrackDrag -Id $thisId -Mode "instart" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
                         $barCanvas.CaptureMouse() | Out-Null
                         $e.Handled = $true
@@ -2518,6 +2530,7 @@ try {
                         param($eventSource, $e)
                         $x = ($e.GetPosition($barCanvas)).X
                         Set-TrimSelectedTrack -Id $thisId
+                        Update-TrimTrackProps
                         Start-TrimTrackDrag -Id $thisId -Mode "inend" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
                         $barCanvas.CaptureMouse() | Out-Null
                         $e.Handled = $true
@@ -2569,6 +2582,94 @@ try {
 
             [void]$panelTrimTracks.Children.Add($lane)
         }
+
+        # Every structural change (mute, gain, delete, unlink toggle, undo/redo, load) comes
+        # through here, so refreshing the props strip at the end of a lane rebuild is enough
+        # to keep it in sync without a second call at each of those sites. The three points
+        # that select a track WITHOUT rebuilding the lanes (drag-start on a bar/grip, mid-drag)
+        # call Update-TrimTrackProps directly instead -- see Start-TrimTrackDrag's callers.
+        Update-TrimTrackProps
+    }
+
+    # Mirrors Set-ZoomUiLoading: raised while Update-TrimTrackProps is writing the slider/
+    # checkbox from model state, so the ValueChanged/Click handlers those writes trigger
+    # know to no-op instead of feeding the value straight back into Set-TrimTrackValues.
+    function Set-TrackUiLoading {
+        param([bool]$Value)
+        $script:TrackUiLoading = $Value
+    }
+
+    function Test-TrackUiLoading {
+        return $script:TrackUiLoading
+    }
+
+    # Fills the strip from whichever track is selected, or hides it. Called after every
+    # lane rebuild (see Update-TrimTrackLanes) and directly from the three selection points
+    # that intentionally skip a lane rebuild while a drag is starting.
+    function Update-TrimTrackProps {
+        # "Selection ticks": every lane rebuild (load, undo/redo, mute/gain/delete, unlink
+        # toggle) ends up here, so this is also the one place that keeps the preview volume
+        # caught up with the model without a second call at each of those sites.
+        Update-TrimPreviewVolume
+        if ($null -eq $panelTrimTrackProps) { return }
+        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+        if ($null -eq $t) {
+            $panelTrimTrackProps.Visibility = "Collapsed"
+            return
+        }
+        $panelTrimTrackProps.Visibility = "Visible"
+        Set-TrackUiLoading -Value $true
+        try {
+            $name = if ([string]::IsNullOrWhiteSpace($t.Label)) { $t.Kind } else { $t.Label }
+            # video-main carries no gain/mute of its own (the mix graph never touches its
+            # audio through this path), so the strip names it plainly rather than implying
+            # a slider/checkbox that would not do anything.
+            if ($null -ne $textTrackPropsName) {
+                $textTrackPropsName.Text = if ($t.Kind -eq "video-main") { "$name (video)" } else { $name }
+            }
+            if ($null -ne $sliderTrackGain) { $sliderTrackGain.Value = [double]$t.GainDb }
+            if ($null -ne $textTrackGain) { $textTrackGain.Text = "{0:+0.0;-0.0;0.0} dB" -f [double]$t.GainDb }
+            if ($null -ne $checkTrackMute) { $checkTrackMute.IsChecked = [bool]$t.Muted }
+        } finally {
+            Set-TrackUiLoading -Value $false
+        }
+    }
+
+    # Approximates the export's per-track gain in the single preview decoder: one MediaElement
+    # cannot play separate streams at separate volumes, so this collapses the whole stack to
+    # one number -- silence if every audio-source track is muted, otherwise the gain of the
+    # first unmuted one. The EXPORT (Tracks.psm1's mix graph) is authoritative; this is only
+    # ever what plays back while editing.
+    function Update-TrimPreviewVolume {
+        if ($null -eq $mediaTrimPreview) { return }
+        $sources = @(@($script:TrimTracks) | Where-Object { $_.Kind -eq "audio-source" })
+        if ($sources.Count -eq 0) { return }
+        $unmuted = @($sources | Where-Object { -not $_.Muted })
+        if ($unmuted.Count -eq 0) {
+            $mediaTrimPreview.Volume = 0
+            return
+        }
+        $firstUnmutedSourceGain = [double]$unmuted[0].GainDb
+        $mediaTrimPreview.Volume = [math]::Min(1.0, [math]::Pow(10.0, $firstUnmutedSourceGain / 20.0))
+    }
+
+    # One undo step per completed gain drag, exactly like Start-/Complete-ZoomSliderEdit:
+    # the slider's ValueChanged fires on every tick, so the snapshot is taken once at
+    # mouse-down and pushed once at mouse-up rather than once per tick.
+    function Start-TrackGainEdit {
+        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+        if ($null -eq $t) { $script:TrackGainEdit = $null; return }
+        $script:TrackGainEdit = @{ Id = [string]$t.Id; GainDb = [double]$t.GainDb; Snapshot = New-TrimUndoSnapshot }
+    }
+
+    function Complete-TrackGainEdit {
+        $edit = $script:TrackGainEdit
+        $script:TrackGainEdit = $null
+        if ($null -eq $edit) { return }
+        $t = Get-TrimTrackById -Id $edit.Id
+        if ($null -eq $t) { return }
+        if ([math]::Abs([double]$t.GainDb - [double]$edit.GainDb) -lt 1e-9) { return }
+        Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
     }
 
     # Two keyframes at the same instant are a zero-length glide, which Get-TrimZoomStateAt
@@ -3799,15 +3900,22 @@ try {
 
     function Update-TrimSelectionText {
         if (-not $script:TrimEditorReady) { return }
+        # The track props strip's Delete allows removing video-main (the only way this
+        # build lets an audio-only export happen), which nothing else about the selection
+        # text would otherwise reveal -- so it is appended regardless of which branch below
+        # sets the base text.
+        $hasVideoMain = $false
+        foreach ($t in @($script:TrimTracks)) { if ($t.Kind -eq "video-main") { $hasVideoMain = $true; break } }
+        $audioOnlySuffix = if (-not $hasVideoMain -and @($script:TrimTracks).Count -gt 0) { " -- audio-only export" } else { "" }
         $state = Get-TrimTimelineState
         if ($script:TrimSelected -lt 0 -or $script:TrimSelected -ge $state.Pieces.Count) {
-            $textTrimSelection.Text = "nothing selected"
+            $textTrimSelection.Text = "nothing selected" + $audioOnlySuffix
             return
         }
         # Timeline-space bounds, matching the ruler and the drawn timeline (which are also
         # timeline-space now) -- not the piece's real position in the source file.
         $tp = $state.TimelinePieces[$script:TrimSelected]
-        $textTrimSelection.Text = ("selected {0} to {1} ({2:N2}s)" -f (Format-TrimTime $tp.TimelineStart), (Format-TrimTime $tp.TimelineEnd), ($tp.TimelineEnd - $tp.TimelineStart))
+        $textTrimSelection.Text = ("selected {0} to {1} ({2:N2}s)" -f (Format-TrimTime $tp.TimelineStart), (Format-TrimTime $tp.TimelineEnd), ($tp.TimelineEnd - $tp.TimelineStart)) + $audioOnlySuffix
     }
 
     # Snapshot before every change. Cloning matters: the pieces are objects and a shallow
@@ -4844,6 +4952,47 @@ try {
         if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
         if ($null -ne $buttonTrimAddZoom) { $buttonTrimAddZoom.Add_Click({ Invoke-TrimAddZoom }) }
         if ($null -ne $buttonTrimUnlink) { $buttonTrimUnlink.Add_Click({ Invoke-TrimToggleUnlink }) }
+
+        # ---- Track properties strip handlers ----
+        #
+        # No GetNewClosure on any of these: like the zoom pill's slider, they reach the
+        # selected track through $script:TrimSelectedTrack via the top-level functions only,
+        # never through a captured loop variable.
+        if ($null -ne $sliderTrackGain) {
+            $sliderTrackGain.Add_ValueChanged({
+                if (Test-TrackUiLoading) { return }
+                $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+                if ($null -eq $t) { return }
+                # Set-TrimTrackValues rebuilds the lanes, which redraws this very strip
+                # (badge text, and the slider/checkbox re-armed under the loading flag) and
+                # refreshes the preview volume -- nothing else needs doing here.
+                Set-TrimTrackValues -Id $t.Id -GainDb ([double]$sliderTrackGain.Value)
+            })
+            # Undo brackets the whole drag, exactly as the zoom pill and the caption outline
+            # slider do: ValueChanged fires on every tick of one.
+            $sliderTrackGain.Add_GotMouseCapture({ Start-TrackGainEdit })
+            $sliderTrackGain.Add_LostMouseCapture({ Complete-TrackGainEdit })
+            # GainSliderStyle convention: double-click resets to unity (0 dB), same as the
+            # system/mic volume sliders.
+            $sliderTrackGain.Add_MouseDoubleClick({ $sliderTrackGain.Value = 0 })
+        }
+        if ($null -ne $checkTrackMute) {
+            $checkTrackMute.Add_Click({
+                if (Test-TrackUiLoading) { return }
+                $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+                if ($null -eq $t) { return }
+                Push-TrimUndo
+                Set-TrimTrackValues -Id $t.Id -Muted ([bool]$checkTrackMute.IsChecked)
+            })
+        }
+        if ($null -ne $buttonTrackDelete) {
+            $buttonTrackDelete.Add_Click({
+                if ($null -eq $script:TrimSelectedTrack) { return }
+                Push-TrimUndo
+                Remove-TrimTrack -Id $script:TrimSelectedTrack
+                Update-TrimSelectionText
+            })
+        }
 
         # ---- Caption sidebar handlers ----
         #
