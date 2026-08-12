@@ -821,7 +821,7 @@ function Export-TrimWaveform {
 
 function Get-TrimAudioStreams {
     param([Parameter(Mandatory = $true)][string]$InputFile)
-    $ffprobe = Get-ToolPath -Name ffprobe
+    $ffprobe = Get-ToolPath -Name ffprobe -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     $lines = @(& $ffprobe -v error -select_streams a -show_entries "stream=index:stream_tags=title" -of "csv=p=0" $InputFile 2>$null)
     # ConvertFrom-AudioStreamProbe already does `return ,@($result)` -- wrapping its result in
     # another ,@() here nests it one level deeper (trap #2 in the closure/array memory file):
