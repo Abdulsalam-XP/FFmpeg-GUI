@@ -854,6 +854,7 @@ try {
     $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
     $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
     $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
+    $panelTrimTracks     = $panelTrim.FindName("PanelTrimTracks")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $previewCell         = $panelTrim.FindName("PreviewCell")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
@@ -999,6 +1000,10 @@ try {
     # indexes shift on add/delete and a drag re-sorts nothing here, but Task 8's lane drag
     # will move things around the same way the zoom lane does.
     $script:TrimSelectedTrack = $null
+    # Live bar drag state, same shape of lifecycle as TrimCaptionDrag/TrimZoomDrag: $null
+    # when idle, a hashtable (Id, Mode, orig values, a snapshot, and direct Canvas/Rect
+    # references) while a bar is being dragged.
+    $script:TrimTrackDrag = $null
 
     # Project persistence. The save failure is reported once per file, not once per edit:
     # a read-only folder would otherwise repaint the same error over the panel every
@@ -1577,6 +1582,9 @@ try {
         # Last: the zoom lane is the bottom row and depends on the same timeline pieces
         # everything above it has just been drawn from.
         Update-TrimZoomLane
+        # Same hook point, same reasoning: the track lanes' clip bars are positioned with
+        # Convert-TrimTimeToX too, so they need the timeline pieces this pass just drew from.
+        Update-TrimTrackLanes
     }
 
     # Waveform strip under the filmstrip, one image per piece that is at least partly on
@@ -2202,13 +2210,347 @@ try {
         Request-TrimProjectSave
     }
 
-    # No-op stub: Task 8 draws the real per-track lanes on a canvas that does not exist in
-    # the XAML yet. Guarded exactly like the rest of this file guards a lookup that can come
-    # back $null on a partial install -- returns immediately rather than throwing, so every
-    # write-through above can call this unconditionally.
+    # Track selection. A track Id string (or $null), like the caption/zoom selections.
+    # Selecting a track drops both of the others -- three selections sharing one Delete
+    # key and one sidebar-style highlight would otherwise be ambiguous. Mirrors
+    # Set-TrimSelectedZoom's half of the pattern: the Set- function reaches across and
+    # clears the other two only when selecting something real, never on a plain deselect.
+    # Redraw is the caller's job, exactly as it is for Set-TrimSelectedCaption/Zoom.
+    function Set-TrimSelectedTrack {
+        param($Id)
+        $script:TrimSelectedTrack = $Id
+        if ($null -ne $Id) {
+            Clear-TrimCaptionSelection
+            Clear-TrimZoomSelection
+        }
+    }
+
+    # Only the two -clip kinds carry a draggable bar; video-main and audio-source are
+    # time-locked to the video by design (New-TrimTrack enforces this at construction) and
+    # are drawn full-width instead. Centralised here so the initial lane build and the
+    # live drag reposition read the same geometry.
+    function Test-TrimTrackIsClip {
+        param($Track)
+        return ($Track.Kind -eq "audio-clip" -or $Track.Kind -eq "video-clip")
+    }
+
+    function Get-TrimTrackBarBounds {
+        param($Track)
+        # SourceDuration: an external clip's own probed duration is not cached anywhere
+        # yet (nothing in this build can add a -clip track), so the session duration is
+        # the best available stand-in for "InEnd 0 means to the end of the source" until
+        # a later task wires up a real clip-duration cache.
+        $span = Get-TrackTimelineSpan -Track $Track -SourceDuration $script:TrimDuration
+        $left = Convert-TrimTimeToX -Seconds ([double]$span.Start)
+        $right = Convert-TrimTimeToX -Seconds ([double]$span.End)
+        return @{ Left = $left; Width = [math]::Max(2.0, $right - $left) }
+    }
+
+    # Repositions an already-built bar in place -- no Children.Clear(), no new elements --
+    # so it can run on every mouse-move of a live drag without disturbing the mouse capture
+    # the drag is holding on $Canvas (see Update-TrimTrackDrag below).
+    function Update-TrimTrackBarGeometry {
+        param($Track, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
+        if ($null -eq $Rect -or -not (Test-TrimTrackIsClip -Track $Track)) { return }
+        $bounds = Get-TrimTrackBarBounds -Track $Track
+        [System.Windows.Controls.Canvas]::SetLeft($Rect, $bounds.Left)
+        $Rect.Width = $bounds.Width
+        if ($null -ne $GripStart) { [System.Windows.Controls.Canvas]::SetLeft($GripStart, $bounds.Left) }
+        if ($null -ne $GripEnd) { [System.Windows.Controls.Canvas]::SetLeft($GripEnd, $bounds.Left + $bounds.Width - 6.0) }
+    }
+
+    # Same drag lifecycle as the caption lane, field for field: snapshot taken at
+    # mouse-down (pushed on release only if something actually moved), the drag applied
+    # against the ORIGINAL values every move (never accumulated deltas, which drift and
+    # let a clamp "eat" motion), and a direct reference to the Rect/Canvas this drag owns
+    # rather than a redraw -- Update-TrimTrackLanes rebuilds every lane's Border/Grid/Canvas
+    # from scratch, which would tear down the very canvas this drag has captured.
+    function Start-TrimTrackDrag {
+        param([string]$Id, [string]$Mode, [double]$StartX, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
+        $t = Get-TrimTrackById -Id $Id
+        if ($null -eq $t) { return }
+        $script:TrimTrackDrag = @{
+            Id          = $Id
+            Mode        = $Mode
+            StartX      = $StartX
+            OrigOffset  = [double]$t.Offset
+            OrigInStart = [double]$t.InStart
+            OrigInEnd   = [double]$t.InEnd
+            Canvas      = $Canvas
+            Rect        = $Rect
+            GripStart   = $GripStart
+            GripEnd     = $GripEnd
+            Snapshot    = New-TrimUndoSnapshot
+        }
+    }
+
+    function Test-TrimTrackDrag {
+        return ($null -ne $script:TrimTrackDrag)
+    }
+
+    function Update-TrimTrackDrag {
+        param([double]$CurrentX)
+        $drag = $script:TrimTrackDrag
+        if ($null -eq $drag) { return }
+        $t = Get-TrimTrackById -Id $drag.Id
+        if ($null -eq $t) { return }
+        $dt = Convert-TrimPixelsToSeconds -Pixels ($CurrentX - $drag.StartX)
+        # 0.0 rather than 0 in every clamp: the int-overload truncation trap that
+        # quantised the caption drags to whole seconds (see Move-TrimCaption).
+        switch ($drag.Mode) {
+            "instart" {
+                $minGap = 0.1
+                $t.InStart = [math]::Max(0.0, [math]::Min($drag.OrigInEnd - $minGap, $drag.OrigInStart + $dt))
+            }
+            "inend" {
+                $minGap = 0.1
+                $t.InEnd = [math]::Max($drag.OrigInStart + $minGap, $drag.OrigInEnd + $dt)
+            }
+            default {
+                $t.Offset = [math]::Max(0.0, $drag.OrigOffset + $dt)
+            }
+        }
+        Update-TrimTrackBarGeometry -Track $t -Canvas $drag.Canvas -Rect $drag.Rect -GripStart $drag.GripStart -GripEnd $drag.GripEnd
+    }
+
+    function Complete-TrimTrackDrag {
+        $drag = $script:TrimTrackDrag
+        $script:TrimTrackDrag = $null
+        if ($null -eq $drag) { return }
+        $t = Get-TrimTrackById -Id $drag.Id
+        if ($null -eq $t) { return }
+        $changed = ([math]::Abs([double]$t.Offset - $drag.OrigOffset) -gt 0.001) -or
+                   ([math]::Abs([double]$t.InStart - $drag.OrigInStart) -gt 0.001) -or
+                   ([math]::Abs([double]$t.InEnd - $drag.OrigInEnd) -gt 0.001)
+        if (-not $changed) { return }
+        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        Request-TrimProjectSave
+    }
+
+    # Rebuilt from scratch on every structural change, like the caption/zoom lanes -- with
+    # one exception. While a bar drag is live, this returns immediately instead: a full
+    # rebuild replaces every lane's Canvas with a brand-new object, and WPF releases mouse
+    # capture the instant the captured element leaves the visual tree, which would abort
+    # the drag after its very first pixel of movement. Update-TrimTrackDrag repositions the
+    # one bar it owns directly instead, and this function catches back up on mouse-up.
     function Update-TrimTrackLanes {
-        $canvasTrimTracks = $panelTrim.FindName("CanvasTrimTracks")
-        if ($null -eq $canvasTrimTracks) { return }
+        if ($null -eq $panelTrimTracks) { return }
+        if (Test-TrimTrackDrag) { return }
+        $panelTrimTracks.Children.Clear()
+        if (-not $script:TrimInputFile) { $panelTrimTracks.Visibility = "Collapsed"; return }
+
+        $hasClip = $false
+        foreach ($t in @($script:TrimTracks)) { if (Test-TrimTrackIsClip -Track $t) { $hasClip = $true; break } }
+        # Visible only when there is something to show beyond "one video, its own audio" --
+        # the ordinary single-clip session must look exactly like the pre-multitrack editor.
+        if (-not $script:TrimTracksUnlinked -and -not $hasClip) {
+            $panelTrimTracks.Visibility = "Collapsed"
+            return
+        }
+        $panelTrimTracks.Visibility = "Visible"
+
+        $visible = @(@($script:TrimTracks) | Where-Object { $script:TrimTracksUnlinked -or $_.Kind -ne "video-main" })
+        $selectedBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E0C48F")
+        $muteLiveBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+        $muteOffBrush  = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#44506A")
+        $audioBarBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#5A7EA8")
+        $videoBarBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#B08CFF")
+
+        foreach ($t in $visible) {
+            $thisId = $t.Id
+            $isClip = Test-TrimTrackIsClip -Track $t
+            $isSelected = ($t.Id -eq $script:TrimSelectedTrack)
+
+            $lane = New-Object System.Windows.Controls.Border
+            $lane.Style = $ctx.Window.FindResource("TrackLaneStyle")
+            $lane.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
+            $lane.ClipToBounds = $true
+            if ($isSelected) { $lane.BorderBrush = $selectedBrush }
+
+            $grid = New-Object System.Windows.Controls.Grid
+            $col0 = New-Object System.Windows.Controls.ColumnDefinition
+            $col0.Width = New-Object System.Windows.GridLength(190)
+            $col1 = New-Object System.Windows.Controls.ColumnDefinition
+            $col1.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)
+            [void]$grid.ColumnDefinitions.Add($col0)
+            [void]$grid.ColumnDefinitions.Add($col1)
+
+            # ---- Header: mute dot, label, gain badge, delete ----
+            $header = New-Object System.Windows.Controls.StackPanel
+            $header.Orientation = "Horizontal"
+            $header.VerticalAlignment = "Center"
+            $header.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+            [System.Windows.Controls.Grid]::SetColumn($header, 0)
+
+            $mute = New-Object System.Windows.Controls.Button
+            $mute.Width = 14; $mute.Height = 14
+            $mute.Padding = New-Object System.Windows.Thickness(0)
+            $mute.BorderThickness = New-Object System.Windows.Thickness(0)
+            $mute.Background = [System.Windows.Media.Brushes]::Transparent
+            $mute.Cursor = [System.Windows.Input.Cursors]::Hand
+            $mute.Margin = New-Object System.Windows.Thickness(0, 0, 6, 0)
+            $muteDot = New-Object System.Windows.Shapes.Ellipse
+            $muteDot.Width = 14; $muteDot.Height = 14
+            $muteDot.Fill = $(if ($t.Muted) { $muteOffBrush } else { $muteLiveBrush })
+            $mute.Content = $muteDot
+            $mute.Add_Click({
+                $track = Get-TrimTrackById -Id $thisId
+                if ($null -eq $track) { return }
+                Push-TrimUndo
+                Set-TrimTrackValues -Id $thisId -Muted (-not $track.Muted)
+            }.GetNewClosure())
+            [void]$header.Children.Add($mute)
+
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Style = $ctx.Window.FindResource("TrackChipTextStyle")
+            $label.Text = if ([string]::IsNullOrWhiteSpace($t.Label)) { $t.Kind } else { $t.Label }
+            $label.VerticalAlignment = "Center"
+            $label.MaxWidth = 78
+            $label.TextTrimming = "CharacterEllipsis"
+            [void]$header.Children.Add($label)
+
+            $gainBadge = New-Object System.Windows.Controls.TextBlock
+            $gainBadge.Style = $ctx.Window.FindResource("TrackChipTextStyle")
+            $gainBadge.Text = "{0:+0.0;-0.0;0} dB" -f [double]$t.GainDb
+            $gainBadge.VerticalAlignment = "Center"
+            $gainBadge.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+            [void]$header.Children.Add($gainBadge)
+
+            $delete = New-Object System.Windows.Controls.Button
+            $delete.Content = [char]0x00D7  # "x"
+            $delete.Width = 16; $delete.Height = 16
+            $delete.Padding = New-Object System.Windows.Thickness(0)
+            $delete.BorderThickness = New-Object System.Windows.Thickness(0)
+            $delete.Background = [System.Windows.Media.Brushes]::Transparent
+            $delete.FontFamily = $ctx.Window.FindResource("FontData")
+            $delete.Foreground = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#8FA8C0")
+            $delete.Cursor = [System.Windows.Input.Cursors]::Hand
+            $delete.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+            $delete.Add_Click({
+                Push-TrimUndo
+                Remove-TrimTrack -Id $thisId
+            }.GetNewClosure())
+            [void]$header.Children.Add($delete)
+
+            [void]$grid.Children.Add($header)
+
+            # ---- Span bar canvas ----
+            $barCanvas = New-Object System.Windows.Controls.Canvas
+            $barCanvas.Background = [System.Windows.Media.Brushes]::Transparent
+            [System.Windows.Controls.Grid]::SetColumn($barCanvas, 1)
+
+            $barBrush = if ($t.Kind -eq "video-main" -or $t.Kind -eq "video-clip") { $videoBarBrush } else { $audioBarBrush }
+            $bar = New-Object System.Windows.Shapes.Rectangle
+            $bar.Height = 18
+            $bar.Fill = $barBrush
+            $bar.RadiusX = 3; $bar.RadiusY = 3
+            [System.Windows.Controls.Canvas]::SetTop($bar, 7)
+
+            if ($isClip) {
+                $bounds = Get-TrimTrackBarBounds -Track $t
+                [System.Windows.Controls.Canvas]::SetLeft($bar, $bounds.Left)
+                $bar.Width = $bounds.Width
+                $bar.Cursor = [System.Windows.Input.Cursors]::SizeAll
+
+                $gripStart = $null
+                $gripEnd = $null
+                if ($bounds.Width -ge 20) {
+                    $gripStart = New-Object System.Windows.Shapes.Rectangle
+                    $gripStart.Width = 6; $gripStart.Height = 18
+                    $gripStart.Fill = [System.Windows.Media.Brushes]::Transparent
+                    $gripStart.Cursor = [System.Windows.Input.Cursors]::SizeWE
+                    [System.Windows.Controls.Canvas]::SetTop($gripStart, 7)
+                    [System.Windows.Controls.Canvas]::SetLeft($gripStart, $bounds.Left)
+
+                    $gripEnd = New-Object System.Windows.Shapes.Rectangle
+                    $gripEnd.Width = 6; $gripEnd.Height = 18
+                    $gripEnd.Fill = [System.Windows.Media.Brushes]::Transparent
+                    $gripEnd.Cursor = [System.Windows.Input.Cursors]::SizeWE
+                    [System.Windows.Controls.Canvas]::SetTop($gripEnd, 7)
+                    [System.Windows.Controls.Canvas]::SetLeft($gripEnd, $bounds.Left + $bounds.Width - 6.0)
+                }
+
+                # GetNewClosure over $thisId, exactly as the caption block/grips do -- without
+                # it every bar captures the loop's final track and dragging any of them moves
+                # the last one. $barCanvas/$bar/$gripStart/$gripEnd are closed over too: they
+                # are per-iteration locals already (New-Object each time round the loop), so
+                # capturing them just pins each handler to the instance it was built for.
+                $bar.Add_MouseLeftButtonDown({
+                    param($eventSource, $e)
+                    $x = ($e.GetPosition($barCanvas)).X
+                    Set-TrimSelectedTrack -Id $thisId
+                    Start-TrimTrackDrag -Id $thisId -Mode "move" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
+                    $barCanvas.CaptureMouse() | Out-Null
+                    $e.Handled = $true
+                }.GetNewClosure())
+                [void]$barCanvas.Children.Add($bar)
+
+                if ($null -ne $gripStart) {
+                    $gripStart.Add_MouseLeftButtonDown({
+                        param($eventSource, $e)
+                        $x = ($e.GetPosition($barCanvas)).X
+                        Set-TrimSelectedTrack -Id $thisId
+                        Start-TrimTrackDrag -Id $thisId -Mode "instart" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
+                        $barCanvas.CaptureMouse() | Out-Null
+                        $e.Handled = $true
+                    }.GetNewClosure())
+                    [void]$barCanvas.Children.Add($gripStart)
+
+                    $gripEnd.Add_MouseLeftButtonDown({
+                        param($eventSource, $e)
+                        $x = ($e.GetPosition($barCanvas)).X
+                        Set-TrimSelectedTrack -Id $thisId
+                        Start-TrimTrackDrag -Id $thisId -Mode "inend" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
+                        $barCanvas.CaptureMouse() | Out-Null
+                        $e.Handled = $true
+                    }.GetNewClosure())
+                    [void]$barCanvas.Children.Add($gripEnd)
+                }
+
+                # Live drag reads and writes $script:TrimTrackDrag through the top-level
+                # Test-/Update-/Complete- functions, not a closure, so it captures nothing --
+                # same reasoning as the caption and zoom lane canvases.
+                $barCanvas.Add_MouseMove({
+                    param($eventSource, $e)
+                    if (-not (Test-TrimTrackDrag)) { return }
+                    Update-TrimTrackDrag -CurrentX ($e.GetPosition($eventSource)).X
+                })
+                $barCanvas.Add_MouseLeftButtonUp({
+                    param($eventSource, $e)
+                    if (-not (Test-TrimTrackDrag)) { return }
+                    $eventSource.ReleaseMouseCapture()
+                    Complete-TrimTrackDrag
+                    Update-TrimTrackLanes
+                })
+            } else {
+                # Source kinds are time-locked to the video (New-TrimTrack enforces zero
+                # offset/trim for them) and simply ride the whole timeline -- no drag, no
+                # per-second geometry, just a full-width chip.
+                [System.Windows.Controls.Canvas]::SetLeft($bar, 0)
+                $barLaneWidth = $barCanvas.ActualWidth
+                if ($barLaneWidth -le 0) { $barLaneWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth - 190) }
+                $bar.Width = $barLaneWidth
+                $barCanvas.Add_SizeChanged({
+                    param($eventSource, $e)
+                    $bar.Width = $eventSource.ActualWidth
+                }.GetNewClosure())
+                [void]$barCanvas.Children.Add($bar)
+            }
+
+            [void]$grid.Children.Add($barCanvas)
+            $lane.Child = $grid
+
+            # Whole-row select. Fires for header clicks always, and for bar-area clicks only
+            # on non-clip lanes -- a clip bar's own handlers above mark their clicks Handled,
+            # so this one never doubles up with a drag start.
+            $lane.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                Set-TrimSelectedTrack -Id $thisId
+                Update-TrimTrackLanes
+            }.GetNewClosure())
+
+            [void]$panelTrimTracks.Children.Add($lane)
+        }
     }
 
     # Two keyframes at the same instant are a zero-length glide, which Get-TrimZoomStateAt
@@ -4392,6 +4734,13 @@ try {
             $canvasTrimZooms.Add_SizeChanged({ Update-TrimZoomLane })
         }
 
+        # Track lanes: the panel itself is the stable element (its per-lane children are
+        # rebuilt on every structural change), so a resize just needs the one redraw --
+        # there is no per-lane capture to protect here since a resize cannot happen mid-drag.
+        if ($null -ne $panelTrimTracks) {
+            $panelTrimTracks.Add_SizeChanged({ Update-TrimTrackLanes })
+        }
+
         # The zoom translate is computed from the host's own width and height, so every
         # pixel of it is wrong until the next redraw once the box changes size -- opening the
         # caption sidebar takes 240px off it, exactly as it does off the caption overlay.
@@ -4681,6 +5030,7 @@ try {
         $script:TrimTracks = New-Object System.Collections.ArrayList
         $script:TrimTracksUnlinked = $false
         $script:TrimSelectedTrack = $null
+        $script:TrimTrackDrag = $null
         # Whatever the previous file's glide left on the preview would otherwise sit over the
         # new file's first frame until something happens to redraw it.
         Update-PreviewZoom -SourceSeconds 0.0
@@ -4734,7 +5084,14 @@ try {
             # No v2 project (a v1 file, no file at all, or a v2 file saved before any track
             # existed) -- the app builds the same default stack Task 6's export path assumes:
             # one video-main plus one audio-source per stream this file actually has.
-            Set-TrimTracks -Tracks @(Get-DefaultTrackStack -Path $path -AudioStreams $streams)
+            # No @() wrapper here: Get-DefaultTrackStack already does `return ,@($stack)`, and
+            # wrapping an already-real array in another @() nests it one level deeper (trap #2)
+            # -- this exact line delivered a track "list" of Count 1 whose single element was
+            # the whole 3-track array, so every field read (GainDb, Kind, ...) on it came back
+            # as a per-track array via member-enumeration instead of one track's own value, and
+            # the first render that iterated a real track (unlink's lane rebuild) crashed trying
+            # to convert that array to a double.
+            Set-TrimTracks -Tracks (Get-DefaultTrackStack -Path $path -AudioStreams $streams)
             $script:TrimTracksUnlinked = $false
         }
 

@@ -515,6 +515,13 @@
                                     <Canvas x:Name="CanvasTrimWave" Grid.Row="1" Background="#CC070B14" IsHitTestVisible="False"/>
                                 </Grid>
                             </Border>
+
+                            <!-- Track lanes (Task 8): one row per track in the multi-track stack.
+                                 Collapsed by default, since the linked, single-video-plus-audio-source
+                                 case looks exactly like the pre-multitrack editor. Lanes themselves
+                                 are code-built children, drawn by Update-TrimTrackLanes. -->
+                            <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed" Margin="0,4,0,0"/>
+
                             <!-- Caption lane: one block per caption, drag to move, edge drag to retime. -->
                             <Border Style="{StaticResource TimelineTrackStyle}" Height="54" Margin="0,4,0,0" ClipToBounds="True">
                                 <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>

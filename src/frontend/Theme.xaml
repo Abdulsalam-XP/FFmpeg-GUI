@@ -1124,6 +1124,22 @@
         <Setter Property="Margin" Value="7,0"/>
         <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
     </Style>
+    <!-- Track lane row (Task 8): one per track in the multi-track stack, header on the
+         left and a span-bar canvas on the right. Darker and flatter than the caption/zoom
+         lanes above it, since this row is a list of tracks, not a strip of time. -->
+    <Style x:Key="TrackLaneStyle" TargetType="Border">
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="CornerRadius" Value="6"/>
+        <Setter Property="Background" Value="#CC0A0F1C"/>
+        <Setter Property="BorderBrush" Value="#2A3B52"/>
+        <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+    <Style x:Key="TrackChipTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Foreground" Value="#8FA8C0"/>
+    </Style>
+
     <!-- Sidebar field label + row spacing for the caption properties column. -->
     <Style x:Key="SidebarLabelStyle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource FontData}"/>

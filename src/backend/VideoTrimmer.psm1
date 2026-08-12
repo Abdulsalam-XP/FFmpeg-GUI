@@ -785,7 +785,13 @@ function Get-TrimAudioStreams {
     param([Parameter(Mandatory = $true)][string]$InputFile)
     $ffprobe = Get-ToolPath -Name ffprobe
     $lines = @(& $ffprobe -v error -select_streams a -show_entries "stream=index:stream_tags=title" -of "csv=p=0" $InputFile 2>$null)
-    return ,@(ConvertFrom-AudioStreamProbe -Lines $lines)
+    # ConvertFrom-AudioStreamProbe already does `return ,@($result)` -- wrapping its result in
+    # another ,@() here nests it one level deeper (trap #2 in the closure/array memory file):
+    # a real file with 2+ audio streams came back as a 1-element array whose single element was
+    # itself the 2-element array, so `foreach ($s in $streams)` bound $s to the whole array and
+    # `[int]$s.StreamIdx` threw "Cannot convert System.Object[] to Int32" the moment a genuine
+    # multi-stream DVR clip was loaded -- crashing the app via ShowDialog's pumped dispatcher loop.
+    return ConvertFrom-AudioStreamProbe -Lines $lines
 }
 
 function Split-TrimSegmentsForPips {
