@@ -883,6 +883,7 @@ try {
     $buttonTrimBrowse     = $panelTrim.FindName("ButtonTrimBrowse")
     $buttonTrimOpenAnother = $panelTrim.FindName("ButtonTrimOpenAnother")
     $buttonTrimAddZoom    = $panelTrim.FindName("ButtonTrimAddZoom")
+    $buttonTrimAddTrack   = $panelTrim.FindName("ButtonTrimAddTrack")
     $buttonTrimUnlink     = $panelTrim.FindName("ButtonTrimUnlink")
     $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
     $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
@@ -1010,6 +1011,32 @@ try {
     # when idle, a hashtable (Id, Mode, orig values, a snapshot, and direct Canvas/Rect
     # references) while a bar is being dragged.
     $script:TrimTrackDrag = $null
+    # Path -> probed duration (seconds) for every external clip added to the stack. Never
+    # left $null for the same reason TrimTracks isn't: it feeds -ClipDurations at
+    # Export-CutListAsync's call site and Get-TrackTimelineSpan's SourceDuration fallback
+    # for InEnd = 0 ("to the end of the clip"). Reset per file load alongside TrimTracks.
+    $script:TrimClipDurations = @{}
+    # Path -> the clip's own width/height aspect ratio, populated once at add-time
+    # (Invoke-TrimAddTrack) for every video-clip so the magnet-locked resize drag can read
+    # it without shelling out to ffprobe on every mouse-move.
+    $script:TrimClipAspect = @{}
+    # PiP preview pools: track Id -> MediaElement. Video-clip elements are inserted into
+    # the visual tree (PreviewCell, between PreviewZoomHost and CanvasCaptionOverlay) so
+    # they actually render; audio-clip elements are deliberately kept OFF the tree -- they
+    # exist only to play sound, never to be seen, and the export is authoritative for the
+    # real mix regardless of what the preview does.
+    $script:PipMediaElements = @{}
+    $script:AudioClipMediaElements = @{}
+    # In-flight PiP box drag: $null, or a hashtable shaped exactly like $script:ZoomBoxDrag
+    # (Mode "pipmove"/"pipresize", StartX/Y, Moved, orig Pip fields, Snapshot).
+    $script:PipBoxDrag = $null
+    # Magnet ON by default, same convention as $script:ZoomMagnet: resizing the PiP box
+    # keeps the clip's own aspect until the user opts into free-stretch.
+    $script:PipMagnet = $true
+    # Transient shapes for the PiP spotlight box (frame/mover/sizer), tracked the same way
+    # $script:ZoomBoxElements is so Remove-PipBoxElements can pull only these out of the
+    # shared caption overlay canvas.
+    $script:PipBoxElements = New-Object System.Collections.ArrayList
 
     # Project persistence. The save failure is reported once per file, not once per edit:
     # a read-only folder would otherwise repaint the same error over the panel every
@@ -1933,8 +1960,10 @@ try {
         # own null/no-file guards.
         Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
         # And right behind it, everywhere: Update-CaptionOverlay clears the shared overlay
-        # canvas, so the spotlight box has to be put back by whoever cleared it.
+        # canvas, so the spotlight box (and the PiP box) have to be put back by whoever
+        # cleared it.
         Update-ZoomBoxOverlay
+        Update-PipBoxOverlay
         if ($null -eq $canvasTrimCaptions) { return }
         $canvasTrimCaptions.Children.Clear()
         if (-not $script:TrimInputFile) { return }
@@ -2187,10 +2216,20 @@ try {
         if ($PSBoundParameters.ContainsKey("PipX") -or $PSBoundParameters.ContainsKey("PipY") -or
             $PSBoundParameters.ContainsKey("PipW") -or $PSBoundParameters.ContainsKey("PipH")) {
             if ($null -eq $t.Pip) { $t.Pip = @{ X = 0.5; Y = 0.5; W = 0.3; H = 0.3 } }
-            if ($PSBoundParameters.ContainsKey("PipX")) { $t.Pip.X = $PipX }
-            if ($PSBoundParameters.ContainsKey("PipY")) { $t.Pip.Y = $PipY }
-            if ($PSBoundParameters.ContainsKey("PipW")) { $t.Pip.W = $PipW }
-            if ($PSBoundParameters.ContainsKey("PipH")) { $t.Pip.H = $PipH }
+            # W/H first, THEN X/Y clamped against whichever W/H is now in effect -- a
+            # center clamp against the OLD size would let a box that just grew hang off
+            # the frame edge for one write. 0.05..1.0 (doubles, never int literals: the
+            # Max(0, double) truncation trap) matches the binding contract from Task 10.
+            if ($PSBoundParameters.ContainsKey("PipW")) { $t.Pip.W = [math]::Max(0.05, [math]::Min(1.0, $PipW)) }
+            if ($PSBoundParameters.ContainsKey("PipH")) { $t.Pip.H = [math]::Max(0.05, [math]::Min(1.0, $PipH)) }
+            $curW = [double]$t.Pip.W
+            $curH = [double]$t.Pip.H
+            if ($PSBoundParameters.ContainsKey("PipX")) {
+                $t.Pip.X = [math]::Max($curW / 2.0, [math]::Min(1.0 - $curW / 2.0, $PipX))
+            }
+            if ($PSBoundParameters.ContainsKey("PipY")) {
+                $t.Pip.Y = [math]::Max($curH / 2.0, [math]::Min(1.0 - $curH / 2.0, $PipY))
+            }
         }
         Update-TrimTrackLanes
         Request-TrimProjectSave
@@ -2360,6 +2399,11 @@ try {
     function Update-TrimTrackLanes {
         if ($null -eq $panelTrimTracks) { return }
         if (Test-TrimTrackDrag) { return }
+        # Prunes the PiP/audio-clip preview pools down to the tracks that still exist --
+        # every structural change (add, delete, undo/redo, unlink toggle, load) reaches
+        # here, which is exactly when a track can have vanished out from under its pooled
+        # MediaElement.
+        Sync-TrimClipMediaElementPools
         $panelTrimTracks.Children.Clear()
         if (-not $script:TrimInputFile) { $panelTrimTracks.Visibility = "Collapsed"; return }
 
@@ -2589,6 +2633,11 @@ try {
         # that select a track WITHOUT rebuilding the lanes (drag-start on a bar/grip, mid-drag)
         # call Update-TrimTrackProps directly instead -- see Start-TrimTrackDrag's callers.
         Update-TrimTrackProps
+        # And the PiP box/preview follow the same rule: a lane rebuild is what a track
+        # selection change (or add/delete) usually comes through, so this is the one place
+        # that keeps both in sync without a second call at every site above.
+        Update-PipBoxOverlay
+        Update-PipPreview -SourceSeconds $script:TrimPlayhead
     }
 
     # Mirrors Set-ZoomUiLoading: raised while Update-TrimTrackProps is writing the slider/
@@ -2962,6 +3011,414 @@ try {
         # picture under the playhead is stale until this runs.
         Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
         Request-TrimProjectSave
+    }
+
+    # ---- External clip tracks: add, PiP/audio-clip preview pools, PiP drag ----
+    #
+    # Extensions this app already treats as audio-only in the ffprobe/export code paths;
+    # anything else in the Filter goes to "video-clip".
+    $script:TrimAudioClipExtensions = @(".mp3", ".m4a", ".wav", ".flac")
+
+    # Removes and disposes one clip's pooled preview MediaElement(s) -- both a PiP element
+    # (in the visual tree) and an audio-clip element (deliberately never in it) are torn
+    # down the same way, so a single track Id passed here cleans up whichever pool it was
+    # actually in.
+    function Remove-TrimClipMediaElement {
+        param([string]$Id)
+        if ($script:PipMediaElements.ContainsKey($Id)) {
+            $el = $script:PipMediaElements[$Id]
+            try { $el.Stop() } catch {}
+            try { $el.Close() } catch {}
+            if ($null -ne $previewCell -and $previewCell.Children.Contains($el)) { $previewCell.Children.Remove($el) | Out-Null }
+            $script:PipMediaElements.Remove($Id)
+        }
+        if ($script:AudioClipMediaElements.ContainsKey($Id)) {
+            $entry = $script:AudioClipMediaElements[$Id]
+            try { $entry.Element.Stop() } catch {}
+            try { $entry.Element.Close() } catch {}
+            $script:AudioClipMediaElements.Remove($Id)
+        }
+    }
+
+    # Prunes both pools down to the tracks that still exist. Called from Update-TrimTrackLanes
+    # (every structural change -- add, delete, undo/redo, unlink toggle, load) so an undone
+    # add or a deleted track never leaves an orphaned MediaElement sitting in the visual tree
+    # (or, for an audio clip, silently still playing off-tree).
+    function Sync-TrimClipMediaElementPools {
+        $liveIds = @{}
+        foreach ($t in @($script:TrimTracks)) {
+            if (Test-TrimTrackIsClip -Track $t) { $liveIds[[string]$t.Id] = $true }
+        }
+        foreach ($id in @($script:PipMediaElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
+        foreach ($id in @($script:AudioClipMediaElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
+    }
+
+    # Clears both pools entirely -- used only when the whole session's file changes, since a
+    # fresh file's tracks are unrelated to whatever clips the previous one had loaded.
+    function Clear-TrimClipMediaElementPools {
+        foreach ($id in @($script:PipMediaElements.Keys)) { Remove-TrimClipMediaElement -Id $id }
+        foreach ($id in @($script:AudioClipMediaElements.Keys)) { Remove-TrimClipMediaElement -Id $id }
+    }
+
+    # One MediaElement per video-clip track, built once and reused: inserted into
+    # PreviewCell's visual tree AFTER PreviewZoomHost and BEFORE CanvasCaptionOverlay, so
+    # the picture sits over the main preview but under the caption/PiP-box overlay --
+    # exactly the stacking order Task 10's brief specifies.
+    function Get-PipMediaElement {
+        param($Track)
+        $id = [string]$Track.Id
+        if (-not $script:PipMediaElements.ContainsKey($id)) {
+            $el = New-Object System.Windows.Controls.MediaElement
+            $el.LoadedBehavior = "Manual"
+            $el.UnloadedBehavior = "Manual"
+            $el.Stretch = "Fill"
+            $el.IsHitTestVisible = $false
+            $el.Volume = 0
+            $el.Visibility = "Collapsed"
+            try { $el.Source = New-Object System.Uri([string]$Track.Path) } catch {}
+            if ($null -ne $previewCell -and $null -ne $canvasCaptionOverlay) {
+                $idx = $previewCell.Children.IndexOf($canvasCaptionOverlay)
+                if ($idx -ge 0) { $previewCell.Children.Insert($idx, $el) } else { $previewCell.Children.Add($el) | Out-Null }
+            }
+            $script:PipMediaElements[$id] = $el
+        }
+        return $script:PipMediaElements[$id]
+    }
+
+    # One MediaElement per audio-clip track, built once and reused -- but NEVER added to
+    # any Panel's Children. WPF's MediaElement plays audio through the same MediaPlayer
+    # regardless of whether it is in the visual tree; being off-tree just means it never
+    # tries to render a frame nobody would see. InSpan tracks whether THIS element was
+    # playing the last time it was checked, so Update-TrimAudioClipPreview can tell "just
+    # entered the span" (seed Position once) from "still inside it" (let it run) without
+    # re-seeking on every single tick.
+    function Get-AudioClipMediaElement {
+        param($Track)
+        $id = [string]$Track.Id
+        if (-not $script:AudioClipMediaElements.ContainsKey($id)) {
+            $el = New-Object System.Windows.Controls.MediaElement
+            $el.LoadedBehavior = "Manual"
+            $el.UnloadedBehavior = "Manual"
+            try { $el.Source = New-Object System.Uri([string]$Track.Path) } catch {}
+            $script:AudioClipMediaElements[$id] = @{ Element = $el; InSpan = $false }
+        }
+        return $script:AudioClipMediaElements[$id]
+    }
+
+    # Positions/plays every video-clip track's PiP MediaElement against the TIMELINE
+    # playhead (never source seconds -- a clip's Offset is a timeline position, exactly
+    # like a track bar drag writes). Called from the same places Update-PreviewZoom is:
+    # the transport tick, every scrub, and the preview frame resize.
+    function Update-PipPreview {
+        param([double]$SourceSeconds)
+        if ($null -eq $previewCell -or $null -eq $script:PreviewBox) { return }
+        $box = $script:PreviewBox
+        $bw = [double]$box.W
+        $bh = [double]$box.H
+        $state = Get-TrimTimelineState
+        $timelinePlayhead = Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
+        $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
+        foreach ($t in @($script:TrimTracks)) {
+            if ($t.Kind -ne "video-clip") { continue }
+            $el = Get-PipMediaElement -Track $t
+            $dur = if ($script:TrimClipDurations.ContainsKey([string]$t.Path)) { [double]$script:TrimClipDurations[[string]$t.Path] } else { 0.0 }
+            $span = Get-TrackTimelineSpan -Track $t -SourceDuration $dur
+            $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End)
+            if (-not $inSpan -or $bw -le 0 -or $bh -le 0) {
+                $el.Visibility = "Collapsed"
+                try { $el.Pause() } catch {}
+                continue
+            }
+            $el.Visibility = "Visible"
+            $pip = if ($null -ne $t.Pip) { $t.Pip } else { @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 } }
+            $pw = [double]$pip.W * $bw
+            $ph = [double]$pip.H * $bh
+            $el.Width = $pw
+            $el.Height = $ph
+            $el.HorizontalAlignment = "Left"
+            $el.VerticalAlignment = "Top"
+            $marginX = [double]$box.X + (([double]$pip.X - ([double]$pip.W / 2.0)) * $bw)
+            $marginY = [double]$box.Y + (([double]$pip.Y - ([double]$pip.H / 2.0)) * $bh)
+            $el.Margin = New-Object System.Windows.Thickness($marginX, $marginY, 0, 0)
+            # PiP audio comes through only if the user ALSO added an audio-clip track --
+            # this MediaElement is picture only.
+            $el.Volume = 0
+            $pos = [math]::Max(0.0, ($timelinePlayhead - [double]$t.Offset + [double]$t.InStart))
+            try { $el.Position = [timespan]::FromSeconds($pos) } catch {}
+            if ($playing) { try { $el.Play() } catch {} } else { try { $el.Pause() } catch {} }
+        }
+    }
+
+    # Plays every audio-clip track's off-tree MediaElement while the timeline playhead is
+    # inside its span AND the main transport is playing -- scrubbing deliberately never
+    # seeks these (the comment on Get-AudioClipMediaElement explains why: the export's own
+    # mix is authoritative, this is only ever an approximation while editing).
+    function Update-TrimAudioClipPreview {
+        param([double]$SourceSeconds, [bool]$Playing)
+        $state = Get-TrimTimelineState
+        $timelinePlayhead = Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
+        foreach ($t in @($script:TrimTracks)) {
+            if ($t.Kind -ne "audio-clip") { continue }
+            $entry = Get-AudioClipMediaElement -Track $t
+            $el = $entry.Element
+            $dur = if ($script:TrimClipDurations.ContainsKey([string]$t.Path)) { [double]$script:TrimClipDurations[[string]$t.Path] } else { 0.0 }
+            $span = Get-TrackTimelineSpan -Track $t -SourceDuration $dur
+            $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End)
+            $vol = if ($t.Muted) { 0.0 } else { [math]::Min(1.0, [math]::Pow(10.0, [double]$t.GainDb / 20.0)) }
+            $el.Volume = $vol
+            if ($Playing -and $inSpan) {
+                if (-not $entry.InSpan) {
+                    $pos = [math]::Max(0.0, ($timelinePlayhead - [double]$t.Offset + [double]$t.InStart))
+                    try { $el.Position = [timespan]::FromSeconds($pos) } catch {}
+                    try { $el.Play() } catch {}
+                    $entry.InSpan = $true
+                }
+            } else {
+                if ($entry.InSpan) { try { $el.Pause() } catch {} }
+                $entry.InSpan = $false
+            }
+        }
+    }
+
+    # + Track button. The OpenFileDialog cannot be exercised by the UIA harness (it hangs
+    # on the native Open dialog), so this is verified by code-path review plus a scripted
+    # check that crafts a project file directly -- see the Task 10 report.
+    function Invoke-TrimAddTrack {
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        $dlg = New-Object Microsoft.Win32.OpenFileDialog
+        $dlg.Filter = "Media|*.mp4;*.mkv;*.mov;*.mp3;*.m4a;*.wav;*.flac|All files|*.*"
+        if ($dlg.ShowDialog() -ne $true) { return }
+        $path = $dlg.FileName
+        $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+        $isAudio = $script:TrimAudioClipExtensions -contains $ext
+        $label = [System.IO.Path]::GetFileName($path)
+
+        # Probed once, up front, and cached by path -- the export call site and every span
+        # calculation from here on read the cache rather than re-shelling to ffprobe.
+        $duration = Get-TrimClipDuration -Path $path
+        $script:TrimClipDurations[[string]$path] = $duration
+
+        $state = Get-TrimTimelineState
+        $timelineOffset = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+
+        Push-TrimUndo
+        if ($isAudio) {
+            $track = New-TrimTrack -Kind "audio-clip" -Path $path -Label $label -Offset $timelineOffset
+        } else {
+            # Pip.H preserves the clip's own aspect against the 16:9 frame, so a
+            # portrait or ultrawide clip doesn't land in the editor pre-squashed: a box
+            # W wide (as a fraction of the 16:9 frame) needs H = W * (frameAspect /
+            # clipAspect) to keep the CLIP's pixels square, not the frame's.
+            $profile = Get-TrimSourceProfile -InputFile $path
+            $frameAspect = 16.0 / 9.0
+            $clipAspect = if ([double]$profile.Height -gt 0) { [double]$profile.Width / [double]$profile.Height } else { $frameAspect }
+            $script:TrimClipAspect[[string]$path] = $clipAspect
+            $pipW = 0.35
+            $pipH = [math]::Max(0.05, [math]::Min(1.0, $pipW * ($frameAspect / $clipAspect)))
+            $track = New-TrimTrack -Kind "video-clip" -Path $path -Label $label -Offset $timelineOffset `
+                -Pip @{ X = 0.5; Y = 0.5; W = $pipW; H = $pipH }
+        }
+        [void]$script:TrimTracks.Add($track)
+        Set-TrimSelectedTrack -Id $track.Id
+        Update-TrimTrackLanes
+        Update-PipPreview -SourceSeconds $script:TrimPlayhead
+        Request-TrimProjectSave
+    }
+
+    # ---- PiP spotlight box (drag/resize on the caption overlay canvas) ----
+    #
+    # Drawn only while the selected track is a video-clip, the same "one thing owns the
+    # overlay's furniture at a time" rule the zoom box and captions already share (see
+    # Set-TrimSelectedTrack/-Zoom/-Caption clearing each other). Cloned from the zoom
+    # box's element pattern (gold frame + body mover + bottom-right handle) per the
+    # Task 10 brief, with its own PipBoxElements tracking list so it can be torn down
+    # and rebuilt without disturbing the zoom box's or the captions' own elements.
+    function Remove-PipBoxElements {
+        if ($null -eq $canvasCaptionOverlay) { return }
+        foreach ($el in @($script:PipBoxElements)) {
+            if ($canvasCaptionOverlay.Children.Contains($el)) { $canvasCaptionOverlay.Children.Remove($el) }
+        }
+        $script:PipBoxElements.Clear()
+    }
+
+    function Add-PipBoxElement {
+        param($Element, [double]$Left, [double]$Top)
+        [System.Windows.Controls.Canvas]::SetLeft($Element, $Left)
+        [System.Windows.Controls.Canvas]::SetTop($Element, $Top)
+        $Element.IsHitTestVisible = $false
+        $canvasCaptionOverlay.Children.Add($Element) | Out-Null
+        [void]$script:PipBoxElements.Add($Element)
+    }
+
+    # Redrawn from the model, called right after Update-ZoomBoxOverlay at every point the
+    # caption/zoom overlay redraws (tick, scrub, selection change) -- see the call sites
+    # added alongside Update-ZoomBoxOverlay's own.
+    function Update-PipBoxOverlay {
+        if ($null -eq $canvasCaptionOverlay) { return }
+        Remove-PipBoxElements
+        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+        if ($null -eq $t -or $t.Kind -ne "video-clip") { return }
+
+        $w = [double]$canvasCaptionOverlay.ActualWidth
+        $h = [double]$canvasCaptionOverlay.ActualHeight
+        if ($w -le 0 -or $h -le 0) { return }
+
+        # Mid-drag the box on screen is the one being dragged, not the one stored: the
+        # values already landed live (Update-PipBoxDrag writes through Set-TrimTrackValues
+        # every move), but reading them back off the drag state avoids a redundant
+        # Get-TrimTrackById round trip mid-gesture, mirroring the zoom box's $forming path.
+        $drag = $script:PipBoxDrag
+        $pip = if ($null -ne $drag -and $drag.Moved) {
+            @{ X = $drag.X; Y = $drag.Y; W = $drag.W; H = $drag.H }
+        } elseif ($null -ne $t.Pip) {
+            $t.Pip
+        } else {
+            @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 }
+        }
+
+        $bw = $w * [math]::Max(0.01, [double]$pip.W)
+        $bh = $h * [math]::Max(0.01, [double]$pip.H)
+        $left = [math]::Max(0.0, [math]::Min($w - $bw, ([double]$pip.X * $w) - ($bw / 2.0)))
+        $top = [math]::Max(0.0, [math]::Min($h - $bh, ([double]$pip.Y * $h) - ($bh / 2.0)))
+
+        $frame = New-Object System.Windows.Controls.Border
+        $frame.BorderBrush = Get-CaptionBrush -Hex $script:ZoomBoxStrokeBrush -Fallback "#E0C48F"
+        $frame.BorderThickness = New-Object System.Windows.Thickness(2)
+        $frame.Width = [math]::Max(1.0, $bw)
+        $frame.Height = [math]::Max(1.0, $bh)
+        Add-PipBoxElement -Element $frame -Left $left -Top $top
+
+        $mover = New-Object System.Windows.Shapes.Rectangle
+        $mover.Width = [math]::Max(1.0, $bw)
+        $mover.Height = [math]::Max(1.0, $bh)
+        $mover.Fill = [System.Windows.Media.Brushes]::Transparent
+        $mover.Cursor = [System.Windows.Input.Cursors]::SizeAll
+        Add-PipBoxElement -Element $mover -Left $left -Top $top
+        $mover.IsHitTestVisible = $true
+        # No GetNewClosure: exactly one PiP box can exist at a time (the selected track),
+        # so there is no per-item loop variable to capture -- same reasoning as the zoom
+        # box's mover/sizer.
+        $mover.Add_MouseLeftButtonDown({
+            param($eventSource, $e)
+            $p = $e.GetPosition($canvasCaptionOverlay)
+            Start-PipBoxDrag -StartX $p.X -StartY $p.Y -Mode "pipmove"
+            $canvasCaptionOverlay.CaptureMouse() | Out-Null
+            $e.Handled = $true
+        })
+
+        $sizer = New-Object System.Windows.Shapes.Ellipse
+        $sizer.Width = 13
+        $sizer.Height = 13
+        $sizer.Fill = Get-CaptionBrush -Hex $script:ZoomBoxStrokeBrush -Fallback "#E0C48F"
+        $sizer.Stroke = Get-CaptionBrush -Hex "#12161C" -Fallback "#000000"
+        $sizer.StrokeThickness = 1.5
+        $sizer.Cursor = [System.Windows.Input.Cursors]::SizeNWSE
+        Add-PipBoxElement -Element $sizer `
+            -Left ([math]::Max(0.0, [math]::Min($w - 13.0, $left + $bw - 6.5))) `
+            -Top ([math]::Max(0.0, [math]::Min($h - 13.0, $top + $bh - 6.5)))
+        $sizer.IsHitTestVisible = $true
+        $sizer.Add_MouseLeftButtonDown({
+            param($eventSource, $e)
+            $p = $e.GetPosition($canvasCaptionOverlay)
+            Start-PipBoxDrag -StartX $p.X -StartY $p.Y -Mode "pipresize"
+            $canvasCaptionOverlay.CaptureMouse() | Out-Null
+            $e.Handled = $true
+        })
+    }
+
+    # Same lifecycle shape as Start-/Update-/Complete-ZoomBoxDrag: snapshot at mouse-down,
+    # applied live against the ORIGINAL values every move, pushed on release only if the
+    # box actually moved.
+    function Start-PipBoxDrag {
+        param([double]$StartX, [double]$StartY, [string]$Mode)
+        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+        if ($null -eq $t -or $t.Kind -ne "video-clip") { return }
+        $pip = if ($null -ne $t.Pip) { $t.Pip } else { @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 } }
+        $script:PipBoxDrag = @{
+            Mode   = $Mode
+            StartX = $StartX
+            StartY = $StartY
+            Moved  = $false
+            OrigX  = [double]$pip.X
+            OrigY  = [double]$pip.Y
+            OrigW  = [double]$pip.W
+            OrigH  = [double]$pip.H
+            X      = [double]$pip.X
+            Y      = [double]$pip.Y
+            W      = [double]$pip.W
+            H      = [double]$pip.H
+            TrackId  = [string]$t.Id
+            Snapshot = New-TrimUndoSnapshot
+        }
+    }
+
+    function Test-PipBoxDrag {
+        return ($null -ne $script:PipBoxDrag)
+    }
+
+    # Magnet ON locks the CLIP's OWN aspect (Task 10 ruling #6 -- NOT the frame's, unlike
+    # the zoom box's magnet), read from the cache Invoke-TrimAddTrack populated so a
+    # mouse-move handler never has to shell out to ffprobe mid-drag.
+    function Update-PipBoxDrag {
+        param([double]$CurrentX, [double]$CurrentY)
+        $drag = $script:PipBoxDrag
+        if ($null -eq $drag) { return }
+        if ($null -eq $canvasCaptionOverlay) { return }
+        $w = [double]$canvasCaptionOverlay.ActualWidth
+        $h = [double]$canvasCaptionOverlay.ActualHeight
+        if ($w -le 0 -or $h -le 0) { return }
+
+        $dx = $CurrentX - [double]$drag.StartX
+        $dy = $CurrentY - [double]$drag.StartY
+        if (-not $drag.Moved -and ([math]::Abs($dx) -gt 4.0 -or [math]::Abs($dy) -gt 4.0)) { $drag.Moved = $true }
+        if (-not $drag.Moved) { return }
+
+        $t = Get-TrimTrackById -Id $drag.TrackId
+        if ($null -eq $t) { return }
+
+        if ($drag.Mode -eq "pipmove") {
+            $cx = [math]::Max($drag.OrigW / 2.0, [math]::Min(1.0 - $drag.OrigW / 2.0, $drag.OrigX + ($dx / $w)))
+            $cy = [math]::Max($drag.OrigH / 2.0, [math]::Min(1.0 - $drag.OrigH / 2.0, $drag.OrigY + ($dy / $h)))
+            $drag.X = $cx
+            $drag.Y = $cy
+            Set-TrimTrackValues -Id $drag.TrackId -PipX $cx -PipY $cy
+            return
+        }
+
+        if ($drag.Mode -eq "pipresize") {
+            $newW = [math]::Max(0.05, [math]::Min(1.0, $drag.OrigW + (2.0 * $dx / $w)))
+            $newH = [math]::Max(0.05, [math]::Min(1.0, $drag.OrigH + (2.0 * $dy / $h)))
+            if ($script:PipMagnet) {
+                $clipAspect = if ($script:TrimClipAspect.ContainsKey([string]$t.Path)) { [double]$script:TrimClipAspect[[string]$t.Path] } else { 16.0 / 9.0 }
+                $frameAspect = 16.0 / 9.0
+                $wDelta = [math]::Abs($newW - $drag.OrigW)
+                $hDelta = [math]::Abs($newH - $drag.OrigH)
+                if ($wDelta -ge $hDelta) {
+                    $newH = [math]::Max(0.05, [math]::Min(1.0, $newW * ($frameAspect / $clipAspect)))
+                } else {
+                    $newW = [math]::Max(0.05, [math]::Min(1.0, $newH * ($clipAspect / $frameAspect)))
+                }
+            }
+            $cx = [math]::Max($newW / 2.0, [math]::Min(1.0 - $newW / 2.0, $drag.OrigX))
+            $cy = [math]::Max($newH / 2.0, [math]::Min(1.0 - $newH / 2.0, $drag.OrigY))
+            $drag.W = $newW
+            $drag.H = $newH
+            $drag.X = $cx
+            $drag.Y = $cy
+            Set-TrimTrackValues -Id $drag.TrackId -PipW $newW -PipH $newH -PipX $cx -PipY $cy
+            return
+        }
+    }
+
+    function Complete-PipBoxDrag {
+        $drag = $script:PipBoxDrag
+        $script:PipBoxDrag = $null
+        if ($null -eq $drag) { return }
+        if ($drag.Moved) {
+            Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+            Request-TrimProjectSave
+        }
+        Update-TrimTrackProps
     }
 
     # ---- Caption preview overlay ----
@@ -3882,6 +4339,7 @@ try {
                 # so bring them back rather than waiting for the next thing that redraws.
                 Update-CaptionOverlay -SourceSeconds $SourceSeconds
                 Update-ZoomBoxOverlay
+                Update-PipBoxOverlay
             }
             return
         }
@@ -4185,6 +4643,7 @@ try {
         Update-TrimCaptionLane
         Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
         Update-ZoomBoxOverlay
+        Update-PipBoxOverlay
     }
 
     # Re-fills one box from the model without the write-back a plain assignment would
@@ -4627,6 +5086,11 @@ try {
             # just re-centred the host at identity, which is wrong mid-zoom.
             $script:PreviewBox = @{ X = $boxX; Y = $boxY; W = $w; H = $h }
             Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+            # The PiP element(s) and the spotlight box are both positioned from this same
+            # box, so a resize leaves them stale in exactly the way it leaves the zoom
+            # transform stale.
+            Update-PipPreview -SourceSeconds $script:TrimPlayhead
+            Update-PipBoxOverlay
         }
         if ($null -ne $previewCell) {
             $previewCell.Add_SizeChanged({ & $script:UpdatePreviewFrameSize })
@@ -4704,12 +5168,20 @@ try {
             # After the fade overlay, not before: the fade owns the picture while it is up
             # and Update-CaptionOverlay reads the key it just set.
             Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
-            # The caption redraw just cleared the overlay canvas the spotlight box lives on.
+            # The caption redraw just cleared the overlay canvas the spotlight box (and the
+            # PiP box) live on.
             Update-ZoomBoxOverlay
+            Update-PipBoxOverlay
             # After the captions: the zoom transform is what makes the glide visible during
             # playback, and it has its own identity fast-path so a clip with no keyframes
             # pays almost nothing for being asked 20x a second.
             Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+            # And the PiP/audio-clip pools follow the same tick: video-clip elements seek
+            # and play/pause with the main transport, audio-clip elements play only while
+            # actually playing (see Update-TrimAudioClipPreview's own comment on why
+            # scrubbing never reaches them).
+            Update-PipPreview -SourceSeconds $script:TrimPlayhead
+            Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $true
         })
 
         $buttonTrimPlay.Add_Click({
@@ -4721,6 +5193,11 @@ try {
                 $mediaTrimPreview.Pause()
                 $buttonTrimPlay.Content = "Play"
                 $script:TrimTimer.Stop()
+                # Pausing the main transport has to pause every PiP/audio-clip element too --
+                # otherwise a video-clip PiP or an audio-clip keeps running silently past the
+                # point the visible transport stopped.
+                Update-PipPreview -SourceSeconds $script:TrimPlayhead
+                Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
             }
         }.GetNewClosure())
 
@@ -4756,8 +5233,13 @@ try {
             # Scrubbing across a caption's window shows it appear and disappear on time.
             Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
             Update-ZoomBoxOverlay
+            Update-PipBoxOverlay
             # And scrubbing across a glide shows the picture move with it, paused.
             Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+            # Scrubbing repositions a PiP's video, but deliberately never seeks an
+            # audio-clip (Update-TrimAudioClipPreview's own comment explains why).
+            Update-PipPreview -SourceSeconds $script:TrimPlayhead
+            Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
         })
 
         # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
@@ -4900,8 +5382,18 @@ try {
 
             $canvasCaptionOverlay.Add_MouseMove({
                 param($eventSource, $e)
-                # The zoom box first: the two drags cannot both be live (selecting a zoom
-                # clears the caption selection), and this one is the cheaper test.
+                # PiP box first: it and the zoom box can never both be live (selecting a
+                # track clears the zoom selection, selecting a zoom clears the track
+                # selection -- Set-TrimSelectedTrack/-Zoom's mutual-exclusion), so testing
+                # order between the two never matters, only that both are checked before
+                # falling through to the caption drag.
+                if (Test-PipBoxDrag) {
+                    $p = $e.GetPosition($canvasCaptionOverlay)
+                    Update-PipBoxDrag -CurrentX $p.X -CurrentY $p.Y
+                    Update-PipBoxOverlay
+                    return
+                }
+                # The zoom box next: the cheaper test of the two remaining drags.
                 if (Test-ZoomBoxDrag) {
                     $p = $e.GetPosition($canvasCaptionOverlay)
                     Update-ZoomBoxDrag -CurrentX $p.X -CurrentY $p.Y
@@ -4915,10 +5407,18 @@ try {
                 Update-CaptionOverlayDrag -CurrentX $p.X -CurrentY $p.Y
                 Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
                 Update-ZoomBoxOverlay
+                Update-PipBoxOverlay
             })
 
             $canvasCaptionOverlay.Add_MouseLeftButtonUp({
                 param($eventSource, $e)
+                if (Test-PipBoxDrag) {
+                    $canvasCaptionOverlay.ReleaseMouseCapture()
+                    Complete-PipBoxDrag
+                    Update-TrimTrackLanes
+                    Update-PipBoxOverlay
+                    return
+                }
                 if (Test-ZoomBoxDrag) {
                     $canvasCaptionOverlay.ReleaseMouseCapture()
                     Complete-ZoomBoxDrag
@@ -4933,6 +5433,7 @@ try {
                 Complete-CaptionOverlayDrag
                 Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
                 Update-ZoomBoxOverlay
+                Update-PipBoxOverlay
             })
 
             # Opening or closing the sidebar takes 240px off the preview, so every X/Y
@@ -4941,6 +5442,7 @@ try {
             $canvasCaptionOverlay.Add_SizeChanged({
                 Update-CaptionOverlay -SourceSeconds $script:TrimPlayhead
                 Update-ZoomBoxOverlay
+                Update-PipBoxOverlay
             })
 
             # Once, at startup: the pill is a live control, not a redrawn shape, and lives in
@@ -4951,6 +5453,7 @@ try {
         if ($null -ne $buttonTrimAddCaption) { $buttonTrimAddCaption.Add_Click({ Invoke-TrimAddCaption }) }
         if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
         if ($null -ne $buttonTrimAddZoom) { $buttonTrimAddZoom.Add_Click({ Invoke-TrimAddZoom }) }
+        if ($null -ne $buttonTrimAddTrack) { $buttonTrimAddTrack.Add_Click({ Invoke-TrimAddTrack }) }
         if ($null -ne $buttonTrimUnlink) { $buttonTrimUnlink.Add_Click({ Invoke-TrimToggleUnlink }) }
 
         # ---- Track properties strip handlers ----
@@ -5198,6 +5701,15 @@ try {
         $script:TrimTracksUnlinked = $false
         $script:TrimSelectedTrack = $null
         $script:TrimTrackDrag = $null
+        # The previous file's external clips are unrelated to whatever the new file's
+        # project restores below -- every pooled PiP/audio-clip MediaElement is torn down
+        # rather than left playing (or sitting in the visual tree) against a file that is
+        # no longer open, and the duration/aspect caches are keyed by path so they carry
+        # no meaning across files either.
+        Clear-TrimClipMediaElementPools
+        $script:TrimClipDurations = @{}
+        $script:TrimClipAspect = @{}
+        $script:PipBoxDrag = $null
         # Whatever the previous file's glide left on the preview would otherwise sit over the
         # new file's first frame until something happens to redraw it.
         Update-PreviewZoom -SourceSeconds 0.0
@@ -5260,6 +5772,23 @@ try {
             # to convert that array to a double.
             Set-TrimTracks -Tracks (Get-DefaultTrackStack -Path $path -AudioStreams $streams)
             $script:TrimTracksUnlinked = $false
+        }
+        # A restored project's clip tracks were probed against a PREVIOUS session's cache
+        # (TrimClipDurations/TrimClipAspect were just cleared above) -- without re-probing
+        # here, every one of them would read InEnd 0 as "SourceDuration 0.0" and land as a
+        # zero-length span, invisible on both the lane and the PiP preview.
+        foreach ($t in @($script:TrimTracks)) {
+            if (-not (Test-TrimTrackIsClip -Track $t)) { continue }
+            $tp = [string]$t.Path
+            if (-not $script:TrimClipDurations.ContainsKey($tp)) {
+                $script:TrimClipDurations[$tp] = Get-TrimClipDuration -Path $tp
+            }
+            if ($t.Kind -eq "video-clip" -and -not $script:TrimClipAspect.ContainsKey($tp)) {
+                $clipProfile = Get-TrimSourceProfile -InputFile $tp
+                $script:TrimClipAspect[$tp] = if ([double]$clipProfile.Height -gt 0) {
+                    [double]$clipProfile.Width / [double]$clipProfile.Height
+                } else { 16.0 / 9.0 }
+            }
         }
 
         # A second file's thumbnails are for a different source and must not be served
@@ -5347,7 +5876,13 @@ try {
         if ($null -ne $previewZoomHost) {
             $previewZoomHost.Dispatcher.BeginInvoke(
                 [System.Windows.Threading.DispatcherPriority]::Loaded,
-                [action]({ Update-PreviewZoom -SourceSeconds $script:TrimPlayhead }.GetNewClosure())) | Out-Null
+                [action]({
+                    Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
+                    # Same reasoning as the zoom: PreviewBox has no size yet on the pass
+                    # that makes the card visible, so a restored project's PiP tracks would
+                    # otherwise sit invisible/mispositioned until the next tick or scrub.
+                    Update-PipPreview -SourceSeconds $script:TrimPlayhead
+                }.GetNewClosure())) | Out-Null
         }
         Start-TrimKeyframeRead -Path $path
 
@@ -5509,6 +6044,61 @@ try {
                 }
             }
 
+            # ---- Multi-track pre-flight refusals (Task 10) ----
+            #
+            # An empty stack (every track, including video-main, deleted) has nothing left
+            # to export -- checked before the missing-file scan below, which would
+            # otherwise just report nothing at all with no explanation.
+            if (@($script:TrimTracks).Count -eq 0) {
+                Show-PanelMessage -Block $textTrimMeta -IsError `
+                    -Text "Every track was deleted -- nothing to export."
+                return
+            }
+            # A clip track's file can vanish between being added and export time (moved,
+            # renamed, deleted, or a removable drive unplugged) -- caught here rather than
+            # letting ffmpeg fail deep inside the rebuild pipeline with an opaque error.
+            $missingClip = @(@($script:TrimTracks) |
+                Where-Object { (Test-TrimTrackIsClip -Track $_) -and -not (Test-Path -LiteralPath $_.Path) } |
+                Select-Object -First 1)
+            if ($missingClip.Count -gt 0) {
+                $missingName = if ([string]::IsNullOrWhiteSpace($missingClip[0].Label)) {
+                    [System.IO.Path]::GetFileName($missingClip[0].Path)
+                } else { $missingClip[0].Label }
+                Show-PanelMessage -Block $textTrimMeta -IsError `
+                    -Text ("Can't find {0} -- it moved or was deleted." -f $missingName)
+                return
+            }
+            # Picture-in-picture spans, SOURCE... actually TIMELINE (compacted) time, exactly
+            # like every other span Get-TrackTimelineSpan produces -- built once here and
+            # reused both for the transition-clash refusal and the export call site itself.
+            $pipSpans = @()
+            foreach ($clipTrack in @($script:TrimTracks)) {
+                if ($clipTrack.Kind -ne "video-clip") { continue }
+                $clipDur = if ($script:TrimClipDurations.ContainsKey([string]$clipTrack.Path)) {
+                    [double]$script:TrimClipDurations[[string]$clipTrack.Path]
+                } else { 0.0 }
+                $clipSpan = Get-TrackTimelineSpan -Track $clipTrack -SourceDuration $clipDur
+                $pipSpans += ,@{
+                    Start   = [double]$clipSpan.Start
+                    End     = [double]$clipSpan.End
+                    Overlay = @{
+                        TrackId = [string]$clipTrack.Id
+                        Path    = [string]$clipTrack.Path
+                        Pip     = $clipTrack.Pip
+                        InStart = [double]$clipTrack.InStart
+                    }
+                }
+            }
+            # Same reasoning as the zoomed-crossfade refusal above: a pip has nowhere to
+            # composite onto during a crossfade's own xfade pass. Test-PipTransitionClash
+            # (Tracks.psm1) already carries the Task 4-adjudicated window semantics --
+            # called here rather than reimplemented.
+            if (Test-PipTransitionClash -PipSpans @($pipSpans) -Pieces $pieces -FadeLengths $fadeLengths) {
+                Show-PanelMessage -Block $textTrimMeta -IsError `
+                    -Text "Move the clip or the fade -- a clip over a crossfade isn't supported yet."
+                return
+            }
+
             # Fonts are resolved by libass at burn time, from the fonts installed on THIS
             # machine. A name that is not installed still exports -- libass substitutes --
             # so this warns and carries on rather than refusing: a blocked export helps
@@ -5527,8 +6117,16 @@ try {
             } else {
                 Show-PanelMessage -Block $textTrimMeta -Text ""
             }
+            # -Tracks @($script:TrimTracks), never a bare $script:TrimTracks: the PS 5.1
+            # @($null).Count -eq 1 trap (Task 10 ruling #2) means a null reaching the
+            # binder here would silently take the audio-only branch instead of erroring --
+            # but TrimTracks is never actually $null (same invariant Set-TrimTracks/the
+            # file-load reset both keep), so this is belt-and-suspenders, not a fix for a
+            # real null. $pipSpans is already a real array built above; @() around it is
+            # the same defensive habit for the same reason.
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
                 -FadeLengths $fadeLengths -Captions $captions -Zooms $zooms `
+                -Tracks @($script:TrimTracks) -ClipDurations $script:TrimClipDurations -PipSpans @($pipSpans) `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
         })
     }

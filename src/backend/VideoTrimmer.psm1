@@ -119,6 +119,26 @@ function Get-TrimSourceProfile {
     }
 }
 
+# Duration of any media file -- video or audio-only -- via -show_format, so an external
+# clip added to a track (Task 10: an mp3/m4a/wav/flac has no video stream at all) can be
+# probed the same way a video clip is, unlike Get-VideoProperties which requires one.
+# Returns 0.0 on any probe failure rather than throwing: a clip whose duration can't be
+# read still gets added, it just falls back to "InEnd 0 means to the end of the source"
+# reading as an empty span until the user trims it, exactly like the pre-existing
+# audio-source SourceDuration fallback in Get-TrimTrackBarBounds.
+function Get-TrimClipDuration {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    $raw = & $ffprobe -v error -show_entries "format=duration" -of csv=p=0 $Path 2>$null
+    $text = (@($raw) | Select-Object -First 1)
+    $d = 0.0
+    if ($text -and [double]::TryParse(("$text").Trim(), [System.Globalization.NumberStyles]::Float, `
+            [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+        return $d
+    }
+    return 0.0
+}
+
 # Turns the piece list plus a per-boundary fade flag into the flat list of segments the
 # export actually builds: one entry per piece, with a transition entry spliced between
 # any two pieces whose shared boundary is faded.
@@ -874,4 +894,4 @@ function Test-TrackStackHasAudio {
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
     ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
-    Get-TrimExportMode, Test-TrackStackHasAudio
+    Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration
