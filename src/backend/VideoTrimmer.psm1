@@ -240,6 +240,14 @@ function Export-CutListAsync {
         # rebuild path even on an otherwise-trivial stack, because a pip has to be composited
         # onto the video during the segment re-encode.
         [object[]]$PipSpans = @(),
+        # Probed count of audio streams the SOURCE file itself has, -1 (default) for every
+        # existing caller -- the legacy/unknown sentinel Test-TrackStackTrivial treats as
+        # "behave exactly as before this parameter existed". >= 0 additionally routes a
+        # stack whose audio-source tracks were deleted (not muted) to the rebuild path,
+        # since a deleted-audio stack otherwise has nothing left in $Tracks to mark it
+        # non-trivial and would silently fall through to stream-copying the source's
+        # original, undeleted audio. See Get-TrimExportMode / Test-TrackStackTrivial.
+        [int]$SourceAudioStreamCount = -1,
         [scriptblock]$OnFinished = $null
     )
 
@@ -257,7 +265,7 @@ function Export-CutListAsync {
     # (no tracks, or an untouched stack with no pips) takes EXACTLY the pre-existing route:
     # no -an, no mix pass, no mux, no behavioral change of any kind. See Get-TrimExportMode
     # for the decision, kept pure and unit-tested there rather than inlined here.
-    $mode = Get-TrimExportMode -Tracks $Tracks -PipSpans $PipSpans
+    $mode = Get-TrimExportMode -Tracks $Tracks -PipSpans $PipSpans -SourceAudioStreamCount $SourceAudioStreamCount
     # A deleted video-main means there is no video pipeline at all -- the audio pass IS the
     # export, and it writes an audio container rather than an mp4.
     if ($mode -eq "audio-only") {
@@ -878,11 +886,11 @@ function Split-TrimSegmentsForPips {
 #   "audio-only" -- no video-main in the stack at all: only the audio pass runs, and it
 #                   writes the final output directly.
 function Get-TrimExportMode {
-    param([object[]]$Tracks = @(), [object[]]$PipSpans = @())
+    param([object[]]$Tracks = @(), [object[]]$PipSpans = @(), [int]$SourceAudioStreamCount = -1)
     if (@($Tracks).Count -eq 0) { return "trivial" }
     $mains = @(@($Tracks) | Where-Object { $_.Kind -eq "video-main" })
     if ($mains.Count -eq 0) { return "audio-only" }
-    if ((Test-TrackStackTrivial -Tracks $Tracks) -and @($PipSpans).Count -eq 0) { return "trivial" }
+    if ((Test-TrackStackTrivial -Tracks $Tracks -SourceAudioStreamCount $SourceAudioStreamCount) -and @($PipSpans).Count -eq 0) { return "trivial" }
     return "rebuild"
 }
 

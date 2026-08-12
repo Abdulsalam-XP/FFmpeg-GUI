@@ -82,13 +82,25 @@ function Get-TrackTimelineSpan {
 }
 
 function Test-TrackStackTrivial {
-    param([object[]]$Tracks = @())
+    param([object[]]$Tracks = @(), [int]$SourceAudioStreamCount = -1)
     $mains = @(@($Tracks) | Where-Object { $_.Kind -eq "video-main" })
     if ($mains.Count -ne 1) { return $false }
     foreach ($t in @($Tracks)) {
         if ($t.Kind -eq "audio-clip" -or $t.Kind -eq "video-clip") { return $false }
         if ($t.Muted) { return $false }
         if ([math]::Abs([double]$t.GainDb) -gt 0.0001) { return $false }
+    }
+    # -1 (the default) is the legacy/unknown sentinel: every existing caller that never
+    # heard of this parameter gets EXACTLY today's behavior. >= 0 means the caller probed
+    # the source file's own audio stream count and additionally requires the stack's
+    # surviving audio-source tracks to match it -- catching the case the loop above cannot:
+    # deleting an audio-source track outright (rather than muting it) leaves nothing in
+    # $Tracks for the loop to object to, so a stack with 0 audio-source entries against a
+    # 2-audio-stream file would otherwise still read as trivial and stream-copy the
+    # source's original (undeleted) audio straight through.
+    if ($SourceAudioStreamCount -ge 0) {
+        $sourceAudioTracks = @(@($Tracks) | Where-Object { $_.Kind -eq "audio-source" })
+        if ($sourceAudioTracks.Count -ne $SourceAudioStreamCount) { return $false }
     }
     return $true
 }

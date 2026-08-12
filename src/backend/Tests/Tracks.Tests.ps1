@@ -104,6 +104,18 @@ Describe "Test-TrackStackTrivial" {
         Test-TrackStackTrivial -Tracks @($main, (New-TrimTrack -Kind "audio-clip" -Path "m.mp3")) | Should Be $false
         Test-TrackStackTrivial -Tracks @($src) | Should Be $false
     }
+    It "is trivial when the audio-source count matches SourceAudioStreamCount" {
+        $src2 = New-TrimTrack -Kind "audio-source" -Path "a.mp4" -StreamIdx 2
+        Test-TrackStackTrivial -Tracks @($main, $src, $src2) -SourceAudioStreamCount 2 | Should Be $true
+    }
+    It "is not trivial when an audio-source track was deleted (count short of SourceAudioStreamCount)" {
+        Test-TrackStackTrivial -Tracks @($main, $src) -SourceAudioStreamCount 2 | Should Be $false
+        Test-TrackStackTrivial -Tracks @($main) -SourceAudioStreamCount 2 | Should Be $false
+    }
+    It "ignores SourceAudioStreamCount when -1 (legacy/unknown)" {
+        Test-TrackStackTrivial -Tracks @($main, $src) -SourceAudioStreamCount -1 | Should Be $true
+        Test-TrackStackTrivial -Tracks @($main) | Should Be $true
+    }
 }
 
 Describe "New-TrimAudioMixPlan" {

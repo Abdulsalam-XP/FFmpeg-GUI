@@ -1016,6 +1016,16 @@ try {
     # Export-CutListAsync's call site and Get-TrackTimelineSpan's SourceDuration fallback
     # for InEnd = 0 ("to the end of the clip"). Reset per file load alongside TrimTracks.
     $script:TrimClipDurations = @{}
+    # The PROBED count of audio streams the loaded source file itself actually has (from
+    # Get-TrimAudioStreams at load time), -1 until a file has been probed. Passed as
+    # Export-CutListAsync's -SourceAudioStreamCount so a stack whose audio-source tracks
+    # were deleted (rather than muted) is recognized as non-trivial (deleting all of a
+    # 2-stream file's audio-source tracks leaves 0 != 2) and routes to the rebuild path
+    # instead of silently falling through to the trivial "-map 0 -c copy" of the source,
+    # which would keep the original audio no matter what the UI shows. -1 (never left
+    # unset/$null) is the legacy/unknown sentinel every downstream function treats as
+    # "behave exactly as before this existed".
+    $script:TrimSourceAudioStreamCount = -1
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
     # (Invoke-TrimAddTrack) for every video-clip so the magnet-locked resize drag can read
     # it without shelling out to ffprobe on every mouse-move.
@@ -5716,6 +5726,9 @@ try {
         $script:TrimTracksUnlinked = $false
         $script:TrimSelectedTrack = $null
         $script:TrimTrackDrag = $null
+        # Reset to the legacy/unknown sentinel here; set to the real probed count a few
+        # lines below once Get-TrimAudioStreams has run against the new file.
+        $script:TrimSourceAudioStreamCount = -1
         # The previous file's external clips are unrelated to whatever the new file's
         # project restores below -- every pooled PiP/audio-clip MediaElement is torn down
         # rather than left playing (or sitting in the visual tree) against a file that is
@@ -5771,6 +5784,12 @@ try {
         # had. Synchronous, same as the ffprobe call Get-VideoProperties already made above --
         # both are quick metadata reads, not the frame decode the keyframe scan needs async.
         $streams = Get-TrimAudioStreams -InputFile $path
+        # @($streams).Count, not $streams.Count: Get-TrimAudioStreams always returns a real
+        # array (ConvertFrom-AudioStreamProbe's `return ,@($result)`), so this is
+        # belt-and-suspenders against the @($null).Count -eq 1 trap, not a fix for a real
+        # null -- same defensive habit as the -Tracks/-PipSpans wrapping at the export call
+        # site below.
+        $script:TrimSourceAudioStreamCount = @($streams).Count
         if ($project -and $null -ne $project.Tracks -and @($project.Tracks).Count -gt 0) {
             Set-TrimTracks -Tracks @($project.Tracks)
             $script:TrimTracksUnlinked = [bool]$project.Unlinked
@@ -6142,6 +6161,7 @@ try {
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
                 -FadeLengths $fadeLengths -Captions $captions -Zooms $zooms `
                 -Tracks @($script:TrimTracks) -ClipDurations $script:TrimClipDurations -PipSpans @($pipSpans) `
+                -SourceAudioStreamCount $script:TrimSourceAudioStreamCount `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
         })
     }

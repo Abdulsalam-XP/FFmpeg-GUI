@@ -276,6 +276,15 @@ Describe "Get-TrimExportMode" {
     It "is audio-only without a video-main" {
         Get-TrimExportMode -Tracks @($src) -PipSpans @() | Should Be "audio-only"
     }
+    It "rebuilds when every audio-source track was deleted and the source had some" {
+        Get-TrimExportMode -Tracks @($main) -PipSpans @() -SourceAudioStreamCount 2 | Should Be "rebuild"
+    }
+    It "stays trivial for an untouched stack even with SourceAudioStreamCount passed" {
+        Get-TrimExportMode -Tracks @($main, $src) -PipSpans @() -SourceAudioStreamCount 1 | Should Be "trivial"
+    }
+    It "is unchanged for legacy callers that never pass SourceAudioStreamCount" {
+        Get-TrimExportMode -Tracks @($main) -PipSpans @() | Should Be "trivial"
+    }
 }
 
 # A muted-everything stack is "rebuild" (Test-TrackStackTrivial refuses any Muted track),
