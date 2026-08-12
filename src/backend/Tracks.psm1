@@ -122,7 +122,17 @@ function New-TrimAudioMixPlan {
         # audio-only export still needs the source file for its audio-source streams
         [string](@($Tracks) | Where-Object { $_.Kind -eq "audio-source" } | Select-Object -First 1).Path
     }
-    $inputPaths = @($mainPath)
+    # Neither a video-main nor any audio-source track exists (e.g. both deleted, an
+    # audio-clip-only stack survives) -- $mainPath resolves to "" and must NOT seed
+    # InputPaths[0], or export builds `-i ""` and dies on an opaque ffmpeg error. The
+    # IndexOf dedupe below renumbers clip inputs automatically, and `[0:{idx}]` source
+    # refs are only ever emitted from the $sources loop, which is empty in this case too.
+    # Outer @(...) wraps the WHOLE if/else, not just each branch: an if/else assigned
+    # directly loses array-ness when the taken branch's array has exactly one element
+    # (trap #5 in the closure/array memory file) -- without it, the else branch's
+    # single-path array unwraps to a bare string on assignment, and every += below
+    # silently does string concatenation instead of growing a real array.
+    $inputPaths = @(if ([string]::IsNullOrEmpty($mainPath)) { @() } else { @($mainPath) })
     $starts = Get-TrimTimelineStarts -Pieces $Pieces -FadeLengths $FadeLengths
     $sources = @(@($Tracks) | Where-Object { $_.Kind -eq "audio-source" -and -not $_.Muted })
     $clips   = @(@($Tracks) | Where-Object { $_.Kind -eq "audio-clip" -and -not $_.Muted })

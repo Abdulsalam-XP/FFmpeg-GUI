@@ -168,6 +168,16 @@ Describe "New-TrimAudioMixPlan" {
         $r = New-TrimAudioMixPlan -Tracks @($main,$game,$clip) -Pieces $p1 -FadeLengths @() -ClipDurations @{ "C:\m\song.mp3" = 5.0 }
         $r.FilterComplex | Should Match ([regex]::Escape("atrim=start=0:end=2"))
     }
+    It "seeds InputPaths from the clip alone when no video-main or audio-source track exists" {
+        # video-main + every source lane deleted, only an audio-clip track survives:
+        # $mainPath resolves to "" and must not be seeded into InputPaths[0] (would
+        # otherwise become an `-i ""` ffmpeg argument).
+        $clip = New-TrimTrack -Kind "audio-clip" -Path "C:\m\song.mp3"
+        $r = New-TrimAudioMixPlan -Tracks @($clip) -Pieces $p1 -FadeLengths @() -ClipDurations @{ "C:\m\song.mp3" = 4.0 }
+        $r.InputPaths[0] | Should Be "C:\m\song.mp3"
+        $r.InputPaths.Count | Should Be 1
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:a]"))
+    }
     It "writes dot decimals under a comma-decimal culture and contains no unescaped expression commas" {
         $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
         try {
