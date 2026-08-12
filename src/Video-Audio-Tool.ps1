@@ -5822,6 +5822,19 @@ try {
         # site below.
         $script:TrimSourceAudioStreamCount = @($streams).Count
         if ($project -and $null -ne $project.Tracks -and @($project.Tracks).Count -gt 0) {
+            # Restored tracks carry whatever Path was on disk at save time. A "video-main"
+            # or "audio-source" track is BY DEFINITION the loaded file -- not a movable
+            # reference to it -- so if the file has since moved (renamed, relocated), its
+            # recorded Path is stale and must be rewritten to $path (the file we just
+            # resolved to load) rather than left pointing at the old location. Clip-kind
+            # tracks ("audio-clip"/"video-clip") are genuinely separate files and are left
+            # untouched; only the two locked kinds get the rewrite.
+            foreach ($rt in @($project.Tracks)) {
+                if ($null -eq $rt) { continue }
+                if ($rt.Kind -eq "video-main" -or $rt.Kind -eq "audio-source") {
+                    $rt.Path = $path
+                }
+            }
             Set-TrimTracks -Tracks @($project.Tracks)
             $script:TrimTracksUnlinked = [bool]$project.Unlinked
         } else {
