@@ -2,6 +2,7 @@ Import-Module "$PSScriptRoot/UI.psm1"
 Import-Module "$PSScriptRoot/ToolPaths.psm1"
 Import-Module "$PSScriptRoot/Captions.psm1"
 Import-Module "$PSScriptRoot/Zooms.psm1"
+Import-Module "$PSScriptRoot/Tracks.psm1"
 
 # Keyframe times for the trim timeline. Cuts can only start on a keyframe without
 # re-encoding, so the timeline snaps to these and the panel reports their spacing --
@@ -118,6 +119,26 @@ function Get-TrimSourceProfile {
     }
 }
 
+# Duration of any media file -- video or audio-only -- via -show_format, so an external
+# clip added to a track (Task 10: an mp3/m4a/wav/flac has no video stream at all) can be
+# probed the same way a video clip is, unlike Get-VideoProperties which requires one.
+# Returns 0.0 on any probe failure rather than throwing: a clip whose duration can't be
+# read still gets added, it just falls back to "InEnd 0 means to the end of the source"
+# reading as an empty span until the user trims it, exactly like the pre-existing
+# audio-source SourceDuration fallback in Get-TrimTrackBarBounds.
+function Get-TrimClipDuration {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    $raw = & $ffprobe -v error -show_entries "format=duration" -of csv=p=0 $Path 2>$null
+    $text = (@($raw) | Select-Object -First 1)
+    $d = 0.0
+    if ($text -and [double]::TryParse(("$text").Trim(), [System.Globalization.NumberStyles]::Float, `
+            [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+        return $d
+    }
+    return 0.0
+}
+
 # Turns the piece list plus a per-boundary fade flag into the flat list of segments the
 # export actually builds: one entry per piece, with a transition entry spliced between
 # any two pieces whose shared boundary is faded.
@@ -206,6 +227,27 @@ function Export-CutListAsync {
         # Zoom keyframes (New-ZoomKeyframe shape) in SOURCE time. Empty means no segment
         # crops and the plan comes out exactly as the caption split left it.
         [object[]]$Zooms = @(),
+        # Multi-track stack (New-TrimTrack shape). Empty (the default, and every existing
+        # caller) means the legacy single-track pipeline below runs completely unchanged --
+        # see Get-TrimExportMode. Non-empty routes through the audio-rebuild path: video
+        # re-encodes muted (-an), a separate pass mixes the tracks, and a final mux joins
+        # them back together.
+        [object[]]$Tracks = @(),
+        # Path -> seconds, probed by the app, for audio-clip tracks whose InEnd is 0 (means
+        # "to the end of the clip"). Passed straight through to New-TrimAudioMixPlan.
+        [hashtable]$ClipDurations = @{},
+        # Picture-in-picture spans (Start/End/Overlay), SOURCE time. Non-empty forces the
+        # rebuild path even on an otherwise-trivial stack, because a pip has to be composited
+        # onto the video during the segment re-encode.
+        [object[]]$PipSpans = @(),
+        # Probed count of audio streams the SOURCE file itself has, -1 (default) for every
+        # existing caller -- the legacy/unknown sentinel Test-TrackStackTrivial treats as
+        # "behave exactly as before this parameter existed". >= 0 additionally routes a
+        # stack whose audio-source tracks were deleted (not muted) to the rebuild path,
+        # since a deleted-audio stack otherwise has nothing left in $Tracks to mark it
+        # non-trivial and would silently fall through to stream-copying the source's
+        # original, undeleted audio. See Get-TrimExportMode / Test-TrackStackTrivial.
+        [int]$SourceAudioStreamCount = -1,
         [scriptblock]$OnFinished = $null
     )
 
@@ -218,6 +260,25 @@ function Export-CutListAsync {
 
     $ffmpegPath = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     $outputFile = Get-JobOutputPath -InputFile $InputFile -Suffix "Edited"
+
+    # Everything below this line up to $stepCount is guarded by $mode so the trivial path
+    # (no tracks, or an untouched stack with no pips) takes EXACTLY the pre-existing route:
+    # no -an, no mix pass, no mux, no behavioral change of any kind. See Get-TrimExportMode
+    # for the decision, kept pure and unit-tested there rather than inlined here.
+    $mode = Get-TrimExportMode -Tracks $Tracks -PipSpans $PipSpans -SourceAudioStreamCount $SourceAudioStreamCount
+    # A deleted video-main means there is no video pipeline at all -- the audio pass IS the
+    # export, and it writes an audio container rather than an mp4.
+    if ($mode -eq "audio-only") {
+        $outputFile = [System.IO.Path]::ChangeExtension($outputFile, ".m4a")
+    }
+    # Muting every audio lane is NOT trivial (Test-TrackStackTrivial refuses any Muted
+    # track), so a fully-muted stack lands in "rebuild" same as a gained one -- but running
+    # the audio pass there would mix zero sources over New-TrimAudioMixPlan's silence base
+    # and mux in a SILENT AAC stream, which is a different artifact than the spec's
+    # video-only, no-audio-stream-at-all output. Checked only for rebuild mode: audio-only
+    # mode already requires an audio pass to have any output at all (a fully-muted,
+    # video-main-deleted stack is a degenerate empty project, out of scope here).
+    $hasAudio = Test-TrackStackHasAudio -Tracks $Tracks
 
     # $work is the segment plan, not the piece list: with no fades the two are the same
     # thing (one copy step per piece), and with fades it also carries the transition
@@ -241,10 +302,52 @@ function Export-CutListAsync {
     # $stepCount is computed after the LAST split, because the splits are what decide how
     # many ffmpeg runs there actually are.
     $work = Split-TrimSegmentsForZooms -Segments $work -Zooms $Zooms
+    # Non-trivial video pipeline: pip spans split the segments further (a segment under a
+    # pip re-encodes with an overlay chain even if it would otherwise stream-copy), still
+    # before $stepCount is computed -- the splits are what decide how many ffmpeg runs
+    # there actually are. audio-only mode has no video-main at all, so the whole video
+    # pipeline is skipped: $work becomes empty and the audio pass is the only step.
+    if ($mode -eq "rebuild") {
+        $work = Split-TrimSegmentsForPips -Segments $work -PipSpans $PipSpans
+    } elseif ($mode -eq "audio-only") {
+        $work = @()
+    }
+    # Captured before the audiomix/mux markers are appended below -- this is the count of
+    # real video segments, used to size $tempFiles to actual piece files only (an audiomix
+    # or mux marker is never extracted to piece{i}.mp4) and to know how many of $tempFiles
+    # belong in the mux step's concat list.
+    $segCount = $work.Count
+    # Whether audiomix/mux got appended as real $work entries -- true for every
+    # non-trivial mode EXCEPT a rebuild stack with no unmuted audio at all. That last case
+    # skips the audio pass entirely and falls through to the SAME implicit "one step past
+    # the segment list" concat trivial mode uses (unchanged code, further down): the
+    # pieces are already video-only (every rebuild-mode segment encode carries -an), so a
+    # plain "-map 0 -c copy" of them is already the correct video-only output -- no mux,
+    # no .m4a, nothing left to append.
+    $appendsFinalSteps = ($mode -eq "rebuild" -and $hasAudio) -or ($mode -eq "audio-only")
+    if ($mode -eq "rebuild" -and $hasAudio) {
+        # Two more RunStep entries, reusing the same progress/cancel plumbing as every
+        # other step: mix the tracks' audio, then mux it onto the video-only concat.
+        $work = $work + @(@{ Kind = "audiomix" }, @{ Kind = "mux" })
+    } elseif ($mode -eq "audio-only") {
+        # No video at all -- the mix pass writes the final output directly.
+        $work = $work + @(@{ Kind = "audiomix" })
+    }
     $stepCount = $work.Count + 1
+    # For modes where audiomix (and mux) are now real entries INSIDE $work -- unlike the
+    # trivial path's implicit "one step past the segment list is the concat", there is
+    # nothing left to do after the last entry in $work, so the "+1" above (which exists
+    # only to count that implicit trailing concat step) does not apply. A rebuild stack
+    # with no unmuted audio did NOT get those entries appended, so it keeps the "+1" and
+    # reaches the implicit concat step exactly like trivial mode does.
+    if ($appendsFinalSteps) { $stepCount = $work.Count }
     $profile = Get-TrimSourceProfile -InputFile $InputFile
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-cut-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    # Dedicated path for the audio-rebuild's mix pass. Written here (rather than inline in
+    # the "audiomix" step) so the "mux" step -- a separate RunStep call, on a separate
+    # closure -- can find it too.
+    $audioMixOutput = Join-Path $tempDir "audiomix.m4a"
 
     $tempFiles = @()
     for ($i = 0; $i -lt $work.Count; $i++) {
@@ -284,7 +387,7 @@ function Export-CutListAsync {
         $fadeAudioMaps += @("-map", "`"[a$a]`"")
     }
     $buildFadeFilter = {
-        param([double]$Seconds, [string]$AssFile = "")
+        param([double]$Seconds, [string]$AssFile = "", [bool]$IncludeAudio = $true)
         $graph = "[0:v][1:v]xfade=transition=fade:duration=$Seconds`:offset=0[v]"
         # A transition already re-encodes, so a caption that overlaps one rides along on
         # the same pass: the ass filter is chained onto the crossfade's own output instead
@@ -293,8 +396,15 @@ function Export-CutListAsync {
         if ($AssFile) {
             $graph += ";[v]ass='$(ConvertTo-AssFilterPath -Path $AssFile)'[v2]"
         }
-        for ($a = 0; $a -lt $audioStreamCount; $a++) {
-            $graph += ";[0:a:$a][1:a:$a]acrossfade=d=$Seconds[a$a]"
+        # The rebuild path drops audio from every segment (an audio pass mixes the tracks
+        # separately), and ffmpeg treats an unconnected filter_complex OUTPUT as a hard
+        # error ("... has output N unconnected") -- confirmed live, not merely unused
+        # computation. So the acrossfade branches are left out of the graph entirely
+        # rather than built-and-unmapped.
+        if ($IncludeAudio) {
+            for ($a = 0; $a -lt $audioStreamCount; $a++) {
+                $graph += ";[0:a:$a][1:a:$a]acrossfade=d=$Seconds[a$a]"
+            }
         }
         return $graph
     }.GetNewClosure()
@@ -338,10 +448,99 @@ function Export-CutListAsync {
         $profile = $profile
         $buildFadeFilter = $buildFadeFilter
         $fadeAudioMaps = $fadeAudioMaps
+        $mode = $mode
+        $segCount = $segCount
+        $hasAudio = $hasAudio
+        $appendsFinalSteps = $appendsFinalSteps
+        $Tracks = $Tracks
+        $Pieces = $Pieces
+        $FadeLengths = $FadeLengths
+        $ClipDurations = $ClipDurations
+        $audioMixOutput = $audioMixOutput
+        $tempDir = $tempDir
 
         if ($StepIndex -lt $work.Count) {
             $segment = $work[$StepIndex]
-            if ($segment.Kind -eq "transition") {
+            if ($segment.Kind -eq "audiomix") {
+                # Mixes every unmuted audio-source/audio-clip track down to one AAC file.
+                # Runs for both "rebuild" (feeds the mux step below) and "audio-only"
+                # (writes the final output directly, already given a .m4a extension).
+                $plan = New-TrimAudioMixPlan -Tracks $Tracks -Pieces $Pieces -FadeLengths $FadeLengths -ClipDurations $ClipDurations
+                $audioInputArgs = @()
+                foreach ($p in @($plan.InputPaths)) { $audioInputArgs += @("-i", "`"$p`"") }
+                $audioDest = if ($mode -eq "audio-only") { $outputFile } else { $audioMixOutput }
+                $args = @("-hide_banner") + $audioInputArgs +
+                        @("-filter_complex", "`"$($plan.FilterComplex)`"",
+                          "-map", "`"$($plan.OutputLabel)`"",
+                          "-c:a", "aac", "-b:a", "320k",
+                          "`"$audioDest`"", "-y")
+            } elseif ($segment.Kind -eq "mux") {
+                # Concat demuxer as the video input directly -- no separate concat pass is
+                # needed, since -f concat can sit right in front of the mux's own -map.
+                $listPath = Join-Path $tempDir "list.txt"
+                $videoPieces = @($tempFiles | Select-Object -First $segCount)
+                $body = (($videoPieces | ForEach-Object { "file '$($_ -replace '\\', '/')'" }) -join "`n") + "`n"
+                [System.IO.File]::WriteAllText($listPath, $body, (New-Object System.Text.UTF8Encoding($false)))
+                $args = @("-hide_banner", "-f", "concat", "-safe", "0", "-i", "`"$listPath`"",
+                          "-i", "`"$audioMixOutput`"",
+                          "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+                          "`"$outputFile`"", "-y")
+            } elseif ($segment.Pips) {
+                # A segment carrying pips re-encodes with an overlay chain even if its Kind
+                # is "cut" -- the pip has to be composited onto the frame, so a stream copy
+                # is impossible regardless of what the caption/zoom split left it as.
+                $extraInputArgs = @()
+                $overlays = @()
+                $pipInputIdx = 1
+                foreach ($p in @($segment.Pips)) {
+                    # -t bounds this input to the SEGMENT's own duration, matching the
+                    # main input's "-ss ... -t ... -i" pair two lines below. Without it,
+                    # overlay's main-ends-first case is not the mirror of its documented
+                    # eof_action (that option only covers the OVERLAY/second input hitting
+                    # EOF first): verified against real ffmpeg that an unbounded pip input
+                    # longer than the segment makes the muxed output run to roughly the
+                    # PIP CLIP's own remaining length instead of stopping at the main
+                    # input's -t cutoff (e.g. a 6s segment with an unbounded 10s pip input
+                    # produced a ~9.9s output). Bounding the pip input the same way the
+                    # main input already is fixes it (verified: 5.99s for the same case).
+                    $extraInputArgs += @("-ss", $p.SegmentClipStart, "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
+                    $overlays += ,@{ InputIndex = $pipInputIdx; Pip = $p.Pip }
+                    $pipInputIdx++
+                }
+                # The segment's own crop/scale (zoom) and/or burned caption still has to
+                # happen -- crop first, so a caption drawn after it stays the size the user
+                # set instead of being magnified along with the footage, same order as the
+                # non-pip burn branch below. The result feeds the overlay chain as [vbase]
+                # instead of the chain's default [0:v] start.
+                $baseVf = ""
+                if ($segment.Zoom) {
+                    $baseVf = New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height
+                }
+                if ($segment.AssFile) {
+                    $assEsc = ConvertTo-AssFilterPath -Path $segment.AssFile
+                    $baseVf = if ($baseVf) { "$baseVf,ass='$assEsc'" } else { "ass='$assEsc'" }
+                }
+                $overlayChain = New-PipOverlayChain -Overlays $overlays -Width $profile.Width -Height $profile.Height
+                if ($baseVf) {
+                    # New-PipOverlayChain always starts its chain from [0:v]; that first
+                    # overlay's input label is retargeted to [vbase] so it reads the
+                    # already-cropped/captioned frame instead of the raw source.
+                    $overlayChain = $overlayChain.Replace("[0:v][ov0]overlay", "[vbase][ov0]overlay")
+                    $graph = "[0:v]$baseVf" + "[vbase];" + $overlayChain
+                } else {
+                    $graph = $overlayChain
+                }
+                $args = @("-hide_banner",
+                          "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"") +
+                        $extraInputArgs +
+                        @("-filter_complex", "`"$graph`"",
+                          "-map", "`"[vout]`"",
+                          "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                          "-pix_fmt", "yuv420p",
+                          "-video_track_timescale", $profile.TimeScale,
+                          "-an",
+                          "`"$($tempFiles[$StepIndex])`"", "-y")
+            } elseif ($segment.Kind -eq "transition") {
                 # Two windows of the same file -- the outgoing tail and the incoming head
                 # -- dissolved into each other. This is the only step that re-encodes.
                 #
@@ -353,18 +552,36 @@ function Export-CutListAsync {
                 $assFile = if ($segment.AssFile) { $segment.AssFile } else { "" }
                 # The ass filter renames the video output, so the map has to follow it.
                 $videoLabel = if ($assFile) { "[v2]" } else { "[v]" }
-                $args = @("-hide_banner",
-                          "-ss", $segment.Start, "-t", $fadeLength, "-i", "`"$InputFile`"",
-                          "-ss", $segment.NextStart, "-t", $fadeLength, "-i", "`"$InputFile`"",
-                          "-filter_complex", "`"$(& $buildFadeFilter $fadeLength $assFile)`"",
-                          "-map", "`"$videoLabel`"") +
-                        $fadeAudioMaps +
-                        @("-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
-                          "-pix_fmt", "yuv420p",
-                          "-video_track_timescale", $profile.TimeScale,
-                          "-c:a", "aac", "-b:a", "256k",
-                          "-ar", $profile.SampleRate, "-ac", $profile.Channels,
-                          "`"$($tempFiles[$StepIndex])`"", "-y")
+                if ($mode -eq "trivial") {
+                    $args = @("-hide_banner",
+                              "-ss", $segment.Start, "-t", $fadeLength, "-i", "`"$InputFile`"",
+                              "-ss", $segment.NextStart, "-t", $fadeLength, "-i", "`"$InputFile`"",
+                              "-filter_complex", "`"$(& $buildFadeFilter $fadeLength $assFile)`"",
+                              "-map", "`"$videoLabel`"") +
+                            $fadeAudioMaps +
+                            @("-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-pix_fmt", "yuv420p",
+                              "-video_track_timescale", $profile.TimeScale,
+                              "-c:a", "aac", "-b:a", "256k",
+                              "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                              "`"$($tempFiles[$StepIndex])`"", "-y")
+                } else {
+                    # Rebuild path: video-only. $buildFadeFilter -IncludeAudio:$false leaves
+                    # the acrossfade branches out of the graph entirely -- an unconnected
+                    # filter_complex OUTPUT is a hard ffmpeg error ("has output N
+                    # unconnected"), so -an alone (leaving them built-but-unmapped) does
+                    # not work here the way it does for a plain -map/-c:a pair.
+                    $args = @("-hide_banner",
+                              "-ss", $segment.Start, "-t", $fadeLength, "-i", "`"$InputFile`"",
+                              "-ss", $segment.NextStart, "-t", $fadeLength, "-i", "`"$InputFile`"",
+                              "-filter_complex", "`"$(& $buildFadeFilter $fadeLength $assFile $false)`"",
+                              "-map", "`"$videoLabel`"",
+                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-pix_fmt", "yuv420p",
+                              "-video_track_timescale", $profile.TimeScale,
+                              "-an",
+                              "`"$($tempFiles[$StepIndex])`"", "-y")
+                }
             } elseif ($segment.Kind -eq "burn") {
                 # A stretch of the timeline with a caption on screen. Re-encoded under the
                 # same encoder/timescale contract as a transition, which is what keeps the
@@ -382,34 +599,66 @@ function Export-CutListAsync {
                 if ($segment.Zoom) {
                     $vf = "$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height),$vf"
                 }
-                $args = @("-hide_banner",
-                          "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
-                          "-vf", "`"$vf`"",
-                          "-map", "0:v", "-map", "0:a",
-                          "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
-                          "-pix_fmt", "yuv420p",
-                          "-video_track_timescale", $profile.TimeScale,
-                          "-c:a", "aac", "-b:a", "256k",
-                          "-ar", $profile.SampleRate, "-ac", $profile.Channels,
-                          "`"$($tempFiles[$StepIndex])`"", "-y")
+                if ($mode -eq "trivial") {
+                    $args = @("-hide_banner",
+                              "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
+                              "-vf", "`"$vf`"",
+                              "-map", "0:v", "-map", "0:a",
+                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-pix_fmt", "yuv420p",
+                              "-video_track_timescale", $profile.TimeScale,
+                              "-c:a", "aac", "-b:a", "256k",
+                              "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                              "`"$($tempFiles[$StepIndex])`"", "-y")
+                } else {
+                    $args = @("-hide_banner",
+                              "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
+                              "-vf", "`"$vf`"",
+                              "-map", "0:v",
+                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-pix_fmt", "yuv420p",
+                              "-video_track_timescale", $profile.TimeScale,
+                              "-an",
+                              "`"$($tempFiles[$StepIndex])`"", "-y")
+                }
             } elseif ($segment.Kind -eq "zoom") {
                 # A stretch under a zoom span with no caption on it. Same encoder,
                 # timescale and mapping contract as the burn branch -- the crop/scale chain
                 # is the only difference -- so the final concat stays a stream copy.
-                $args = @("-hide_banner",
-                          "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
-                          "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height)`"",
-                          "-map", "0:v", "-map", "0:a",
-                          "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
-                          "-pix_fmt", "yuv420p",
-                          "-video_track_timescale", $profile.TimeScale,
-                          "-c:a", "aac", "-b:a", "256k",
-                          "-ar", $profile.SampleRate, "-ac", $profile.Channels,
-                          "`"$($tempFiles[$StepIndex])`"", "-y")
+                if ($mode -eq "trivial") {
+                    $args = @("-hide_banner",
+                              "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
+                              "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height)`"",
+                              "-map", "0:v", "-map", "0:a",
+                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-pix_fmt", "yuv420p",
+                              "-video_track_timescale", $profile.TimeScale,
+                              "-c:a", "aac", "-b:a", "256k",
+                              "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                              "`"$($tempFiles[$StepIndex])`"", "-y")
+                } else {
+                    $args = @("-hide_banner",
+                              "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
+                              "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height)`"",
+                              "-map", "0:v",
+                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-pix_fmt", "yuv420p",
+                              "-video_track_timescale", $profile.TimeScale,
+                              "-an",
+                              "`"$($tempFiles[$StepIndex])`"", "-y")
+                }
             } else {
-                $args = @("-hide_banner", "-ss", $segment.Start, "-i", "`"$InputFile`"",
-                          "-t", $segment.Duration, "-map", "0", "-c", "copy",
-                          "-avoid_negative_ts", "make_zero", "`"$($tempFiles[$StepIndex])`"", "-y")
+                if ($mode -eq "trivial") {
+                    $args = @("-hide_banner", "-ss", $segment.Start, "-i", "`"$InputFile`"",
+                              "-t", $segment.Duration, "-map", "0", "-c", "copy",
+                              "-avoid_negative_ts", "make_zero", "`"$($tempFiles[$StepIndex])`"", "-y")
+                } else {
+                    # Plain stream-copied cut, video-rebuild mode: still a stream copy (no
+                    # re-encode needed), just with the audio stream dropped.
+                    $args = @("-hide_banner", "-ss", $segment.Start, "-i", "`"$InputFile`"",
+                              "-t", $segment.Duration, "-map", "0:v", "-c", "copy", "-an",
+                              "-avoid_negative_ts", "make_zero", "`"$($tempFiles[$StepIndex])`"", "-y")
+                }
             }
         } else {
             $listPath = Join-Path $tempDir "list.txt"
@@ -436,6 +685,12 @@ function Export-CutListAsync {
                 # naming it is the difference between "still working" and "nearly there".
                 $etaText.Text = if ($StepIndex -ge $work.Count) {
                     "finalizing..."
+                } elseif ($work[$StepIndex].Kind -eq "audiomix") {
+                    if ($mode -eq "audio-only") { "writing audio only" } else { "mixing audio" }
+                } elseif ($work[$StepIndex].Kind -eq "mux") {
+                    "finalizing..."
+                } elseif ($work[$StepIndex].Pips) {
+                    "overlaying clip video ($($StepIndex + 1) of $segCount)"
                 } elseif ($work[$StepIndex].Kind -eq "transition") {
                     # Named separately because it is the slow step: the only one that
                     # re-encodes, so a stall here is expected rather than a symptom.
@@ -459,7 +714,16 @@ function Export-CutListAsync {
                     if ($startButton) { $startButton.IsEnabled = $true }
                     return
                 }
-                if ($StepIndex -lt $work.Count) {
+                # Trivial mode -- and a rebuild stack with no unmuted audio, which never
+                # got audiomix/mux appended to $work -- has one implicit step past the
+                # segment list (the concat), so the last real StepIndex is $work.Count and
+                # this condition -- read literally as "$StepIndex -lt $work.Count" -- is
+                # unchanged from before. Every OTHER non-trivial mode appended audiomix
+                # (and mux) INTO $work itself, so its own last entry (mux for rebuild,
+                # audiomix for audio-only) is already the final step; there is no implicit
+                # step after it to recurse into.
+                $lastStepIndex = if ($appendsFinalSteps) { $work.Count - 1 } else { $work.Count }
+                if ($StepIndex -lt $lastStepIndex) {
                     & $chain.RunStep ($StepIndex + 1)
                     return
                 }
@@ -555,6 +819,97 @@ function Export-TrimWaveform {
         -frames:v 1 $OutputFile 2>&1 | Out-Null
 }
 
+function Get-TrimAudioStreams {
+    param([Parameter(Mandatory = $true)][string]$InputFile)
+    $ffprobe = Get-ToolPath -Name ffprobe -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    $lines = @(& $ffprobe -v error -select_streams a -show_entries "stream=index:stream_tags=title" -of "csv=p=0" $InputFile 2>$null)
+    # ConvertFrom-AudioStreamProbe already does `return ,@($result)` -- wrapping its result in
+    # another ,@() here nests it one level deeper (trap #2 in the closure/array memory file):
+    # a real file with 2+ audio streams came back as a 1-element array whose single element was
+    # itself the 2-element array, so `foreach ($s in $streams)` bound $s to the whole array and
+    # `[int]$s.StreamIdx` threw "Cannot convert System.Object[] to Int32" the moment a genuine
+    # multi-stream DVR clip was loaded -- crashing the app via ShowDialog's pumped dispatcher loop.
+    return ConvertFrom-AudioStreamProbe -Lines $lines
+}
+
+function Split-TrimSegmentsForPips {
+    param([object[]]$Segments = @(), [object[]]$PipSpans = @())
+    $result = @()
+    $cursor = 0.0
+    foreach ($seg in @($Segments)) {
+        $segT0 = $cursor
+        $segT1 = $cursor + [double]$seg.Duration
+        $cursor = $segT1
+        $overlapping = @(@($PipSpans) | Where-Object { [double]$_.Start -lt $segT1 -and [double]$_.End -gt $segT0 })
+        if ($overlapping.Count -eq 0) { $result += ,$seg; continue }
+        if ($seg.Kind -eq "transition") { throw "pip over transition reached the splitter" }
+
+        $cutsSet = New-Object System.Collections.Generic.SortedSet[double]
+        foreach ($sp in $overlapping) {
+            if ([double]$sp.Start -gt $segT0 -and [double]$sp.Start -lt $segT1) { [void]$cutsSet.Add([double]$sp.Start) }
+            if ([double]$sp.End -gt $segT0 -and [double]$sp.End -lt $segT1) { [void]$cutsSet.Add([double]$sp.End) }
+        }
+        $points = @($segT0) + @($cutsSet) + @($segT1)
+        for ($i = 0; $i -lt $points.Count - 1; $i++) {
+            $t0 = $points[$i]; $t1 = $points[$i + 1]
+            if ($t1 - $t0 -le 0.0005) { continue }
+            $part = @{}
+            foreach ($kv in $seg.GetEnumerator()) { $part[$kv.Key] = $kv.Value }
+            $part.Start = [double]$seg.Start + ($t0 - $segT0)
+            $part.Duration = ($t1 - $t0)
+            $mid = ($t0 + $t1) / 2.0
+            $pips = @()
+            foreach ($sp in $overlapping) {
+                if ($mid -gt [double]$sp.Start -and $mid -lt [double]$sp.End) {
+                    $ov = $sp.Overlay
+                    $pips += ,@{
+                        TrackId = $ov.TrackId; Path = $ov.Path; Pip = $ov.Pip
+                        SegmentClipStart = [double]$ov.InStart + ($t0 - [double]$sp.Start)
+                    }
+                }
+            }
+            if ($pips.Count -gt 0) { $part.Pips = @($pips) }
+            $result += ,$part
+        }
+    }
+    return ,@($result)
+}
+
+# Decides which of the three export pipelines Export-CutListAsync takes, as a pure
+# function so the branch is testable without running ffmpeg.
+#   "trivial"    -- no tracks at all (legacy caller), or a stack with exactly one
+#                   video-main and no gain/mute/clip/pip touching it: the pre-existing
+#                   single-pass-per-segment + concat pipeline runs unchanged.
+#   "rebuild"    -- a video-main is present but the stack (or the pip spans) is not
+#                   trivial: video re-encodes with -an, then an audio pass mixes the
+#                   tracks, then the two are muxed together.
+#   "audio-only" -- no video-main in the stack at all: only the audio pass runs, and it
+#                   writes the final output directly.
+function Get-TrimExportMode {
+    param([object[]]$Tracks = @(), [object[]]$PipSpans = @(), [int]$SourceAudioStreamCount = -1)
+    if (@($Tracks).Count -eq 0) { return "trivial" }
+    $mains = @(@($Tracks) | Where-Object { $_.Kind -eq "video-main" })
+    if ($mains.Count -eq 0) { return "audio-only" }
+    if ((Test-TrackStackTrivial -Tracks $Tracks -SourceAudioStreamCount $SourceAudioStreamCount) -and @($PipSpans).Count -eq 0) { return "trivial" }
+    return "rebuild"
+}
+
+# True when the stack has at least one audio-source or audio-clip track that is not
+# muted -- i.e. whether the "rebuild" pipeline's audio pass has anything to mix. A stack
+# is never "trivial" once ANY track is muted (Test-TrackStackTrivial refuses that), so a
+# fully-muted stack still lands in "rebuild"; without this check Export-CutListAsync would
+# run an audio pass that mixes zero sources over New-TrimAudioMixPlan's silence base and
+# mux in a silent AAC stream -- a different artifact than a true video-only, no-audio-
+# stream-at-all output.
+function Test-TrackStackHasAudio {
+    param([object[]]$Tracks = @())
+    foreach ($t in @($Tracks)) {
+        if (($t.Kind -eq "audio-source" -or $t.Kind -eq "audio-clip") -and -not $t.Muted) { return $true }
+    }
+    return $false
+}
+
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
-    ConvertTo-AssFilterPath, Export-TrimWaveform
+    ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
+    Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration

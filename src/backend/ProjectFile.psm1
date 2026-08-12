@@ -14,15 +14,19 @@ function Save-TrimProject {
         [object[]]$CutList = @(),
         [hashtable]$Fades = @{},
         [object[]]$Captions = @(),
-        [object[]]$Zooms = @()
+        [object[]]$Zooms = @(),
+        [object[]]$Tracks = @(),
+        [bool]$Unlinked = $false
     )
     try {
         $doc = [ordered]@{
-            Version  = 1
+            Version  = 2
             CutList  = @(@($CutList) | ForEach-Object { [ordered]@{ Start = $_.Start; End = $_.End } })
             Fades    = $Fades
             Captions = @(@($Captions) | ForEach-Object { $_ })
             Zooms    = @(@($Zooms) | ForEach-Object { $_ })
+            Tracks   = @(@($Tracks) | ForEach-Object { $_ })
+            Unlinked = $Unlinked
         }
         $json = $doc | ConvertTo-Json -Depth 6
         [System.IO.File]::WriteAllText((Get-TrimProjectPath -VideoPath $VideoPath), $json,
@@ -40,7 +44,7 @@ function Read-TrimProject {
         if ($null -eq $doc -or $null -eq $doc.CutList -or $null -eq $doc.Captions) { return $null }
         # A file written by a newer schema is not ours to guess at -- the caller reports
         # "couldn't read the saved project" and starts fresh rather than half-loading it.
-        if ($doc.Version -ne 1) { return $null }
+        if ($doc.Version -ne 1 -and $doc.Version -ne 2) { return $null }
 
         # ConvertFrom-Json yields PSCustomObjects; fades come back as an object whose
         # properties are the boundary keys -- rebuild the hashtable the panel expects.
@@ -83,12 +87,61 @@ function Read-TrimProject {
             }
         }
 
+        # Track stack: only present from schema v2 on. A v1 file has no Tracks key at all,
+        # and that absence is the app's signal to build the default stack rather than a
+        # signal that the saved stack is empty -- so this stays $null, not @().
+        $tracks = $null
+        $droppedTracks = 0
+        $unlinked = $false
+        if ($doc.Version -ge 2) {
+            $unlinked = [bool]$doc.Unlinked
+            $trackKinds = @("video-main", "audio-source", "audio-clip", "video-clip")
+            $trackList = @()
+            if ($doc.Tracks) {
+                foreach ($t in @($doc.Tracks)) {
+                    try {
+                        $kind = [string]$t.Kind
+                        if ($trackKinds -notcontains $kind) { throw "unknown kind" }
+                        $id = if ($t.Id) { [string]$t.Id } else { [guid]::NewGuid().ToString("N") }
+                        $path = [string]$t.Path
+                        $streamIdx = [int]$t.StreamIdx
+                        $label = [string]$t.Label
+                        $offset = [double]$t.Offset
+                        $inStart = [double]$t.InStart
+                        $inEnd = [double]$t.InEnd
+                        $muted = [bool]$t.Muted
+                        # Clamp: GainDb -30.0..30.0 (double literals prevent truncation)
+                        $gainDb = [math]::Max(-30.0, [math]::Min(30.0, [double]$t.GainDb))
+                        # Pip is a free-form hashtable (X/Y/W/H fractions of the frame); rebuilt
+                        # generically from whatever properties ConvertFrom-Json gave it rather than
+                        # a fixed field list, so the reader does not silently drop fields the
+                        # writer added later.
+                        $pip = $null
+                        if ($null -ne $t.PSObject.Properties["Pip"] -and $null -ne $t.Pip) {
+                            $pip = @{}
+                            foreach ($p in $t.Pip.PSObject.Properties) { $pip[$p.Name] = [double]$p.Value }
+                        }
+                        $trackList += ,[PSCustomObject]@{
+                            Id = $id; Kind = $kind; Path = $path; StreamIdx = $streamIdx; Label = $label
+                            Offset = $offset; InStart = $inStart; InEnd = $inEnd; GainDb = $gainDb; Muted = $muted; Pip = $pip
+                        }
+                    } catch {
+                        $droppedTracks++
+                    }
+                }
+            }
+            $tracks = @($trackList)
+        }
+
         return @{
-            CutList      = @(@($doc.CutList) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = [double]$_.End } })
-            Fades        = $fades
-            Captions     = @(@($doc.Captions) | ForEach-Object { $_ })
-            Zooms        = @($zooms)
-            DroppedZooms = $droppedZooms
+            CutList       = @(@($doc.CutList) | ForEach-Object { [PSCustomObject]@{ Start = [double]$_.Start; End = [double]$_.End } })
+            Fades         = $fades
+            Captions      = @(@($doc.Captions) | ForEach-Object { $_ })
+            Zooms         = @($zooms)
+            DroppedZooms  = $droppedZooms
+            Tracks        = $tracks
+            DroppedTracks = $droppedTracks
+            Unlinked      = $unlinked
         }
     } catch { return $null }
 }

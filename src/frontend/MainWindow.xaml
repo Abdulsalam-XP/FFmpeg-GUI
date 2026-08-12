@@ -515,6 +515,13 @@
                                     <Canvas x:Name="CanvasTrimWave" Grid.Row="1" Background="#CC070B14" IsHitTestVisible="False"/>
                                 </Grid>
                             </Border>
+
+                            <!-- Track lanes (Task 8): one row per track in the multi-track stack.
+                                 Collapsed by default, since the linked, single-video-plus-audio-source
+                                 case looks exactly like the pre-multitrack editor. Lanes themselves
+                                 are code-built children, drawn by Update-TrimTrackLanes. -->
+                            <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed" Margin="0,4,0,0"/>
+
                             <!-- Caption lane: one block per caption, drag to move, edge drag to retime. -->
                             <Border Style="{StaticResource TimelineTrackStyle}" Height="54" Margin="0,4,0,0" ClipToBounds="True">
                                 <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
@@ -570,6 +577,17 @@
                                            VerticalAlignment="Center" Margin="16,0,0,0"/>
                             </StackPanel>
 
+                            <!-- Track properties strip: shown only while a track lane is selected,
+                                 the same on/off rule PanelTrimFadeLength uses for a selected cut. -->
+                            <StackPanel x:Name="PanelTrimTrackProps" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
+                                <TextBlock Text="TRACK" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="TextTrackPropsName" Text="" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                <Slider x:Name="SliderTrackGain" Style="{StaticResource GainSliderStyle}" Width="220" Minimum="-30" Maximum="30" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                <TextBlock x:Name="TextTrackGain" Text="0.0 dB" FontFamily="{StaticResource FontData}" FontSize="12" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                <CheckBox x:Name="CheckTrackMute" Content="Mute" Foreground="{StaticResource BrushTextBody}" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                <Button x:Name="ButtonTrackDelete" Content="Delete track" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
+                            </StackPanel>
+
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                                 <Button x:Name="ButtonTrimAddCaption" Style="{StaticResource PresetButtonStyle}" Width="120">
                                     <StackPanel Orientation="Horizontal">
@@ -581,6 +599,17 @@
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="＋ Zoom"/>
                                         <TextBlock Text="Z" Style="{StaticResource ShortcutHintStyle}"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimAddTrack" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="＋ Track"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="ButtonTrimUnlink" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Unlink audio"/>
+                                        <TextBlock Text="U" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
