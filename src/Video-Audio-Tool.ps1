@@ -2281,11 +2281,26 @@ try {
 
     function Get-TrimTrackBarBounds {
         param($Track)
-        # SourceDuration: an external clip's own probed duration is not cached anywhere
-        # yet (nothing in this build can add a -clip track), so the session duration is
-        # the best available stand-in for "InEnd 0 means to the end of the source" until
-        # a later task wires up a real clip-duration cache.
-        $span = Get-TrackTimelineSpan -Track $Track -SourceDuration $script:TrimDuration
+        # SourceDuration: a -clip track's own probed duration comes from
+        # $script:TrimClipDurations (populated once at add-time by Invoke-TrimAddTrack
+        # and, for a restored project, once per clip track right after Set-TrimTracks in
+        # $onTrimFile) -- NOT the main video's duration, which is what a source track
+        # (video-main/audio-source, time-locked to the video by design) legitimately
+        # spans. 0.0 on a cache miss rather than re-probing here: this runs on every
+        # mouse-move of a live bar drag (Update-TrimTrackBarGeometry), and shelling out to
+        # ffprobe that often would stall the drag -- a miss should not happen in practice
+        # since every path that can produce a clip track also populates the cache, so 0.0
+        # (InEnd 0 reads as a zero-length span, same as Get-TrackTimelineSpan's own
+        # behavior for a genuinely zero-duration source) is the honest degenerate case
+        # rather than silently borrowing the main video's length.
+        $sourceDuration = if (Test-TrimTrackIsClip -Track $Track) {
+            if ($script:TrimClipDurations.ContainsKey([string]$Track.Path)) {
+                [double]$script:TrimClipDurations[[string]$Track.Path]
+            } else { 0.0 }
+        } else {
+            [double]$script:TrimDuration
+        }
+        $span = Get-TrackTimelineSpan -Track $Track -SourceDuration $sourceDuration
         $left = Convert-TrimTimeToX -Seconds ([double]$span.Start)
         $right = Convert-TrimTimeToX -Seconds ([double]$span.End)
         return @{ Left = $left; Width = [math]::Max(2.0, $right - $left) }
