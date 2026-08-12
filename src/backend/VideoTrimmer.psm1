@@ -485,7 +485,17 @@ function Export-CutListAsync {
                 $overlays = @()
                 $pipInputIdx = 1
                 foreach ($p in @($segment.Pips)) {
-                    $extraInputArgs += @("-ss", $p.SegmentClipStart, "-i", "`"$($p.Path)`"")
+                    # -t bounds this input to the SEGMENT's own duration, matching the
+                    # main input's "-ss ... -t ... -i" pair two lines below. Without it,
+                    # overlay's main-ends-first case is not the mirror of its documented
+                    # eof_action (that option only covers the OVERLAY/second input hitting
+                    # EOF first): verified against real ffmpeg that an unbounded pip input
+                    # longer than the segment makes the muxed output run to roughly the
+                    # PIP CLIP's own remaining length instead of stopping at the main
+                    # input's -t cutoff (e.g. a 6s segment with an unbounded 10s pip input
+                    # produced a ~9.9s output). Bounding the pip input the same way the
+                    # main input already is fixes it (verified: 5.99s for the same case).
+                    $extraInputArgs += @("-ss", $p.SegmentClipStart, "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
                     $overlays += ,@{ InputIndex = $pipInputIdx; Pip = $p.Pip }
                     $pipInputIdx++
                 }
