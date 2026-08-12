@@ -2339,18 +2339,39 @@ try {
         param([string]$Id, [string]$Mode, [double]$StartX, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
         $t = Get-TrimTrackById -Id $Id
         if ($null -eq $t) { return }
+        # InEnd 0.0 is the "natural end of clip" sentinel (New-TrimTrack), but the
+        # instart/inend drag math below treats OrigInEnd as a literal timestamp -- taken
+        # literally, a fresh clip's InEnd reads as already-zero-length, which either makes
+        # the left-edge drag inert (deltaMax collapses below deltaMin) or lets the right-edge
+        # drag stretch InEnd from 0 up to only ~dt, collapsing a real clip to ~0.1-2s. Resolve
+        # the sentinel to the EFFECTIVE end here, once, using the same cache
+        # Get-TrimTrackBarBounds reads from -- every path that can produce a clip track
+        # populates it, so a miss should not happen in practice.
+        $origInEnd = [double]$t.InEnd
+        $inEndResolved = $true
+        if ($origInEnd -le 0.0) {
+            if ((Test-TrimTrackIsClip -Track $t) -and $script:TrimClipDurations.ContainsKey([string]$t.Path)) {
+                $origInEnd = [double]$script:TrimClipDurations[[string]$t.Path]
+            } else {
+                # Cache miss: no known duration to resolve the sentinel to. Don't invent
+                # one -- Update-TrimTrackDrag checks InEndResolved and leaves the edge
+                # inert (appliedDelta 0) for both instart and inend while this is false.
+                $inEndResolved = $false
+            }
+        }
         $script:TrimTrackDrag = @{
-            Id          = $Id
-            Mode        = $Mode
-            StartX      = $StartX
-            OrigOffset  = [double]$t.Offset
-            OrigInStart = [double]$t.InStart
-            OrigInEnd   = [double]$t.InEnd
-            Canvas      = $Canvas
-            Rect        = $Rect
-            GripStart   = $GripStart
-            GripEnd     = $GripEnd
-            Snapshot    = New-TrimUndoSnapshot
+            Id            = $Id
+            Mode          = $Mode
+            StartX        = $StartX
+            OrigOffset    = [double]$t.Offset
+            OrigInStart   = [double]$t.InStart
+            OrigInEnd     = $origInEnd
+            InEndResolved = $inEndResolved
+            Canvas        = $Canvas
+            Rect          = $Rect
+            GripStart     = $GripStart
+            GripEnd       = $GripEnd
+            Snapshot      = New-TrimUndoSnapshot
         }
     }
 
@@ -2384,15 +2405,25 @@ try {
                 #   InStart + delta >= 0            -> delta >= -OrigInStart
                 #   Offset  + delta >= 0             -> delta >= -OrigOffset
                 #   InStart + delta <= InEnd - minGap -> delta <= OrigInEnd - minGap - OrigInStart
-                $deltaMin = [math]::Max(-$drag.OrigInStart, -$drag.OrigOffset)
-                $deltaMax = $drag.OrigInEnd - $minGap - $drag.OrigInStart
-                $appliedDelta = [math]::Max($deltaMin, [math]::Min($deltaMax, $dt))
-                $t.InStart = $drag.OrigInStart + $appliedDelta
-                $t.Offset = $drag.OrigOffset + $appliedDelta
+                if (-not $drag.InEndResolved) {
+                    # Cache miss at drag-start (see Start-TrimTrackDrag): no known duration
+                    # to clamp the left edge against. Leave it inert rather than clamp
+                    # against an invented value.
+                } else {
+                    $deltaMin = [math]::Max(-$drag.OrigInStart, -$drag.OrigOffset)
+                    $deltaMax = $drag.OrigInEnd - $minGap - $drag.OrigInStart
+                    $appliedDelta = [math]::Max($deltaMin, [math]::Min($deltaMax, $dt))
+                    $t.InStart = $drag.OrigInStart + $appliedDelta
+                    $t.Offset = $drag.OrigOffset + $appliedDelta
+                }
             }
             "inend" {
                 $minGap = 0.1
-                $t.InEnd = [math]::Max($drag.OrigInStart + $minGap, $drag.OrigInEnd + $dt)
+                if (-not $drag.InEndResolved) {
+                    # Same cache-miss guard as instart above -- leave the right edge inert.
+                } else {
+                    $t.InEnd = [math]::Max($drag.OrigInStart + $minGap, $drag.OrigInEnd + $dt)
+                }
             }
             default {
                 $t.Offset = [math]::Max(0.0, $drag.OrigOffset + $dt)
