@@ -315,3 +315,126 @@ Describe "Get-TrimLinkedClipIds / Clear-TrimClipLinks" {
         $lanes[1].Clips[0].LinkId | Should Be ""
     }
 }
+
+Describe "Get-TrimClipSpan" {
+    It "spans video clips like Get-TrackTimelineSpan and images by DurationOverride" {
+        $v = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 5.0 -InStart 2.0 -InEnd 8.0
+        $s = Get-TrimClipSpan -Clip $v -SourceDuration 60.0
+        $s.Start | Should Be 5.0
+        $s.End | Should Be 11.0
+        $img = New-TrimClip -Kind "image" -Path "l.png" -Offset 10.0 -DurationOverride 4.0
+        (Get-TrimClipSpan -Clip $img -SourceDuration 0.0).End | Should Be 14.0
+    }
+}
+
+Describe "Get-TrimTimelineLength" {
+    $pieces = @([PSCustomObject]@{Start=0.0;End=20.0}, [PSCustomObject]@{Start=30.0;End=40.0})
+    It "is V1's output length when nothing extends past it" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"})
+        $len = Get-TrimTimelineLength -Lanes $lanes -Pieces $pieces -FadeLengths @(0.5) -ClipDurations @{} -MainPath "a.mp4"
+        $len | Should Be 29.5
+    }
+    It "extends to the last clip end across lanes (montage)" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @()
+        $ov = New-TrimLane -Kind "video" -Label "Overlay" -Clips @((New-TrimClip -Kind "video" -Path "c.mp4" -Offset 25.0))
+        $lanes = @($lanes) + ,$ov
+        $len = Get-TrimTimelineLength -Lanes $lanes -Pieces $pieces -FadeLengths @() -ClipDurations @{ "c.mp4" = 20.0 } -MainPath "a.mp4"
+        $len | Should Be 45.0
+    }
+    It "ignores disabled clips" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @()
+        $c = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 100.0 -Enabled $false
+        $lanes = @($lanes) + ,(New-TrimLane -Kind "video" -Clips @($c))
+        (Get-TrimTimelineLength -Lanes $lanes -Pieces $pieces -FadeLengths @() -ClipDurations @{ "c.mp4" = 5.0 } -MainPath "a.mp4") | Should Be 30.0
+    }
+}
+
+Describe "Get-TrimSnapPoints / Resolve-TrimSnap" {
+    $pieces = @([PSCustomObject]@{Start=0.0;End=30.0})
+    It "collects zero, V1 end, playhead and clip edges, sorted unique" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @()
+        $c = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 10.0
+        $lanes = @($lanes) + ,(New-TrimLane -Kind "video" -Clips @($c))
+        $r = Get-TrimSnapPoints -Lanes $lanes -Pieces $pieces -FadeLengths @() -ClipDurations @{ "c.mp4" = 5.0 } -MainPath "a.mp4" -PlayheadTimeline 12.0
+        # 0, 10 (clip start), 12 (playhead), 15 (clip end), 30 (V1 end)
+        $r.Count | Should Be 5
+        $r[0] | Should Be 0.0
+        $r[1] | Should Be 10.0
+        $r[4] | Should Be 30.0
+    }
+    It "excludes the dragged clip's own edges" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @()
+        $c = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 10.0
+        $lanes = @($lanes) + ,(New-TrimLane -Kind "video" -Clips @($c))
+        $r = Get-TrimSnapPoints -Lanes $lanes -Pieces $pieces -FadeLengths @() -ClipDurations @{ "c.mp4" = 5.0 } -MainPath "a.mp4" -ExcludeClipIds @($c.Id)
+        $r.Count | Should Be 2
+    }
+    It "snaps within threshold and refuses outside it" {
+        $s = Resolve-TrimSnap -Position 29.8 -Points @(0.0, 30.0) -Threshold 0.3
+        $s.Snapped | Should Be $true
+        $s.Position | Should Be 30.0
+        $s.Point | Should Be 30.0
+        (Resolve-TrimSnap -Position 28.0 -Points @(0.0, 30.0) -Threshold 0.3).Snapped | Should Be $false
+    }
+}
+
+Describe "Move-TrimClipLinked" {
+    It "moves the whole link group by one shared clamped delta" {
+        $v = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 5.0 -LinkId "L1"
+        $a = New-TrimClip -Kind "audio" -Path "c.mp4" -Offset 5.0 -LinkId "L1"
+        $lanes = @((New-TrimLane -Kind "video" -Clips @($v)), (New-TrimLane -Kind "audio" -Clips @($a)))
+        $d = Move-TrimClipLinked -Lanes $lanes -ClipId $v.Id -NewOffset 12.0
+        $d | Should Be 7.0
+        $a.Offset | Should Be 12.0
+        # clamp: dragging to -10 stops the GROUP at 0
+        $d2 = Move-TrimClipLinked -Lanes $lanes -ClipId $a.Id -NewOffset (-10.0)
+        $d2 | Should Be (-12.0)
+        $v.Offset | Should Be 0.0
+    }
+}
+
+Describe "Set-TrimClipInPointLinked / Set-TrimClipOutPointLinked" {
+    It "trims the in-point in Offset/InStart lockstep across the pair" {
+        $v = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 5.0 -InStart 0.0 -InEnd 10.0 -LinkId "L"
+        $a = New-TrimClip -Kind "audio" -Path "c.mp4" -Offset 5.0 -InStart 0.0 -InEnd 10.0 -LinkId "L"
+        $lanes = @((New-TrimLane -Kind "video" -Clips @($v)), (New-TrimLane -Kind "audio" -Clips @($a)))
+        $d = Set-TrimClipInPointLinked -Lanes $lanes -ClipId $v.Id -Delta 2.0
+        $d | Should Be 2.0
+        $v.InStart | Should Be 2.0
+        $v.Offset | Should Be 7.0
+        $a.InStart | Should Be 2.0
+        $a.Offset | Should Be 7.0
+    }
+    It "clamps the in-point delta group-wide (tightest member wins)" {
+        $v = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 5.0 -InStart 1.0 -InEnd 10.0 -LinkId "L"
+        $a = New-TrimClip -Kind "audio" -Path "c.mp4" -Offset 5.0 -InStart 0.5 -InEnd 10.0 -LinkId "L"
+        $lanes = @((New-TrimLane -Kind "video" -Clips @($v)), (New-TrimLane -Kind "audio" -Clips @($a)))
+        $d = Set-TrimClipInPointLinked -Lanes $lanes -ClipId $v.Id -Delta (-3.0)
+        $d | Should Be (-0.5)
+        $v.InStart | Should Be 0.5
+        $a.InStart | Should Be 0.0
+    }
+    It "resolves the InEnd sentinel from ClipDurations before an out trim" {
+        $v = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 0.0
+        $lanes = @(,(New-TrimLane -Kind "video" -Clips @($v)))
+        $d = Set-TrimClipOutPointLinked -Lanes $lanes -ClipId $v.Id -Delta (-3.0) -ClipDurations @{ "c.mp4" = 10.0 }
+        $d | Should Be (-3.0)
+        $v.InEnd | Should Be 7.0
+    }
+    It "leaves the out edge inert on a duration cache miss" {
+        $v = New-TrimClip -Kind "video" -Path "gone.mp4"
+        $lanes = @(,(New-TrimLane -Kind "video" -Clips @($v)))
+        $d = Set-TrimClipOutPointLinked -Lanes $lanes -ClipId $v.Id -Delta (-3.0) -ClipDurations @{}
+        $d | Should Be 0.0
+        $v.InEnd | Should Be 0.0
+    }
+    It "edge-trims an image by DurationOverride with the 0.2s floor" {
+        $img = New-TrimClip -Kind "image" -Path "l.png" -Offset 3.0 -DurationOverride 5.0
+        $lanes = @(,(New-TrimLane -Kind "video" -Clips @($img)))
+        $d = Set-TrimClipOutPointLinked -Lanes $lanes -ClipId $img.Id -Delta (-10.0) -ClipDurations @{}
+        $d | Should Be (-4.8)
+        $img.DurationOverride | Should Be 0.2
+        $d2 = Set-TrimClipInPointLinked -Lanes $lanes -ClipId $img.Id -Delta 5.0
+        $d2 | Should Be 0.0
+    }
+}

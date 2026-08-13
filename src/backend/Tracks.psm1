@@ -356,4 +356,185 @@ function Clear-TrimClipLinks {
     return $n
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks
+function Get-TrimClipSpan {
+    param([Parameter(Mandatory = $true)]$Clip, [double]$SourceDuration = 0.0)
+    if ($Clip.Kind -eq "image") {
+        return @{ Start = [double]$Clip.Offset; End = ([double]$Clip.Offset + [math]::Max(0.2, [double]$Clip.DurationOverride)) }
+    }
+    $inStart = [double]$Clip.InStart
+    $inEnd = if ([double]$Clip.InEnd -gt 0.0) { [double]$Clip.InEnd } else { $SourceDuration }
+    $len = [math]::Max(0.0, $inEnd - $inStart)
+    return @{ Start = [double]$Clip.Offset; End = ([double]$Clip.Offset + $len) }
+}
+
+function Get-TrimOutputLength {
+    param([object[]]$Pieces = @(), [double[]]$FadeLengths = @())
+    $t = 0.0
+    for ($i = 0; $i -lt @($Pieces).Count; $i++) {
+        $t += ([double]$Pieces[$i].End - [double]$Pieces[$i].Start)
+        if ($i -lt @($FadeLengths).Count) { $t -= [double]$FadeLengths[$i] }
+    }
+    return [math]::Max(0.0, $t)
+}
+
+# Is this clip the main recording's own video clip (the V1 base)? It is not an overlay
+# and not a mixable row -- it IS the piece list -- so span math over lanes skips it.
+function Test-TrimClipIsMainVideo {
+    param($Lane, $Clip)
+    return ([bool]$Lane.IsMain -and $Clip.Kind -eq "video")
+}
+
+function Get-TrimTimelineLength {
+    param(
+        [object[]]$Lanes = @(), [object[]]$Pieces = @(), [double[]]$FadeLengths = @(),
+        [hashtable]$ClipDurations = @{}, [string]$MainPath = ""
+    )
+    $len = Get-TrimOutputLength -Pieces $Pieces -FadeLengths $FadeLengths
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if (-not $c.Enabled) { continue }
+            if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
+            $dur = if ($ClipDurations.ContainsKey([string]$c.Path)) { [double]$ClipDurations[[string]$c.Path] } else { 0.0 }
+            $span = Get-TrimClipSpan -Clip $c -SourceDuration $dur
+            if ([double]$span.End -gt $len) { $len = [double]$span.End }
+        }
+    }
+    return $len
+}
+
+function Get-TrimSnapPoints {
+    param(
+        [object[]]$Lanes = @(), [object[]]$Pieces = @(), [double[]]$FadeLengths = @(),
+        [hashtable]$ClipDurations = @{}, [string]$MainPath = "",
+        [double]$PlayheadTimeline = -1.0, [string[]]$ExcludeClipIds = @()
+    )
+    $points = New-Object System.Collections.Generic.SortedSet[double]
+    [void]$points.Add(0.0)
+    [void]$points.Add((Get-TrimOutputLength -Pieces $Pieces -FadeLengths $FadeLengths))
+    if ($PlayheadTimeline -ge 0.0) { [void]$points.Add([math]::Round($PlayheadTimeline, 4)) }
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if (-not $c.Enabled) { continue }
+            if (@($ExcludeClipIds) -contains [string]$c.Id) { continue }
+            if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
+            $dur = if ($ClipDurations.ContainsKey([string]$c.Path)) { [double]$ClipDurations[[string]$c.Path] } else { 0.0 }
+            $span = Get-TrimClipSpan -Clip $c -SourceDuration $dur
+            [void]$points.Add([math]::Round([double]$span.Start, 4))
+            [void]$points.Add([math]::Round([double]$span.End, 4))
+        }
+    }
+    return ,@($points)
+}
+
+function Resolve-TrimSnap {
+    param([double]$Position, [double[]]$Points = @(), [double]$Threshold = 0.0)
+    $best = 0.0
+    $bestDist = [double]::MaxValue
+    foreach ($p in @($Points)) {
+        $d = [math]::Abs($Position - [double]$p)
+        if ($d -lt $bestDist) { $bestDist = $d; $best = [double]$p }
+    }
+    if ($bestDist -le $Threshold) {
+        return @{ Position = $best; Snapped = $true; Point = $best }
+    }
+    return @{ Position = $Position; Snapped = $false; Point = 0.0 }
+}
+
+function Get-TrimLinkGroupClips {
+    param([object[]]$Lanes = @(), [string]$ClipId)
+    $ids = Get-TrimLinkedClipIds -Lanes $Lanes -ClipId $ClipId
+    $clips = @()
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if ($ids -contains [string]$c.Id) { $clips += ,$c }
+        }
+    }
+    return ,@($clips)
+}
+
+function Move-TrimClipLinked {
+    param([object[]]$Lanes = @(), [Parameter(Mandatory = $true)][string]$ClipId, [double]$NewOffset)
+    $hit = Get-TrimClipById2 -Lanes $Lanes -ClipId $ClipId
+    if ($null -eq $hit) { return 0.0 }
+    $delta = $NewOffset - [double]$hit.Clip.Offset
+    $group = Get-TrimLinkGroupClips -Lanes $Lanes -ClipId $ClipId
+    # One shared clamp: the group's leftmost member decides how far left everyone may go.
+    $minOffset = [double]::MaxValue
+    foreach ($c in $group) { if ([double]$c.Offset -lt $minOffset) { $minOffset = [double]$c.Offset } }
+    $applied = [math]::Max(-$minOffset, $delta)
+    foreach ($c in $group) { $c.Offset = [double]$c.Offset + $applied }
+    return $applied
+}
+
+function Set-TrimClipInPointLinked {
+    param([object[]]$Lanes = @(), [Parameter(Mandatory = $true)][string]$ClipId, [double]$Delta)
+    $hit = Get-TrimClipById2 -Lanes $Lanes -ClipId $ClipId
+    if ($null -eq $hit) { return 0.0 }
+    $group = Get-TrimLinkGroupClips -Lanes $Lanes -ClipId $ClipId
+    # Group-wide delta bounds, tightened member by member (never clamped per clip -- a
+    # pair whose members clamp differently drifts apart, the exact drift the lockstep
+    # in-point math exists to prevent).
+    $dMin = -[double]::MaxValue; $dMax = [double]::MaxValue
+    foreach ($c in $group) {
+        if ($c.Kind -eq "image") {
+            $dMin = [math]::Max($dMin, -[double]$c.Offset)
+            $dMax = [math]::Min($dMax, [double]$c.DurationOverride - 0.2)
+        } else {
+            $minGap = 0.1
+            $dMin = [math]::Max($dMin, [math]::Max(-[double]$c.InStart, -[double]$c.Offset))
+            if ([double]$c.InEnd -gt 0.0) { $dMax = [math]::Min($dMax, [double]$c.InEnd - $minGap - [double]$c.InStart) }
+        }
+    }
+    if ($dMax -lt $dMin) { return 0.0 }
+    $applied = [math]::Max($dMin, [math]::Min($dMax, $Delta))
+    foreach ($c in $group) {
+        if ($c.Kind -eq "image") {
+            $c.Offset = [double]$c.Offset + $applied
+            $c.DurationOverride = [math]::Max(0.2, [double]$c.DurationOverride - $applied)
+        } else {
+            $c.InStart = [double]$c.InStart + $applied
+            $c.Offset = [double]$c.Offset + $applied
+        }
+    }
+    return $applied
+}
+
+function Set-TrimClipOutPointLinked {
+    param(
+        [object[]]$Lanes = @(), [Parameter(Mandatory = $true)][string]$ClipId,
+        [double]$Delta, [hashtable]$ClipDurations = @{}
+    )
+    $hit = Get-TrimClipById2 -Lanes $Lanes -ClipId $ClipId
+    if ($null -eq $hit) { return 0.0 }
+    $group = Get-TrimLinkGroupClips -Lanes $Lanes -ClipId $ClipId
+    $dMin = -[double]::MaxValue; $dMax = [double]::MaxValue
+    foreach ($c in $group) {
+        if ($c.Kind -eq "image") {
+            $dMin = [math]::Max($dMin, 0.2 - [double]$c.DurationOverride)
+        } else {
+            $minGap = 0.1
+            $src = if ($ClipDurations.ContainsKey([string]$c.Path)) { [double]$ClipDurations[[string]$c.Path] } else { 0.0 }
+            # Resolve the sentinel ONCE, here, so the trim math below works on literal ends
+            # (same resolution Start-TrimTrackDrag documented for the v2 bars). A cache
+            # miss leaves the whole edge inert rather than clamping against an invented
+            # value.
+            if ([double]$c.InEnd -le 0.0 -and $src -gt 0.0) { $c.InEnd = $src }
+            if ([double]$c.InEnd -le 0.0) { return 0.0 }
+            $dMin = [math]::Max($dMin, ([double]$c.InStart + $minGap) - [double]$c.InEnd)
+            if ($src -gt 0.0) { $dMax = [math]::Min($dMax, $src - [double]$c.InEnd) }
+        }
+    }
+    if ($dMax -lt $dMin) { return 0.0 }
+    $applied = [math]::Max($dMin, [math]::Min($dMax, $Delta))
+    foreach ($c in $group) {
+        if ($c.Kind -eq "image") {
+            $c.DurationOverride = [double][math]::Round([double]$c.DurationOverride + $applied, 10)
+            if ($c.DurationOverride -lt 0.2) { $c.DurationOverride = 0.2 }
+        } else {
+            $c.InEnd = [double]$c.InEnd + $applied
+        }
+    }
+    return $applied
+}
+
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked
