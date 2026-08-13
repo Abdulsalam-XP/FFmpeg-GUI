@@ -618,15 +618,19 @@
                                            VerticalAlignment="Center" Margin="16,0,0,0"/>
                             </StackPanel>
 
-                            <!-- Track properties strip: shown only while a track lane is selected,
-                                 the same on/off rule PanelTrimFadeLength uses for a selected cut. -->
+                            <!-- CLIP properties strip: shown only while a clip is selected, the
+                                 same on/off rule PanelTrimFadeLength uses for a selected cut.
+                                 The gain slider, mute box and row trash that used to live here
+                                 moved into the lane row headers (spec 3.2), where they belong to
+                                 the row rather than to whichever clip was last clicked. What is
+                                 left is the clip's own identity, its full-frame/box display mode
+                                 and its delete. -->
                             <StackPanel x:Name="PanelTrimTrackProps" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
-                                <TextBlock Text="TRACK" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
+                                <TextBlock Text="CLIP" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
                                 <TextBlock x:Name="TextTrackPropsName" Text="" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                <Slider x:Name="SliderTrackGain" Style="{StaticResource GainSliderStyle}" Width="220" Minimum="-30" Maximum="30" VerticalAlignment="Center" Margin="16,0,0,0"/>
-                                <TextBlock x:Name="TextTrackGain" Text="0.0 dB" FontFamily="{StaticResource FontData}" FontSize="12" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                <CheckBox x:Name="CheckTrackMute" Content="Mute" Foreground="{StaticResource BrushTextBody}" VerticalAlignment="Center" Margin="16,0,0,0"/>
-                                <Button x:Name="ButtonTrackDelete" Content="Delete track" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
+                                <Button x:Name="ButtonClipDisplayMode" Content="⛶ Full-frame" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
+                                <TextBlock x:Name="TextClipDisplayHint" Text="" FontFamily="{StaticResource FontChrome}" FontSize="12" FontStyle="Italic" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                <Button x:Name="ButtonTrackDelete" Content="Delete clip" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
                             </StackPanel>
 
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
@@ -642,14 +646,17 @@
                                         <TextBlock Text="Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimAddTrack" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimSnap" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="＋ Track"/>
+                                        <TextBlock x:Name="TextTrimSnapGlyph" Text="🧲 Snap"/>
+                                        <TextBlock Text="N" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
+                                <Button x:Name="ButtonTrimAddVideoTrack" Content="＋ Video track" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0"/>
+                                <Button x:Name="ButtonTrimAddAudioTrack" Content="＋ Audio track" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0"/>
                                 <Button x:Name="ButtonTrimUnlink" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="Unlink audio"/>
+                                        <TextBlock Text="🔗 Unlink"/>
                                         <TextBlock Text="U" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
