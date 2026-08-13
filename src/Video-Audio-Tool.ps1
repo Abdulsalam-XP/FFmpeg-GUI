@@ -1017,12 +1017,23 @@ try {
     # before reaching it -- snapping defaults ON either way.
     $script:TrimSnapEnabled = $(if ($null -ne $global:TrimSnapEnabled) { [bool]$global:TrimSnapEnabled } else { $true })
     # Live clip drag state, same shape of lifecycle as TrimCaptionDrag/TrimZoomDrag: $null
-    # when idle, a hashtable (Id, Mode, orig values, a snapshot, and direct Canvas/Rect
-    # references) while a clip bar is being dragged.
+    # when idle, a hashtable (ClipId, Mode, the pre-drag values of every link-group member,
+    # the snap point set, a snapshot, and direct Canvas/Border references) while a clip bar
+    # is being dragged.
     $script:TrimClipDrag = $null
+    # clipId -> @{Border; Canvas} for every clip body Update-TrimLaneRows renders as a
+    # single draggable bar. A drag reads it ONCE at mouse-down to find its linked peers'
+    # own Borders (on their own row canvases) so the whole link group visibly travels in
+    # one gesture. Rebuilt from scratch on every row rebuild, like the rows themselves.
+    $script:TrimClipElements = @{}
+    # The green snap flash Line (spec 4.8) while a drag is on a lock, else $null. Held so
+    # it can be removed again without clearing the overlay canvas the playhead shares.
+    $script:TrimSnapFlashLine = $null
     # Live lane-reorder (⋮⋮) drag state. Same $null-when-idle convention; the rows it moves
     # are whole group blocks, see Move-TrimLaneTo.
     $script:TrimLaneReorderDrag = $null
+    # The gold insertion Line a live lane reorder draws between rows, else $null.
+    $script:TrimLaneReorderLine = $null
     # Live fader edit on an audio row header. Holds the undo snapshot for the whole
     # gesture (drag or a burst of Up/Down presses) plus a Dragging flag: while a fader
     # drag holds the mouse, Update-TrimLaneRows must not rebuild the very canvas that
@@ -2291,7 +2302,11 @@ try {
         $ids = if (Test-TrimClipIsMainVideo -Lane $ref.Lane -Clip $ref.Clip) {
             @([string]$Id)
         } else {
-            @(Get-TrimLinkedClipIds -Lanes @($script:TrimLanes) -ClipId $Id)
+            # NOT wrapped in @(): Get-TrimLinkedClipIds returns `,@($ids)`, so @(...) around
+            # the call nests the id list one level deeper and every $cid below binds to the
+            # whole array -- Get-TrimClipRef then matched nothing and the delete silently
+            # removed no clips at all (trap #2).
+            Get-TrimLinkedClipIds -Lanes @($script:TrimLanes) -ClipId $Id
         }
         if (@($ids).Count -eq 0) { $ids = @([string]$Id) }
         foreach ($cid in @($ids)) {
@@ -2438,7 +2453,15 @@ try {
         $free = @()
         foreach ($a in $audioLanes) { if (-not $claimed.ContainsKey([string]$a.Id)) { $free += ,$a } }
         $groups += ,@{ VideoLane = $null; AudioLanes = @($free) }
-        return ,@($groups)
+        # PLAIN @(), never `,@()` -- every caller wraps this call in @(...) to get array
+        # semantics, and a `,@()` return emits the whole list as ONE object, which @(...)
+        # then wraps again (trap #2, the nesting Get-TrimAudioStreams's comment describes).
+        # It looked right for as long as there was exactly one video lane: iterating the
+        # 1-element outer array once, `$g.VideoLane` member-enumerated to that lane and
+        # `$g.AudioLanes` to every audio row, which is the same answer. With a SECOND
+        # video lane it collapsed the whole stack into one row whose Label was every video
+        # lane's label concatenated. Same convention as Get-RecentFiles.
+        return @($groups)
     }
 
     # U / the toolbar button. Pops the SELECTED clip out of its link group (spec 4.2's
@@ -2550,62 +2573,131 @@ try {
         return @{ Left = $left; Width = [math]::Max(2.0, $right - $left) }
     }
 
-    # Repositions an already-built bar in place -- no Children.Clear(), no new elements --
-    # so it can run on every mouse-move of a live drag without disturbing the mouse capture
-    # the drag is holding on $Canvas (see Update-TrimClipDrag below).
-    function Update-TrimClipBarGeometry {
-        param($Lane, $Clip, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
-        if ($null -eq $Rect) { return }
-        $bounds = Get-TrimClipBarBounds -Lane $Lane -Clip $Clip
-        [System.Windows.Controls.Canvas]::SetLeft($Rect, $bounds.Left)
-        $Rect.Width = $bounds.Width
-        if ($null -ne $GripStart) { [System.Windows.Controls.Canvas]::SetLeft($GripStart, $bounds.Left) }
-        if ($null -ne $GripEnd) { [System.Windows.Controls.Canvas]::SetLeft($GripEnd, $bounds.Left + $bounds.Width - 6.0) }
+    # The ONE cache read for a clip's own source duration, without needing its lane: the
+    # link-aware transforms are group-wide and walk clips that live on OTHER rows, where
+    # Get-TrimClipSourceDuration's -Lane argument is not to hand. 0.0 on a miss rather
+    # than re-probing -- this runs on every mouse-move of a live drag.
+    function Get-TrimClipCachedDuration {
+        param($Clip)
+        if ($null -eq $Clip) { return 0.0 }
+        $p = [string]$Clip.Path
+        if ($script:TrimClipDurations.ContainsKey($p)) { return [double]$script:TrimClipDurations[$p] }
+        if ($p -eq [string]$script:TrimInputFile) { return [double]$script:TrimDuration }
+        return 0.0
     }
 
-    # Same drag lifecycle as the caption lane, field for field: snapshot taken at
-    # mouse-down (pushed on release only if something actually moved), the drag applied
-    # against the ORIGINAL values every move (never accumulated deltas, which drift and
-    # let a clamp "eat" motion), and a direct reference to the Rect/Canvas this drag owns
-    # rather than a redraw -- Update-TrimLaneRows rebuilds every row's Border/Grid/Canvas
-    # from scratch, which would tear down the very canvas this drag has captured.
+    # clipId -> @{Border; Canvas}, filled by Update-TrimLaneRows as it renders and read
+    # once at drag start. Write-throughs rather than bare $script: writes so the render
+    # loop and any closure are looking at the same hashtable.
+    function Clear-TrimClipElements {
+        $script:TrimClipElements = @{}
+    }
+
+    function Register-TrimClipElement {
+        param([Parameter(Mandatory = $true)][string]$ClipId, $Border, $Canvas)
+        $script:TrimClipElements[$ClipId] = @{ Border = $Border; Canvas = $Canvas }
+    }
+
+    function Get-TrimClipElement {
+        param([string]$ClipId)
+        if ([string]::IsNullOrEmpty($ClipId)) { return $null }
+        if ($script:TrimClipElements.ContainsKey($ClipId)) { return $script:TrimClipElements[$ClipId] }
+        return $null
+    }
+
+    # Same drag lifecycle as the caption lane and the row fader, field for field: snapshot
+    # taken at mouse-down (pushed on release only if something actually moved), the drag
+    # applied against the ORIGINAL values every move (never accumulated deltas, which drift
+    # and let a clamp "eat" motion), and direct references to the Border(s)/Canvas this drag
+    # owns rather than a redraw -- Update-TrimLaneRows rebuilds every row's Border/Grid/
+    # Canvas from scratch, which would tear down the very canvas this drag has captured
+    # (which is why it bails on Test-TrimClipDrag).
+    #
+    # What is new here is the LINK GROUP. Every model write goes through the group-aware
+    # transforms (Move-TrimClipLinked / Set-TrimClipInPointLinked / Set-TrimClipOutPointLinked),
+    # which apply ONE shared clamped delta to every member -- so a linked video/audio pair
+    # can never drift apart. The peers' own Borders live on their own row canvases and are
+    # repositioned in the same gesture, so the pair visibly travels together.
+    #
+    # Snap (spec 4.8): the point set is built ONCE at drag start with the dragged clip's
+    # whole link group excluded (a clip must not snap to itself) and the playhead included.
+    # A linked pair snaps as ONE: the resolve runs on the dragged edge and the winning
+    # position feeds the shared delta, never per member.
     function Start-TrimClipDrag {
-        param([string]$ClipId, [string]$Mode, [double]$StartX, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
+        param(
+            [Parameter(Mandatory = $true)][string]$ClipId,
+            [string]$Mode = "move",
+            [double]$StartX,
+            $Canvas,
+            $Border,
+            $PeerElements = $null
+        )
         $ref = Get-TrimClipRef -Id $ClipId
         if ($null -eq $ref) { return }
-        $t = $ref.Clip
-        # InEnd 0.0 is the "natural end of clip" sentinel (New-TrimClip), but the
-        # instart/inend drag math below treats OrigInEnd as a literal timestamp -- taken
-        # literally, a fresh clip's InEnd reads as already-zero-length, which either makes
-        # the left-edge drag inert (deltaMax collapses below deltaMin) or lets the right-edge
-        # drag stretch InEnd from 0 up to only ~dt, collapsing a real clip to ~0.1-2s. Resolve
-        # the sentinel to the EFFECTIVE end here, once, from the same duration lookup the
-        # bar geometry reads.
-        $origInEnd = [double]$t.InEnd
-        $inEndResolved = $true
-        if ($origInEnd -le 0.0) {
-            $known = Get-TrimClipSourceDuration -Lane $ref.Lane -Clip $t
-            if ($known -gt 0.0) {
-                $origInEnd = $known
-            } else {
-                # No known duration to resolve the sentinel to. Don't invent one --
-                # Update-TrimClipDrag checks InEndResolved and leaves the edge inert
-                # (appliedDelta 0) for both instart and inend while this is false.
-                $inEndResolved = $false
+        $clip = $ref.Clip
+        # The pre-drag span, in the same resolved form Get-TrimClipSpan hands the renderer:
+        # the InEnd 0.0 "natural end" sentinel is resolved through the duration cache here
+        # so the edge math below works on literal timestamps (the trap Task 8's ported drag
+        # documented). Span.End on a cache miss is Offset + 0, which leaves the edge inert
+        # rather than inventing a duration -- the backend clamps refuse it too.
+        $span = Get-TrimClipSpan -Clip $clip -SourceDuration (Get-TrimClipCachedDuration -Clip $clip)
+        # Assigned plainly, never `@(Get-TrimLinkedClipIds ...)`: the function returns
+        # `,@($ids)`, so an @(...) around the CALL nests the list one level deeper (trap #2).
+        # @($groupIds) below is safe -- a variable unrolls normally.
+        $groupIds = Get-TrimLinkedClipIds -Lanes @($script:TrimLanes) -ClipId $ClipId
+        # Originals for EVERY member: the release test is "did anything in the link group
+        # actually move", and the group is what the transforms write to.
+        $orig = @{}
+        foreach ($gid in $groupIds) {
+            $r = Get-TrimClipRef -Id ([string]$gid)
+            if ($null -eq $r) { continue }
+            $orig[[string]$gid] = @{
+                Offset           = [double]$r.Clip.Offset
+                InStart          = [double]$r.Clip.InStart
+                InEnd            = [double]$r.Clip.InEnd
+                DurationOverride = [double]$r.Clip.DurationOverride
             }
         }
+        # Peer Borders, by clip id, from the map the render filled. A caller may pass its
+        # own list; the default is to resolve the whole link group here. A peer with no
+        # rendered single-body Border (a cut-list-space row, which is not draggable) is
+        # simply left out -- its model still moves, and the rebuild on release redraws it.
+        $peers = @()
+        if ($null -ne $PeerElements) {
+            $peers = @($PeerElements)
+        } else {
+            foreach ($gid in $groupIds) {
+                if ([string]$gid -eq [string]$ClipId) { continue }
+                $el = Get-TrimClipElement -ClipId ([string]$gid)
+                if ($null -eq $el) { continue }
+                $peers += ,@{ ClipId = [string]$gid; Border = $el.Border; Canvas = $el.Canvas }
+            }
+        }
+        $state = Get-TrimTimelineState
+        $fadeLengths = Get-TrimFadeLengths -Pieces @($state.Pieces)
+        $tlPlayhead = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+        # Same trap-#2 rule as $groupIds: Get-TrimSnapPoints returns `,@($points)`, so it is
+        # assigned plainly here rather than wrapped at the call.
+        $snapPoints = Get-TrimSnapPoints -Lanes @($script:TrimLanes) -Pieces @($state.Pieces) `
+            -FadeLengths ([double[]]@($fadeLengths)) -ClipDurations $script:TrimClipDurations `
+            -MainPath $script:TrimInputFile -PlayheadTimeline $tlPlayhead `
+            -ExcludeClipIds ([string[]]@($groupIds))
         $script:TrimClipDrag = @{
-            Id            = $ClipId
+            ClipId        = [string]$ClipId
             Mode          = $Mode
             StartX        = $StartX
-            OrigOffset    = [double]$t.Offset
-            OrigInStart   = [double]$t.InStart
-            OrigInEnd     = $origInEnd
-            InEndResolved = $inEndResolved
             Canvas        = $Canvas
-            Rect          = $Rect
-            GripStart     = $GripStart
-            GripEnd       = $GripEnd
+            Border        = $Border
+            Peers         = @($peers)
+            GroupIds      = @($groupIds)
+            Orig          = $orig
+            OrigOffset    = [double]$clip.Offset
+            OrigSpanStart = [double]$span.Start
+            OrigSpanEnd   = [double]$span.End
+            # Restored when the drag comes off a snap lock and on release: the snapped
+            # highlight must not outlive the lock that caused it.
+            OrigBrush     = $(if ($null -ne $Border) { $Border.BorderBrush } else { $null })
+            SnapPoints    = @($snapPoints)
             Snapshot      = New-TrimUndoSnapshot
         }
     }
@@ -2614,65 +2706,157 @@ try {
         return ($null -ne $script:TrimClipDrag)
     }
 
+    # ~8px of pull, expressed in SECONDS through the live view scale -- Resolve-TrimSnap
+    # knows nothing about pixels, and the threshold has to shrink as the user zooms in or
+    # the pull would cover minutes at full-project zoom.
+    function Get-TrimSnapThreshold {
+        return 8.0 * $script:TrimViewSpan / [math]::Max(1.0, $canvasTrimTimeline.ActualWidth)
+    }
+
     function Update-TrimClipDrag {
         param([double]$CurrentX)
         $drag = $script:TrimClipDrag
         if ($null -eq $drag) { return }
-        $ref = Get-TrimClipRef -Id $drag.Id
+        $ref = Get-TrimClipRef -Id $drag.ClipId
         if ($null -eq $ref) { return }
-        $t = $ref.Clip
         $dt = Convert-TrimPixelsToSeconds -Pixels ($CurrentX - $drag.StartX)
-        # 0.0 rather than 0 in every clamp: the int-overload truncation trap that
-        # quantised the caption drags to whole seconds (see Move-TrimCaption).
+        $snapInfo = $null
         switch ($drag.Mode) {
             "instart" {
-                # Left-edge (in-point) trim, NLE-style: InStart alone can't keep the bar's
-                # left edge under the mouse, because Get-TrimClipSpan.Start is always
-                # Clip.Offset, never InStart. So the timeline delta has to be applied to
-                # BOTH fields in lockstep: InStart moves the in-point, Offset moves the
-                # bar's on-timeline position by the same amount, and Span.End is unchanged
-                # because the length shrinks by exactly what Offset grows by.
-                $minGap = 0.1
-                if (-not $drag.InEndResolved) {
-                    # Cache miss at drag-start (see Start-TrimClipDrag): no known duration
-                    # to clamp the left edge against. Leave it inert rather than clamp
-                    # against an invented value.
-                } else {
-                    $deltaMin = [math]::Max(-$drag.OrigInStart, -$drag.OrigOffset)
-                    $deltaMax = $drag.OrigInEnd - $minGap - $drag.OrigInStart
-                    $appliedDelta = [math]::Max($deltaMin, [math]::Min($deltaMax, $dt))
-                    $t.InStart = $drag.OrigInStart + $appliedDelta
-                    $t.Offset = $drag.OrigOffset + $appliedDelta
+                $edge = $drag.OrigSpanStart + $dt
+                if ($script:TrimSnapEnabled) {
+                    $s = Resolve-TrimSnap -Position $edge -Points $drag.SnapPoints -Threshold (Get-TrimSnapThreshold)
+                    if ($s.Snapped) { $edge = $s.Position; $snapInfo = $s }
                 }
+                # The transform is delta-based and clamps group-wide; feed it the delta
+                # from the CURRENT clip state so repeated moves stay convergent.
+                $curSpan = Get-TrimClipSpan -Clip $ref.Clip -SourceDuration (Get-TrimClipCachedDuration -Clip $ref.Clip)
+                [void](Set-TrimClipInPointLinked -Lanes @($script:TrimLanes) -ClipId $drag.ClipId -Delta ($edge - [double]$curSpan.Start))
             }
             "inend" {
-                $minGap = 0.1
-                if (-not $drag.InEndResolved) {
-                    # Same cache-miss guard as instart above -- leave the right edge inert.
-                } else {
-                    $t.InEnd = [math]::Max($drag.OrigInStart + $minGap, $drag.OrigInEnd + $dt)
+                $edge = $drag.OrigSpanEnd + $dt
+                if ($script:TrimSnapEnabled) {
+                    $s = Resolve-TrimSnap -Position $edge -Points $drag.SnapPoints -Threshold (Get-TrimSnapThreshold)
+                    if ($s.Snapped) { $edge = $s.Position; $snapInfo = $s }
                 }
+                $curSpan = Get-TrimClipSpan -Clip $ref.Clip -SourceDuration (Get-TrimClipCachedDuration -Clip $ref.Clip)
+                [void](Set-TrimClipOutPointLinked -Lanes @($script:TrimLanes) -ClipId $drag.ClipId -Delta ($edge - [double]$curSpan.End) -ClipDurations $script:TrimClipDurations)
             }
             default {
-                $t.Offset = [math]::Max(0.0, $drag.OrigOffset + $dt)
+                $target = $drag.OrigOffset + $dt
+                if ($script:TrimSnapEnabled) {
+                    $threshold = Get-TrimSnapThreshold
+                    # Both edges pull; the closer lock wins (start tested first on a tie).
+                    $len = $drag.OrigSpanEnd - $drag.OrigSpanStart
+                    $s1 = Resolve-TrimSnap -Position $target -Points $drag.SnapPoints -Threshold $threshold
+                    $s2 = Resolve-TrimSnap -Position ($target + $len) -Points $drag.SnapPoints -Threshold $threshold
+                    if ($s1.Snapped -and (-not $s2.Snapped -or [math]::Abs($s1.Position - $target) -le [math]::Abs($s2.Position - ($target + $len)))) {
+                        $target = $s1.Position; $snapInfo = $s1
+                    } elseif ($s2.Snapped) {
+                        $target = $s2.Position - $len; $snapInfo = $s2
+                    }
+                }
+                # Applied against ORIGINALS via the pure link-aware transform (never
+                # accumulated deltas): rebuild the offset from the recorded origin.
+                [void](Move-TrimClipLinked -Lanes @($script:TrimLanes) -ClipId $drag.ClipId -NewOffset $target)
             }
         }
-        Update-TrimClipBarGeometry -Lane $ref.Lane -Clip $t -Canvas $drag.Canvas -Rect $drag.Rect -GripStart $drag.GripStart -GripEnd $drag.GripEnd
+        Update-TrimSnapFlash -SnapInfo $snapInfo
+        Update-TrimClipDragGeometry
+    }
+
+    # The mockup's snap feedback: a 2px #3E9B84 line across the whole stack at the locked
+    # point with a code-built glow (never a Theme storyboard -- see the frozen-storyboard
+    # startup trap), plus the dragged Border's own .snapped border colour. Removed the
+    # instant the drag comes off the lock. +250 for the same reason the playhead carries
+    # it: the overlay spans the panel while Convert-TrimTimeToX is body-relative.
+    function Update-TrimSnapFlash {
+        param($SnapInfo)
+        $snapped = ($null -ne $SnapInfo -and [bool]$SnapInfo.Snapped)
+        $drag = $script:TrimClipDrag
+        if ($null -ne $drag -and $null -ne $drag.Border) {
+            if ($snapped) {
+                $drag.Border.BorderBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+            } elseif ($null -ne $drag.OrigBrush) {
+                $drag.Border.BorderBrush = $drag.OrigBrush
+            }
+        }
+        if ($null -eq $canvasTrimLaneOverlay) { return }
+        $old = $script:TrimSnapFlashLine
+        if ($null -ne $old -and $canvasTrimLaneOverlay.Children.Contains($old)) {
+            $canvasTrimLaneOverlay.Children.Remove($old)
+        }
+        $script:TrimSnapFlashLine = $null
+        if (-not $snapped) { return }
+        $x = 250.0 + (Convert-TrimTimeToX -Seconds ([double]$SnapInfo.Point))
+        $line = New-Object System.Windows.Shapes.Line
+        $line.X1 = $x; $line.X2 = $x
+        $line.Y1 = 0
+        # Same 4000 as the playhead: taller than any realistic stack, cropped by the
+        # overlay canvas's own ClipToBounds.
+        $line.Y2 = 4000
+        $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+        $line.StrokeThickness = 2
+        $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $glow.Color = [System.Windows.Media.Color]([System.Windows.Media.ColorConverter]::ConvertFromString("#3E9B84"))
+        $glow.BlurRadius = 8
+        $glow.ShadowDepth = 0
+        $line.Effect = $glow
+        [void]$canvasTrimLaneOverlay.Children.Add($line)
+        $script:TrimSnapFlashLine = $line
+    }
+
+    # Repositions the dragged Border AND every peer Border in place from fresh
+    # Get-TrimClipSpan values -- no Children.Clear(), no new elements -- so it can run on
+    # every mouse-move without disturbing the mouse capture the drag is holding.
+    function Update-TrimClipDragGeometry {
+        $drag = $script:TrimClipDrag
+        if ($null -eq $drag) { return }
+        $targets = @()
+        $targets += ,@{ ClipId = [string]$drag.ClipId; Border = $drag.Border }
+        foreach ($p in @($drag.Peers)) { $targets += ,$p }
+        foreach ($t in $targets) {
+            if ($null -eq $t.Border) { continue }
+            $r = Get-TrimClipRef -Id ([string]$t.ClipId)
+            if ($null -eq $r) { continue }
+            $bounds = Get-TrimClipBarBounds -Lane $r.Lane -Clip $r.Clip
+            [System.Windows.Controls.Canvas]::SetLeft($t.Border, [double]$bounds.Left)
+            $t.Border.Width = [double]$bounds.Width
+        }
     }
 
     function Complete-TrimClipDrag {
         $drag = $script:TrimClipDrag
-        $script:TrimClipDrag = $null
         if ($null -eq $drag) { return }
-        $ref = Get-TrimClipRef -Id $drag.Id
-        if ($null -eq $ref) { return }
-        $t = $ref.Clip
-        $changed = ([math]::Abs([double]$t.Offset - $drag.OrigOffset) -gt 0.001) -or
-                   ([math]::Abs([double]$t.InStart - $drag.OrigInStart) -gt 0.001) -or
-                   ([math]::Abs([double]$t.InEnd - $drag.OrigInEnd) -gt 0.001)
-        if (-not $changed) { return }
-        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
-        Request-TrimProjectSave
+        # Before the state is dropped: the flash reads $script:TrimClipDrag to put the
+        # dragged Border's own brush back.
+        Update-TrimSnapFlash -SnapInfo $null
+        $script:TrimClipDrag = $null
+        # Sub-millisecond differences are the jitter of a plain click, not a move -- and
+        # the whole link group is tested, because a clamp can leave the dragged member
+        # where it was while its peers moved.
+        $changed = $false
+        foreach ($gid in @($drag.GroupIds)) {
+            $o = $drag.Orig[[string]$gid]
+            if ($null -eq $o) { continue }
+            $r = Get-TrimClipRef -Id ([string]$gid)
+            if ($null -eq $r) { continue }
+            if (([math]::Abs([double]$r.Clip.Offset - [double]$o.Offset) -gt 0.001) -or
+                ([math]::Abs([double]$r.Clip.InStart - [double]$o.InStart) -gt 0.001) -or
+                ([math]::Abs([double]$r.Clip.InEnd - [double]$o.InEnd) -gt 0.001) -or
+                ([math]::Abs([double]$r.Clip.DurationOverride - [double]$o.DurationOverride) -gt 0.001)) {
+                $changed = $true
+                break
+            }
+        }
+        # The rebuild happens either way: it is what re-paints the gold selection a
+        # drag-start set directly, and (through Task 9's trim-aware filmstrip/waveform
+        # cache keys) what re-requests the row media for a clip whose in/out just moved.
+        if ($changed) {
+            Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+            Request-TrimProjectSave
+        }
+        Update-TrimLaneRows
     }
 
     # Grouped NLE rows (spec 3.1-3.3 and the approved mockup): one row per visible lane,
@@ -2697,6 +2881,10 @@ try {
         # MediaElement.
         Sync-TrimClipMediaElementPools
         $panelTrimLanes.Children.Clear()
+        # The clipId -> Border map is as disposable as the rows themselves: every element
+        # in it is about to be replaced, and a stale entry would hand the next drag a
+        # Border that is no longer in the visual tree.
+        Clear-TrimClipElements
         if (-not $script:TrimInputFile -or @($script:TrimLanes).Count -eq 0) {
             $panelTrimLanes.Visibility = "Collapsed"
             Update-TrimLaneOverlay
@@ -2870,6 +3058,7 @@ try {
                 $grip.VerticalAlignment = "Center"
                 $grip.Cursor = [System.Windows.Input.Cursors]::SizeNS
                 $grip.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                Add-TrimLaneReorderHandlers -Grip $grip -Header $headerBorder -LaneId $thisId
                 [void]$leftPanel.Children.Add($grip)
 
                 $caret = New-Object System.Windows.Controls.Button
@@ -2891,6 +3080,21 @@ try {
                 $nameBlock.Margin = New-Object System.Windows.Thickness(3, 0, 5, 0)
                 [void]$leftPanel.Children.Add($nameBlock)
             } else {
+                # A FREE audio row carries its own ⋮⋮ (the mockup draws one on A1/A2 but
+                # not on a grouped ♪ row): a grouped row's position is decided by its
+                # video lane's block, so a handle there would promise a move that
+                # Get-TrimLaneGroups would immediately undo on the next rebuild.
+                if (-not $isGrouped) {
+                    $agrip = New-Object System.Windows.Controls.TextBlock
+                    $agrip.Text = [string][char]0x22EE + [string][char]0x22EE
+                    $agrip.Foreground = $dimBrush
+                    $agrip.FontSize = 12
+                    $agrip.VerticalAlignment = "Center"
+                    $agrip.Cursor = [System.Windows.Input.Cursors]::SizeNS
+                    $agrip.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                    Add-TrimLaneReorderHandlers -Grip $agrip -Header $headerBorder -LaneId $thisId
+                    [void]$leftPanel.Children.Add($agrip)
+                }
                 $note = New-Object System.Windows.Controls.TextBlock
                 $note.Text = [string][char]0x266A
                 $note.Foreground = $iconBrush
@@ -3135,6 +3339,34 @@ try {
             $bodyBorder.Child = $bodyCanvas
             [void]$rowGrid.Children.Add($bodyBorder)
 
+            # Clip drags are driven from the row CANVAS, not from the clip bodies: the
+            # canvas is what holds the mouse capture (a Border that a rebuild replaced
+            # would lose it), and it keeps receiving the move/up even while the pointer
+            # travels over other rows. No GetNewClosure on these three -- they read and
+            # write $script: state through top-level functions and capture nothing but
+            # $eventSource, which WPF supplies.
+            $bodyCanvas.Add_MouseMove({
+                param($eventSource, $e)
+                if (-not (Test-TrimClipDrag)) { return }
+                Update-TrimClipDrag -CurrentX ($e.GetPosition($eventSource)).X
+            })
+
+            $bodyCanvas.Add_MouseLeftButtonUp({
+                param($eventSource, $e)
+                if (-not (Test-TrimClipDrag)) { return }
+                [void]$eventSource.ReleaseMouseCapture()
+                Complete-TrimClipDrag
+            })
+
+            # Losing the capture some other way (another window steals focus mid-drag)
+            # would otherwise leave the drag live forever -- and Update-TrimLaneRows bails
+            # while it is, so the whole stack would stop redrawing.
+            $bodyCanvas.Add_LostMouseCapture({
+                param($eventSource, $e)
+                if (-not (Test-TrimClipDrag)) { return }
+                Complete-TrimClipDrag
+            })
+
             $bodyWidth = $bodyCanvas.ActualWidth
             # No -250 here: every timeline-space row now shares the 250px header inset
             # (MainWindow.xaml), so CanvasTrimTimeline IS body width.
@@ -3301,15 +3533,70 @@ try {
                         [void]$clipGrid.Children.Add($chip)
                     }
 
-                    # Selection only: the clip DRAG is Task 10's. GetNewClosure over
-                    # $thisClipId, exactly as the caption blocks do -- without it every body
-                    # captures the loop's final clip and clicking any of them selects the last.
-                    $clipBorder.Add_MouseLeftButtonDown({
-                        param($eventSource, $e)
-                        Set-TrimSelectedClip -Id $thisClipId
-                        Update-TrimLaneRows
-                        $e.Handled = $true
-                    }.GetNewClosure())
+                    # DRAGGABLE vs FIXED. A cut-list-space row is one clip drawn in several
+                    # pieces at positions the CUT LIST decides, not the clip's own
+                    # Offset/InStart -- dragging one body would be a lie about what the
+                    # model can express (V1 sequencing is out of scope), so those bodies
+                    # keep the plain select-and-rebuild handler. Every other clip is a
+                    # single source-space body and gets the full drag.
+                    if ($cutSpace) {
+                        # GetNewClosure over $thisClipId, exactly as the caption blocks do --
+                        # without it every body captures the loop's final clip and clicking
+                        # any of them selects the last.
+                        $clipBorder.Add_MouseLeftButtonDown({
+                            param($eventSource, $e)
+                            Set-TrimSelectedClip -Id $thisClipId
+                            Update-TrimLaneRows
+                            $e.Handled = $true
+                        }.GetNewClosure())
+                    } else {
+                        Register-TrimClipElement -ClipId $thisClipId -Border $clipBorder -Canvas $bodyCanvas
+                        # Selection is painted DIRECTLY here rather than through a rebuild:
+                        # the rebuild would replace the very canvas this press is about to
+                        # capture. Update-TrimLaneRows catches up on release.
+                        $clipBorder.Add_MouseLeftButtonDown({
+                            param($eventSource, $e)
+                            Set-TrimSelectedClip -Id $thisClipId
+                            $eventSource.BorderBrush = $goldBrush
+                            $eventSource.BorderThickness = New-Object System.Windows.Thickness(2)
+                            Start-TrimClipDrag -ClipId $thisClipId -Mode "move" `
+                                -StartX ($e.GetPosition($bodyCanvas)).X -Canvas $bodyCanvas -Border $eventSource
+                            [void]$bodyCanvas.CaptureMouse()
+                            $e.Handled = $true
+                            Update-TrimTrackProps
+                        }.GetNewClosure())
+
+                        # Edge grips: 6px transparent strips INSIDE the body that trim the
+                        # in/out point instead of moving the clip. Transparent rather than
+                        # unset -- a Rectangle with no Fill is not hit-testable at all.
+                        # Dropped on bodies too narrow to hold them, where they would leave
+                        # no draggable middle. Being children of the body, their press is
+                        # handled before it bubbles to the move handler above.
+                        if ([double]$seg.Width -ge 20.0) {
+                            foreach ($side in @("instart", "inend")) {
+                                $edgeGrip = New-Object System.Windows.Shapes.Rectangle
+                                $edgeGrip.Width = 6
+                                $edgeGrip.Fill = [System.Windows.Media.Brushes]::Transparent
+                                $edgeGrip.Cursor = [System.Windows.Input.Cursors]::SizeWE
+                                $edgeGrip.HorizontalAlignment = $(if ($side -eq "instart") { "Left" } else { "Right" })
+                                $edgeGrip.VerticalAlignment = "Stretch"
+                                $thisMode = $side
+                                $thisBody = $clipBorder
+                                $edgeGrip.Add_MouseLeftButtonDown({
+                                    param($eventSource, $e)
+                                    Set-TrimSelectedClip -Id $thisClipId
+                                    $thisBody.BorderBrush = $goldBrush
+                                    $thisBody.BorderThickness = New-Object System.Windows.Thickness(2)
+                                    Start-TrimClipDrag -ClipId $thisClipId -Mode $thisMode `
+                                        -StartX ($e.GetPosition($bodyCanvas)).X -Canvas $bodyCanvas -Border $thisBody
+                                    [void]$bodyCanvas.CaptureMouse()
+                                    $e.Handled = $true
+                                    Update-TrimTrackProps
+                                }.GetNewClosure())
+                                [void]$clipGrid.Children.Add($edgeGrip)
+                            }
+                        }
+                    }
 
                     [void]$bodyCanvas.Children.Add($clipBorder)
                 }
@@ -3611,11 +3898,210 @@ try {
         return ($null -ne $script:TrimLaneGainEdit -and [bool]$script:TrimLaneGainEdit.Dragging)
     }
 
-    # Task 10 owns the ⋮⋮ reorder drag; the row rebuild has to stand out of its way for
-    # the same reason it stands out of a clip drag's, so the test lands here with the
-    # state variable it reads.
+    # The ⋮⋮ reorder drag; the row rebuild has to stand out of its way for the same reason
+    # it stands out of a clip drag's, so the test lands here with the state variable it
+    # reads.
     function Test-TrimLaneReorderDrag {
         return ($null -ne $script:TrimLaneReorderDrag)
+    }
+
+    # A mouse position in PanelTrimTracks coordinates. A top-level function rather than a
+    # bare $panelTrimLanes read inside a GetNewClosure'd handler: a closure's variable
+    # lookups land in its own private module, where the panel would come back $null and
+    # GetPosition would silently measure against the window root instead.
+    function Get-TrimLanePanelY {
+        param($MouseArgs)
+        if ($null -eq $panelTrimLanes -or $null -eq $MouseArgs) { return 0.0 }
+        return [double]($MouseArgs.GetPosition($panelTrimLanes)).Y
+    }
+
+    # The rows Update-TrimLaneRows paints, in display order, with the heights it gives
+    # them (44/40 plus the 4px row margin) -- the one place that geometry is written down
+    # for the reorder drag to walk. Grouped rows are marked, because a video lane's block
+    # is itself plus the grouped rows under it.
+    function Get-TrimLaneDisplayRows {
+        $rows = @()
+        foreach ($g in @(Get-TrimLaneGroups)) {
+            if ($null -ne $g.VideoLane) {
+                $rows += ,@{ Lane = $g.VideoLane; Height = 48.0; Grouped = $false }
+                if (-not $script:TrimCollapsedLanes.ContainsKey([string]$g.VideoLane.Id)) {
+                    foreach ($a in @($g.AudioLanes)) { $rows += ,@{ Lane = $a; Height = 44.0; Grouped = $true } }
+                }
+            } else {
+                foreach ($a in @($g.AudioLanes)) { $rows += ,@{ Lane = $a; Height = 44.0; Grouped = $false } }
+            }
+        }
+        # Plain @(), for the same reason Get-TrimLaneGroups uses one: both call sites wrap
+        # this in @(...), and a `,@()` return would nest the list (trap #2).
+        return @($rows)
+    }
+
+    # Same bracket as every other drag in this panel: snapshot at mouse-down, pushed on
+    # release only if the order actually changed. A video lane never travels alone -- its
+    # grouped audio rows are that video's own audio and move as one block (Move-TrimLaneTo
+    # owns the array surgery; this only decides WHERE).
+    function Start-TrimLaneReorderDrag {
+        param([Parameter(Mandatory = $true)][string]$LaneId, [double]$StartY)
+        $lane = Get-TrimLaneById -Id $LaneId
+        if ($null -eq $lane) { return }
+        $blockIds = @{}
+        $blockIds[[string]$LaneId] = $true
+        if ($lane.Kind -eq "video") {
+            foreach ($g in @(Get-TrimLaneGroups)) {
+                if ($null -ne $g.VideoLane -and [string]$g.VideoLane.Id -eq [string]$LaneId) {
+                    foreach ($a in @($g.AudioLanes)) { $blockIds[[string]$a.Id] = $true }
+                }
+            }
+        }
+        $script:TrimLaneReorderDrag = @{
+            LaneId      = [string]$LaneId
+            Kind        = [string]$lane.Kind
+            StartY      = $StartY
+            BlockIds    = $blockIds
+            TargetIndex = -1
+            Snapshot    = New-TrimUndoSnapshot
+        }
+    }
+
+    function Update-TrimLaneReorderDrag {
+        param([double]$CurrentY)
+        $drag = $script:TrimLaneReorderDrag
+        if ($null -eq $drag) { return }
+        $rows = @(Get-TrimLaneDisplayRows)
+        # Boundary k sits above display row k; boundary N is the bottom of the stack.
+        $bounds = @()
+        $y = 0.0
+        foreach ($r in $rows) { $bounds += ,$y; $y += [double]$r.Height }
+        $bounds += ,$y
+        # Legal drop points. A video block may only land where a GROUP starts (never
+        # between a video lane and its own ♪ rows, which the very next Get-TrimLaneGroups
+        # pass would pull back together); a free audio lane reorders within its own
+        # section (spec 4.5: audio order is cosmetic, video order is render stacking).
+        $allowed = @()
+        for ($k = 0; $k -le @($rows).Count; $k++) {
+            if ($drag.Kind -eq "video") {
+                if ($k -eq @($rows).Count -or -not [bool]$rows[$k].Grouped) { $allowed += ,$k }
+            } else {
+                $lastIsFree = (@($rows).Count -gt 0 -and $rows[-1].Lane.Kind -eq "audio" -and -not [bool]$rows[-1].Grouped)
+                if ($k -eq @($rows).Count) {
+                    if ($lastIsFree) { $allowed += ,$k }
+                } elseif ($rows[$k].Lane.Kind -eq "audio" -and -not [bool]$rows[$k].Grouped) {
+                    $allowed += ,$k
+                }
+            }
+        }
+        $best = -1
+        $bestDist = [double]::MaxValue
+        foreach ($k in $allowed) {
+            $d = [math]::Abs($CurrentY - [double]$bounds[$k])
+            if ($d -lt $bestDist) { $bestDist = $d; $best = $k }
+        }
+        $script:TrimLaneReorderDrag.TargetIndex = $best
+        Update-TrimLaneReorderIndicator -Y $(if ($best -ge 0) { [double]$bounds[$best] } else { -1.0 })
+    }
+
+    # The live feedback: a 2px gold line drawn between rows on the overlay canvas the
+    # playhead already lives on. Code-drawn and removed by reference rather than by
+    # clearing the canvas, which would take the playhead with it.
+    function Update-TrimLaneReorderIndicator {
+        param([double]$Y)
+        if ($null -eq $canvasTrimLaneOverlay) { return }
+        $old = $script:TrimLaneReorderLine
+        if ($null -ne $old -and $canvasTrimLaneOverlay.Children.Contains($old)) {
+            $canvasTrimLaneOverlay.Children.Remove($old)
+        }
+        $script:TrimLaneReorderLine = $null
+        if ($Y -lt 0.0) { return }
+        $w = 4000.0
+        if ($null -ne $panelTrimLanes -and $panelTrimLanes.ActualWidth -gt 0) { $w = [double]$panelTrimLanes.ActualWidth }
+        $line = New-Object System.Windows.Shapes.Line
+        $line.X1 = 0; $line.X2 = $w
+        $line.Y1 = $Y; $line.Y2 = $Y
+        $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E0C48F")
+        $line.StrokeThickness = 2
+        [void]$canvasTrimLaneOverlay.Children.Add($line)
+        $script:TrimLaneReorderLine = $line
+    }
+
+    function Complete-TrimLaneReorderDrag {
+        $drag = $script:TrimLaneReorderDrag
+        $script:TrimLaneReorderDrag = $null
+        Update-TrimLaneReorderIndicator -Y -1.0
+        if ($null -eq $drag) { return }
+        $k = [int]$drag.TargetIndex
+        if ($k -lt 0) { Update-TrimLaneRows; return }
+        # Move-TrimLaneTo's index is measured against the lanes array with the dragged
+        # BLOCK already taken out, so walk forward from the drop boundary to the first
+        # display row that is not part of the block and look that lane up in the remainder.
+        $rows = @(Get-TrimLaneDisplayRows)
+        $rest = @()
+        $block = @()
+        foreach ($l in @($script:TrimLanes)) {
+            if ($drag.BlockIds.ContainsKey([string]$l.Id)) { $block += ,$l } else { $rest += ,$l }
+        }
+        $anchor = $null
+        for ($i = $k; $i -lt @($rows).Count; $i++) {
+            if (-not $drag.BlockIds.ContainsKey([string]$rows[$i].Lane.Id)) { $anchor = $rows[$i].Lane; break }
+        }
+        $newIndex = @($rest).Count
+        if ($null -ne $anchor) {
+            for ($i = 0; $i -lt @($rest).Count; $i++) {
+                if ([string]$rest[$i].Id -eq [string]$anchor.Id) { $newIndex = $i; break }
+            }
+        }
+        # A drop that lands the block back where it started is not an undo step. Compare
+        # the order Move-TrimLaneTo WOULD produce against the one already there rather
+        # than comparing indexes, which differ harmlessly for the same arrangement.
+        $idx = [math]::Max(0, [math]::Min(@($rest).Count, $newIndex))
+        $wouldBe = @()
+        for ($i = 0; $i -lt @($rest).Count; $i++) {
+            if ($i -eq $idx) { foreach ($b in $block) { $wouldBe += ,[string]$b.Id } }
+            $wouldBe += ,[string]$rest[$i].Id
+        }
+        if ($idx -ge @($rest).Count) { foreach ($b in $block) { $wouldBe += ,[string]$b.Id } }
+        $now = @(foreach ($l in @($script:TrimLanes)) { [string]$l.Id })
+        if (($wouldBe -join "|") -eq ($now -join "|")) { Update-TrimLaneRows; return }
+        Push-TrimUndoSnapshot -Snapshot $drag.Snapshot
+        # Rebuild + save are Move-TrimLaneTo's own; the V-numbers renumber by position on
+        # that rebuild (spec 4.5), and IsMain keeps "V1" wherever it lands.
+        Move-TrimLaneTo -Id $drag.LaneId -NewIndex $newIndex
+    }
+
+    # Wires one ⋮⋮ grip. The capture goes on the row's HEADER Border rather than the grip
+    # itself: the grip is a small TextBlock the pointer leaves immediately, and the header
+    # survives the drag because Update-TrimLaneRows bails on Test-TrimLaneReorderDrag.
+    # A separate function so the two call sites (video row, free audio row) share one
+    # closure shape and the handlers capture $LaneId/$Header rather than the render
+    # loop's live locals.
+    function Add-TrimLaneReorderHandlers {
+        param($Grip, $Header, [Parameter(Mandatory = $true)][string]$LaneId)
+        if ($null -eq $Grip -or $null -eq $Header) { return }
+        $thisLaneId = [string]$LaneId
+        $thisHeader = $Header
+        $Grip.Add_MouseLeftButtonDown({
+            param($eventSource, $e)
+            Start-TrimLaneReorderDrag -LaneId $thisLaneId -StartY (Get-TrimLanePanelY -MouseArgs $e)
+            [void]$thisHeader.CaptureMouse()
+            $e.Handled = $true
+        }.GetNewClosure())
+        $Header.Add_MouseMove({
+            param($eventSource, $e)
+            if (-not (Test-TrimLaneReorderDrag)) { return }
+            Update-TrimLaneReorderDrag -CurrentY (Get-TrimLanePanelY -MouseArgs $e)
+        })
+        $Header.Add_MouseLeftButtonUp({
+            param($eventSource, $e)
+            if (-not (Test-TrimLaneReorderDrag)) { return }
+            [void]$eventSource.ReleaseMouseCapture()
+            Complete-TrimLaneReorderDrag
+        })
+        # Same insurance the clip drag carries: a capture lost some other way would leave
+        # the reorder live forever, and the row rebuild bails while it is.
+        $Header.Add_LostMouseCapture({
+            param($eventSource, $e)
+            if (-not (Test-TrimLaneReorderDrag)) { return }
+            Complete-TrimLaneReorderDrag
+        })
     }
 
     # The row's headline gain, read fresh from the model. Every fader handler goes
@@ -3670,7 +4156,7 @@ try {
 
     # Repositions an already-built fader in place -- no rebuild, so it can run on every
     # mouse-move without disturbing the capture the rail canvas is holding (the same
-    # rule Update-TrimClipBarGeometry follows for clip bars).
+    # rule Update-TrimClipDragGeometry follows for clip bars).
     function Update-TrimFaderVisual {
         param($Rail, $Fill, $Thumb, $Ticks, $Badge, [double]$Gain, [double]$Width)
         $g = [math]::Max(-30.0, [math]::Min(30.0, $Gain))
@@ -4229,7 +4715,13 @@ try {
             Add-TrimClipToLane -LaneId ([string]$videoLane.Id) -Clip $vclip
             # Its own audio rides along on a grouped row, one row per stream, linked to the
             # video clip so moving/deleting either takes the other with it.
-            foreach ($s in @(Get-TrimAudioStreams -InputFile $path)) {
+            # NOT @(...) around the call: Get-TrimAudioStreams passes ConvertFrom-AudioStreamProbe's
+            # `,@($result)` straight through, so wrapping it here nests it and $s binds to the
+            # whole array -- `[int]$s.StreamIdx` then throws on any 2-stream file (trap #2, the
+            # exact crash Get-TrimAudioStreams's own comment describes). The load path at
+            # $onTrimFile assigns it plainly for the same reason.
+            $addedStreams = Get-TrimAudioStreams -InputFile $path
+            foreach ($s in @($addedStreams)) {
                 $aclip = New-TrimClip -Kind "audio" -Path $path -StreamIdx ([int]$s.StreamIdx) `
                     -Offset $timelineOffset -LinkId $linkId
                 $aLane = Add-TrimLaneRow -Kind "audio" -Label ([string]$s.Label)
@@ -6934,6 +7426,9 @@ try {
         $script:TrimCollapsedLanes = @{}
         $script:TrimClipDrag = $null
         $script:TrimLaneReorderDrag = $null
+        $script:TrimClipElements = @{}
+        $script:TrimSnapFlashLine = $null
+        $script:TrimLaneReorderLine = $null
         # Reset to the legacy/unknown sentinel here; set to the real probed count a few
         # lines below once Get-TrimAudioStreams has run against the new file.
         $script:TrimSourceAudioStreamCount = -1
