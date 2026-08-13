@@ -490,7 +490,8 @@ function Set-TrimClipInPointLinked {
     foreach ($c in $group) {
         if ($c.Kind -eq "image") {
             $c.Offset = [double]$c.Offset + $applied
-            $c.DurationOverride = [math]::Max(0.2, [double]$c.DurationOverride - $applied)
+            $c.DurationOverride = [double][math]::Round([double]$c.DurationOverride - $applied, 10)
+            if ($c.DurationOverride -lt 0.2) { $c.DurationOverride = 0.2 }
         } else {
             $c.InStart = [double]$c.InStart + $applied
             $c.Offset = [double]$c.Offset + $applied
@@ -521,7 +522,7 @@ function Set-TrimClipOutPointLinked {
             if ([double]$c.InEnd -le 0.0 -and $src -gt 0.0) { $c.InEnd = $src }
             if ([double]$c.InEnd -le 0.0) { return 0.0 }
             $dMin = [math]::Max($dMin, ([double]$c.InStart + $minGap) - [double]$c.InEnd)
-            if ($src -gt 0.0) { $dMax = [math]::Min($dMax, $src - [double]$c.InEnd) }
+            if ($src -gt 0.0) { $dMax = [math]::Min($dMax, $src - [double]$c.InEnd) } else { if ([double]$c.InEnd -gt 0.0) { $dMax = [math]::Min($dMax, 0.0) } }
         }
     }
     if ($dMax -lt $dMin) { return 0.0 }

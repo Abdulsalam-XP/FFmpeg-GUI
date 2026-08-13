@@ -437,4 +437,29 @@ Describe "Set-TrimClipInPointLinked / Set-TrimClipOutPointLinked" {
         $d2 = Set-TrimClipInPointLinked -Lanes $lanes -ClipId $img.Id -Delta 5.0
         $d2 | Should Be 0.0
     }
+    It "caps out-trim at zero extension when a clip's InEnd is resolved but uncached" {
+        $v = New-TrimClip -Kind "video" -Path "c.mp4" -Offset 0.0 -InStart 0.0 -InEnd 7.0 -LinkId "L"
+        $a = New-TrimClip -Kind "audio" -Path "missing.mp3" -Offset 0.0 -InStart 0.0 -InEnd 5.0 -LinkId "L"
+        $lanes = @((New-TrimLane -Kind "video" -Clips @($v)), (New-TrimLane -Kind "audio" -Clips @($a)))
+        # audio clip has resolved InEnd but missing from ClipDurations (cache miss)
+        # positive Delta should be clamped to 0 (no extension allowed)
+        $d = Set-TrimClipOutPointLinked -Lanes $lanes -ClipId $v.Id -Delta 3.0 -ClipDurations @{ "c.mp4" = 10.0 }
+        $d | Should Be 0.0
+        $v.InEnd | Should Be 7.0
+        $a.InEnd | Should Be 5.0
+        # negative Delta still allowed (shrink works)
+        $d2 = Set-TrimClipOutPointLinked -Lanes $lanes -ClipId $v.Id -Delta (-2.0) -ClipDurations @{ "c.mp4" = 10.0 }
+        $d2 | Should Be (-2.0)
+        $v.InEnd | Should Be 5.0
+        $a.InEnd | Should Be 3.0
+    }
+    It "in-point-trims an image to exactly the 0.2s floor with correct rounding" {
+        $img = New-TrimClip -Kind "image" -Path "l.png" -Offset 0.0 -DurationOverride 5.0
+        $lanes = @(,(New-TrimLane -Kind "video" -Clips @($img)))
+        # Trim 4.8 off the start: DurationOverride should go from 5.0 to exactly 0.2
+        $d = Set-TrimClipInPointLinked -Lanes $lanes -ClipId $img.Id -Delta 4.8
+        $d | Should Be 4.8
+        $img.DurationOverride | Should Be 0.2
+        $img.Offset | Should Be 4.8
+    }
 }
