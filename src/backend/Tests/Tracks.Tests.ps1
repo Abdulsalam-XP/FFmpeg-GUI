@@ -226,3 +226,92 @@ Describe "Test-PipTransitionClash" {
         Test-PipTransitionClash -PipSpans @(@{Start=9.7;End=12.0}) -Pieces $p -FadeLengths @(0.0) | Should Be $false
     }
 }
+
+Describe "New-TrimClip" {
+    It "creates a video clip with defaults: full-frame, enabled, unlinked" {
+        $c = New-TrimClip -Kind "video" -Path "C:\v\a.mp4"
+        $c.Kind | Should Be "video"
+        $c.Pip | Should Be $null
+        $c.Enabled | Should Be $true
+        $c.LinkId | Should Be ""
+        $c.StreamIdx | Should Be (-1)
+        $c.GainDb | Should Be 0.0
+        $c.Id | Should Not Be $null
+    }
+    It "throws on an unknown kind" {
+        { New-TrimClip -Kind "banana" -Path "x" } | Should Throw
+    }
+    It "clamps GainDb and floors Offset/InStart/InEnd at 0.0" {
+        $c = New-TrimClip -Kind "audio" -Path "x" -GainDb 99 -Offset -3 -InStart -1
+        $c.GainDb | Should Be 30.0
+        $c.Offset | Should Be 0.0
+        $c.InStart | Should Be 0.0
+    }
+    It "defaults an image clip to 5.0s and clamps the floor to 0.2s" {
+        (New-TrimClip -Kind "image" -Path "l.png").DurationOverride | Should Be 5.0
+        (New-TrimClip -Kind "image" -Path "l.png" -DurationOverride 0.05).DurationOverride | Should Be 0.2
+        (New-TrimClip -Kind "video" -Path "v.mp4").DurationOverride | Should Be 0.0
+    }
+}
+
+Describe "New-TrimLane" {
+    It "creates lanes of both kinds and rejects others" {
+        (New-TrimLane -Kind "video").Kind | Should Be "video"
+        (New-TrimLane -Kind "audio" -Label "Mic").Label | Should Be "Mic"
+        { New-TrimLane -Kind "caption" } | Should Throw
+    }
+    It "defaults IsMain false and Clips empty" {
+        $l = New-TrimLane -Kind "video"
+        $l.IsMain | Should Be $false
+        $r = @($l.Clips)
+        $r.Count | Should Be 0
+    }
+}
+
+Describe "Get-TrimLaneStack" {
+    It "builds the main video lane plus one linked audio lane per stream" {
+        $streams = @(@{StreamIdx=1;Label="Game"}, @{StreamIdx=2;Label="Mic"})
+        $r = Get-TrimLaneStack -Path "C:\v\a.mp4" -AudioStreams $streams
+        $r.Count | Should Be 3
+        $r[0].Kind | Should Be "video"
+        $r[0].IsMain | Should Be $true
+        $r[0].Label | Should Be "a.mp4"
+        $r[1].Kind | Should Be "audio"
+        $r[1].Label | Should Be "Game"
+        $r[1].Clips[0].StreamIdx | Should Be 1
+        $r[2].Clips[0].StreamIdx | Should Be 2
+    }
+    It "links every source row to the main video clip via one LinkId" {
+        $streams = @(@{StreamIdx=1;Label="Game"}, @{StreamIdx=2;Label="Mic"})
+        $r = Get-TrimLaneStack -Path "C:\v\a.mp4" -AudioStreams $streams
+        $link = $r[0].Clips[0].LinkId
+        $link | Should Not Be ""
+        $r[1].Clips[0].LinkId | Should Be $link
+        $r[2].Clips[0].LinkId | Should Be $link
+    }
+    It "keeps its shape at zero streams (return-shape guard)" {
+        $r = Get-TrimLaneStack -Path "C:\v\a.mp4" -AudioStreams @()
+        $r.Count | Should Be 1
+    }
+}
+
+Describe "Get-TrimLinkedClipIds / Clear-TrimClipLinks" {
+    It "finds every peer sharing the LinkId, including self" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"}, @{StreamIdx=2;Label="Mic"})
+        $vid = $lanes[0].Clips[0]
+        $r = Get-TrimLinkedClipIds -Lanes $lanes -ClipId $vid.Id
+        $r.Count | Should Be 3
+    }
+    It "returns only itself for an unlinked clip" {
+        $lanes = @((New-TrimLane -Kind "audio" -Clips @((New-TrimClip -Kind "audio" -Path "m.mp3"))))
+        $r = Get-TrimLinkedClipIds -Lanes $lanes -ClipId $lanes[0].Clips[0].Id
+        $r.Count | Should Be 1
+    }
+    It "clears the whole link group and reports the count" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"})
+        $n = Clear-TrimClipLinks -Lanes $lanes -ClipId $lanes[1].Clips[0].Id
+        $n | Should Be 2
+        $lanes[0].Clips[0].LinkId | Should Be ""
+        $lanes[1].Clips[0].LinkId | Should Be ""
+    }
+}

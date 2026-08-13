@@ -237,4 +237,123 @@ function Test-PipTransitionClash {
     return $false
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash
+# ---- NLE lane/clip model (v3). Lanes hold clips; links are LinkId groups, computed. ----
+$script:LaneKinds = @("video", "audio")
+$script:ClipKinds = @("video", "image", "audio")
+
+function New-TrimClip {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$StreamIdx = -1,
+        [string]$LinkId = "",
+        [double]$Offset = 0.0,
+        [double]$InStart = 0.0,
+        [double]$InEnd = 0.0,
+        [double]$DurationOverride = 0.0,
+        [double]$GainDb = 0.0,
+        [bool]$Muted = $false,
+        [hashtable]$Pip = $null,
+        [bool]$Enabled = $true
+    )
+    if ($script:ClipKinds -notcontains $Kind) { throw "New-TrimClip: unknown kind '$Kind'" }
+    $dur = $DurationOverride
+    if ($Kind -eq "image") {
+        # Spec 4.3: images default to 5.0s on screen, edge-trimmable down to 0.2s.
+        if ($dur -le 0.0) { $dur = 5.0 }
+        $dur = [math]::Max(0.2, $dur)
+    } else {
+        $dur = 0.0
+    }
+    return [PSCustomObject]@{
+        Id               = [guid]::NewGuid().ToString("N")
+        Kind             = $Kind
+        Path             = $Path
+        StreamIdx        = $StreamIdx
+        LinkId           = $LinkId
+        Offset           = [math]::Max(0.0, $Offset)
+        InStart          = [math]::Max(0.0, $InStart)
+        InEnd            = [math]::Max(0.0, $InEnd)
+        DurationOverride = $dur
+        GainDb           = [math]::Max(-30.0, [math]::Min(30.0, $GainDb))
+        Muted            = $Muted
+        Pip              = $Pip      # $null = full-frame (the default); hashtable = boxed PiP
+        Enabled          = $Enabled
+    }
+}
+
+function New-TrimLane {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [string]$Label = "",
+        [bool]$IsMain = $false,
+        [object[]]$Clips = @()
+    )
+    if ($script:LaneKinds -notcontains $Kind) { throw "New-TrimLane: unknown kind '$Kind'" }
+    return [PSCustomObject]@{
+        Id     = [guid]::NewGuid().ToString("N")
+        Kind   = $Kind
+        Label  = $Label
+        IsMain = $IsMain
+        Clips  = @($Clips)
+    }
+}
+
+# The stack a freshly loaded file gets: V1 (the recording) plus one always-visible audio
+# row per probed stream, every row linked to the V1 clip through ONE shared LinkId --
+# spec 4.1's "no U toggle needed to see them".
+function Get-TrimLaneStack {
+    param([Parameter(Mandatory = $true)][string]$Path, [object[]]$AudioStreams = @())
+    $linkId = [guid]::NewGuid().ToString("N")
+    $leaf = [System.IO.Path]::GetFileName($Path)
+    $lanes = @()
+    $vclip = New-TrimClip -Kind "video" -Path $Path -LinkId $linkId
+    $lanes += ,(New-TrimLane -Kind "video" -Label $leaf -IsMain $true -Clips @($vclip))
+    foreach ($s in @($AudioStreams)) {
+        $aclip = New-TrimClip -Kind "audio" -Path $Path -StreamIdx ([int]$s.StreamIdx) -LinkId $linkId
+        $lanes += ,(New-TrimLane -Kind "audio" -Label ([string]$s.Label) -Clips @($aclip))
+    }
+    return ,@($lanes)
+}
+
+function Get-TrimClipById2 {
+    param([object[]]$Lanes = @(), [string]$ClipId)
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if ($c.Id -eq $ClipId) { return @{ Lane = $lane; Clip = $c } }
+        }
+    }
+    return $null
+}
+
+function Get-TrimLinkedClipIds {
+    param([object[]]$Lanes = @(), [Parameter(Mandatory = $true)][string]$ClipId)
+    $hit = Get-TrimClipById2 -Lanes $Lanes -ClipId $ClipId
+    if ($null -eq $hit) { return ,@() }
+    $link = [string]$hit.Clip.LinkId
+    if ([string]::IsNullOrEmpty($link)) { return ,@($ClipId) }
+    $ids = @()
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if ($c.LinkId -eq $link) { $ids += ,([string]$c.Id) }
+        }
+    }
+    return ,@($ids)
+}
+
+function Clear-TrimClipLinks {
+    param([object[]]$Lanes = @(), [Parameter(Mandatory = $true)][string]$ClipId)
+    $ids = Get-TrimLinkedClipIds -Lanes $Lanes -ClipId $ClipId
+    $n = 0
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if ($ids -contains [string]$c.Id -and -not [string]::IsNullOrEmpty([string]$c.LinkId)) {
+                $c.LinkId = ""
+                $n++
+            }
+        }
+    }
+    return $n
+}
+
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks
