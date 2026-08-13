@@ -854,7 +854,7 @@ try {
     $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
     $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
     $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
-    $panelTrimTracks     = $panelTrim.FindName("PanelTrimTracks")
+    $panelTrimLanes      = $panelTrim.FindName("PanelTrimTracks")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $previewCell         = $panelTrim.FindName("PreviewCell")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
@@ -885,6 +885,10 @@ try {
     $buttonTrimAddZoom    = $panelTrim.FindName("ButtonTrimAddZoom")
     $buttonTrimAddTrack   = $panelTrim.FindName("ButtonTrimAddTrack")
     $buttonTrimUnlink     = $panelTrim.FindName("ButtonTrimUnlink")
+    # The snap magnet arrives with Task 11's XAML; FindName simply returns $null until then
+    # and every use of these two is null-guarded (see Update-TrimSnapButton).
+    $buttonTrimSnap       = $panelTrim.FindName("ButtonTrimSnap")
+    $textTrimSnapGlyph    = $panelTrim.FindName("TextTrimSnapGlyph")
     $buttonCaptionDelete  = $panelTrim.FindName("ButtonCaptionDelete")
     $panelCaptionSidebar  = $panelTrim.FindName("PanelCaptionSidebar")
     $canvasCaptionOverlay = $panelTrim.FindName("CanvasCaptionOverlay")
@@ -995,26 +999,38 @@ try {
     # 100x zoom nobody asked for, and reading it as a click is the safer interpretation.
     $script:ZoomBoxMinWidth = 40.0
 
-    # Track stack state. Declared here beside the zoom/caption state and for the same
-    # reason: the app must never hand -Tracks $null to Export-CutListAsync (the PS 5.1
-    # @($null).Count -eq 1 trap that binds it to audio-only mode), so this is always an
-    # ArrayList, never left $null, from the moment the editor exists.
-    $script:TrimTracks = New-Object System.Collections.ArrayList
-    # U toggles this: linked (the default) keeps every audio-source riding the video's own
-    # cut list; unlinked lets each track's own Offset/InStart/InEnd take over independently.
-    $script:TrimTracksUnlinked = $false
-    # A track Id string (or $null), never an index -- same reasoning as TrimSelectedZoom:
-    # indexes shift on add/delete and a drag re-sorts nothing here, but Task 8's lane drag
-    # will move things around the same way the zoom lane does.
-    $script:TrimSelectedTrack = $null
-    # Live bar drag state, same shape of lifecycle as TrimCaptionDrag/TrimZoomDrag: $null
+    # NLE lane/clip state. Declared here beside the zoom/caption state and for the same
+    # reason: the app must never hand -Lanes $null to Export-CutListAsync (the PS 5.1
+    # @($null).Count -eq 1 trap), so this is always an ArrayList, never left $null, from
+    # the moment the editor exists. Each lane's own Clips is an ArrayList too (see
+    # Set-TrimLanes) so a clip can be added/removed in place without rebuilding the lane.
+    $script:TrimLanes = New-Object System.Collections.ArrayList
+    # A CLIP Id string (or $null), never an index -- same reasoning as TrimSelectedZoom:
+    # indexes shift on add/delete and a lane reorder moves whole rows around.
+    $script:TrimSelectedClip = $null
+    # A LANE Id string (or $null): the header selection, mutually exclusive with the clip
+    # selection (single gold selection, spec 3.3 -- see Set-TrimSelectedClip/Lane).
+    $script:TrimSelectedLane = $null
+    # laneId -> $true for every collapsed group (spec 4.1's caret). A hashtable rather than
+    # a list so the render can test membership per row without a scan.
+    $script:TrimCollapsedLanes = @{}
+    # Timeline snapping (N / the toolbar magnet). Seeded from settings at startup; every
+    # write goes through Set-TrimSnapEnabled so the global and settings.json follow.
+    # Import-Config has already run by here and always sets the global (both branches and
+    # its catch), so the $null check is belt-and-suspenders for a settings load that threw
+    # before reaching it -- snapping defaults ON either way.
+    $script:TrimSnapEnabled = $(if ($null -ne $global:TrimSnapEnabled) { [bool]$global:TrimSnapEnabled } else { $true })
+    # Live clip drag state, same shape of lifecycle as TrimCaptionDrag/TrimZoomDrag: $null
     # when idle, a hashtable (Id, Mode, orig values, a snapshot, and direct Canvas/Rect
-    # references) while a bar is being dragged.
-    $script:TrimTrackDrag = $null
+    # references) while a clip bar is being dragged.
+    $script:TrimClipDrag = $null
+    # Live lane-reorder (⋮⋮) drag state. Same $null-when-idle convention; the rows it moves
+    # are whole group blocks, see Move-TrimLaneTo.
+    $script:TrimLaneReorderDrag = $null
     # Path -> probed duration (seconds) for every external clip added to the stack. Never
-    # left $null for the same reason TrimTracks isn't: it feeds -ClipDurations at
-    # Export-CutListAsync's call site and Get-TrackTimelineSpan's SourceDuration fallback
-    # for InEnd = 0 ("to the end of the clip"). Reset per file load alongside TrimTracks.
+    # left $null for the same reason TrimLanes isn't: it feeds -ClipDurations at
+    # Export-CutListAsync's call site and Get-TrimClipSpan's SourceDuration fallback
+    # for InEnd = 0 ("to the end of the clip"). Reset per file load alongside TrimLanes.
     $script:TrimClipDurations = @{}
     # The PROBED count of audio streams the loaded source file itself actually has (from
     # Get-TrimAudioStreams at load time), -1 until a file has been probed. Passed as
@@ -1027,10 +1043,10 @@ try {
     # "behave exactly as before this existed".
     $script:TrimSourceAudioStreamCount = -1
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
-    # (Invoke-TrimAddTrack) for every video-clip so the magnet-locked resize drag can read
+    # (Invoke-TrimAddTrack) for every overlay clip so the magnet-locked resize drag can read
     # it without shelling out to ffprobe on every mouse-move.
     $script:TrimClipAspect = @{}
-    # PiP preview pools: track Id -> MediaElement. Video-clip elements are inserted into
+    # PiP preview pools: CLIP Id -> MediaElement. Video-clip elements are inserted into
     # the visual tree (PreviewCell, between PreviewZoomHost and CanvasCaptionOverlay) so
     # they actually render; audio-clip elements are deliberately kept OFF the tree -- they
     # exist only to play sound, never to be seen, and the export is authoritative for the
@@ -1063,7 +1079,7 @@ try {
         if (-not $script:TrimInputFile) { return }
         $ok = Save-TrimProject -VideoPath $script:TrimInputFile `
             -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions) `
-            -Zooms @($script:TrimZooms) -Tracks @($script:TrimTracks) -Unlinked $script:TrimTracksUnlinked
+            -Zooms @($script:TrimZooms) -Lanes @($script:TrimLanes)
         if (-not $ok -and -not $script:ProjectSaveWarned) {
             $script:ProjectSaveWarned = $true
             Show-PanelMessage -Block $textTrimMeta -IsError `
@@ -1627,7 +1643,7 @@ try {
         Update-TrimZoomLane
         # Same hook point, same reasoning: the track lanes' clip bars are positioned with
         # Convert-TrimTimeToX too, so they need the timeline pieces this pass just drew from.
-        Update-TrimTrackLanes
+        Update-TrimLaneRows
     }
 
     # Waveform strip under the filmstrip, one image per piece that is at least partly on
@@ -2156,54 +2172,94 @@ try {
         Update-TrimZoomLane
     }
 
-    # Track stack write-throughs. Top-level functions for the usual reason: several of the
-    # callers below live inside .GetNewClosure()'d handlers, where a bare $script: write
-    # would land in the closure's own private module and never reach the real state.
+    # Lane/clip write-throughs. Top-level functions for the usual reason: several of the
+    # callers below live inside .GetNewClosure()'d handlers, where a bare $script: read or
+    # write would land in the closure's own private module and never reach the real state.
 
     # Field by field rather than PSObject.Copy(), like Copy-TrimZoom/Copy-TrimCaption: undo
-    # has to hold a genuinely independent track and not a second reference to the one a
-    # future lane drag (Task 8) or the sidebar is about to mutate in place. Pip is a nested
-    # hashtable, so it needs its own shallow clone or two tracks would share one mutable box.
-    function Copy-TrimTrack {
-        param($Track)
+    # has to hold a genuinely independent clip and not a second reference to the one a lane
+    # drag or the sidebar is about to mutate in place. Pip is a nested hashtable, so it
+    # needs its own shallow clone or two clips would share one mutable box.
+    function Copy-TrimClipObj {
+        param($Clip)
         $pip = $null
-        if ($null -ne $Track.Pip) {
+        if ($null -ne $Clip.Pip) {
             $pip = @{}
-            foreach ($k in $Track.Pip.Keys) { $pip[$k] = $Track.Pip[$k] }
+            foreach ($k in $Clip.Pip.Keys) { $pip[$k] = $Clip.Pip[$k] }
         }
         return [PSCustomObject]@{
-            Id        = $Track.Id
-            Kind      = $Track.Kind
-            Path      = $Track.Path
-            StreamIdx = [int]$Track.StreamIdx
-            Label     = $Track.Label
-            Offset    = [double]$Track.Offset
-            InStart   = [double]$Track.InStart
-            InEnd     = [double]$Track.InEnd
-            GainDb    = [double]$Track.GainDb
-            Muted     = [bool]$Track.Muted
-            Pip       = $pip
+            Id               = $Clip.Id
+            Kind             = $Clip.Kind
+            Path             = $Clip.Path
+            StreamIdx        = [int]$Clip.StreamIdx
+            LinkId           = [string]$Clip.LinkId
+            Offset           = [double]$Clip.Offset
+            InStart          = [double]$Clip.InStart
+            InEnd            = [double]$Clip.InEnd
+            DurationOverride = [double]$Clip.DurationOverride
+            GainDb           = [double]$Clip.GainDb
+            Muted            = [bool]$Clip.Muted
+            Pip              = $pip
+            Enabled          = [bool]$Clip.Enabled
         }
     }
 
-    function Set-TrimTracks {
-        param([object[]]$Tracks = @())
-        $list = New-Object System.Collections.ArrayList
-        foreach ($t in @($Tracks)) { if ($null -ne $t) { [void]$list.Add($t) } }
-        $script:TrimTracks = $list
+    # Deep: the lane's Clips list is rebuilt from clip CLONES, not shared references, so an
+    # undo snapshot survives every in-place clip edit the panel can make.
+    function Copy-TrimLaneObj {
+        param($Lane)
+        $clips = @(foreach ($c in @($Lane.Clips)) { Copy-TrimClipObj -Clip $c })
+        return [PSCustomObject]@{
+            Id     = $Lane.Id
+            Kind   = $Lane.Kind
+            Label  = $Lane.Label
+            IsMain = [bool]$Lane.IsMain
+            Clips  = @($clips)
+        }
     }
 
-    function Get-TrimTrackById {
+    # Same null-filter pattern the track stack used, one level deeper: the lanes list AND
+    # every lane's own Clips come out as ArrayLists so a clip can be added/removed in place
+    # without rebuilding the lane object around it.
+    function Set-TrimLanes {
+        param([object[]]$Lanes = @())
+        $list = New-Object System.Collections.ArrayList
+        foreach ($l in @($Lanes)) {
+            if ($null -eq $l) { continue }
+            $clips = New-Object System.Collections.ArrayList
+            foreach ($c in @($l.Clips)) { if ($null -ne $c) { [void]$clips.Add($c) } }
+            $l.Clips = $clips
+            [void]$list.Add($l)
+        }
+        $script:TrimLanes = $list
+    }
+
+    function Get-TrimLaneById {
         param([string]$Id)
-        foreach ($t in $script:TrimTracks) { if ($t.Id -eq $Id) { return $t } }
+        foreach ($l in $script:TrimLanes) { if ($l.Id -eq $Id) { return $l } }
         return $null
     }
 
-    # One write-through for every mutable field a track carries, mirroring Update-CaptionField:
+    # @{Lane; Clip} for a clip id, or $null. Thin wrapper over the model's own lookup so
+    # the app never walks the lanes array by hand.
+    function Get-TrimClipRef {
+        param([string]$Id)
+        if ([string]::IsNullOrEmpty($Id)) { return $null }
+        return (Get-TrimClipById2 -Lanes @($script:TrimLanes) -ClipId $Id)
+    }
+
+    function Get-TrimSelectedClipObj {
+        if ($null -eq $script:TrimSelectedClip) { return $null }
+        $ref = Get-TrimClipRef -Id $script:TrimSelectedClip
+        if ($null -eq $ref) { return $null }
+        return $ref.Clip
+    }
+
+    # One write-through for every mutable field a clip carries, mirroring Update-CaptionField:
     # only the parameters the caller actually bound are applied, via $PSBoundParameters --
-    # everything else on the track is left exactly as it was rather than stomped back to a
+    # everything else on the clip is left exactly as it was rather than stomped back to a
     # param default.
-    function Set-TrimTrackValues {
+    function Set-TrimClipValues {
         param(
             [Parameter(Mandatory = $true)][string]$Id,
             [double]$GainDb,
@@ -2211,25 +2267,36 @@ try {
             [double]$Offset,
             [double]$InStart,
             [double]$InEnd,
+            [double]$DurationOverride,
+            [bool]$Enabled,
             [double]$PipX,
             [double]$PipY,
             [double]$PipW,
-            [double]$PipH
+            [double]$PipH,
+            [bool]$PipNull
         )
-        $t = Get-TrimTrackById -Id $Id
-        if ($null -eq $t) { return }
+        $ref = Get-TrimClipRef -Id $Id
+        if ($null -eq $ref) { return }
+        $t = $ref.Clip
         if ($PSBoundParameters.ContainsKey("GainDb")) { $t.GainDb = [math]::Max(-30.0, [math]::Min(30.0, $GainDb)) }
         if ($PSBoundParameters.ContainsKey("Muted")) { $t.Muted = $Muted }
         if ($PSBoundParameters.ContainsKey("Offset")) { $t.Offset = [math]::Max(0.0, $Offset) }
         if ($PSBoundParameters.ContainsKey("InStart")) { $t.InStart = [math]::Max(0.0, $InStart) }
         if ($PSBoundParameters.ContainsKey("InEnd")) { $t.InEnd = [math]::Max(0.0, $InEnd) }
-        if ($PSBoundParameters.ContainsKey("PipX") -or $PSBoundParameters.ContainsKey("PipY") -or
-            $PSBoundParameters.ContainsKey("PipW") -or $PSBoundParameters.ContainsKey("PipH")) {
+        # 0.2s floor, the same one New-TrimClip enforces for image clips (spec 4.3).
+        if ($PSBoundParameters.ContainsKey("DurationOverride")) { $t.DurationOverride = [math]::Max(0.2, $DurationOverride) }
+        if ($PSBoundParameters.ContainsKey("Enabled")) { $t.Enabled = $Enabled }
+        # The full-frame toggle (spec 4.6): Pip $null IS full-frame, so this is a distinct
+        # write from any X/Y/W/H and wins over them when both are bound.
+        if ($PSBoundParameters.ContainsKey("PipNull") -and $PipNull) {
+            $t.Pip = $null
+        } elseif ($PSBoundParameters.ContainsKey("PipX") -or $PSBoundParameters.ContainsKey("PipY") -or
+                  $PSBoundParameters.ContainsKey("PipW") -or $PSBoundParameters.ContainsKey("PipH")) {
             if ($null -eq $t.Pip) { $t.Pip = @{ X = 0.5; Y = 0.5; W = 0.3; H = 0.3 } }
             # W/H first, THEN X/Y clamped against whichever W/H is now in effect -- a
             # center clamp against the OLD size would let a box that just grew hang off
             # the frame edge for one write. 0.05..1.0 (doubles, never int literals: the
-            # Max(0, double) truncation trap) matches the binding contract from Task 10.
+            # Max(0, double) truncation trap) matches the binding contract.
             if ($PSBoundParameters.ContainsKey("PipW")) { $t.Pip.W = [math]::Max(0.05, [math]::Min(1.0, $PipW)) }
             if ($PSBoundParameters.ContainsKey("PipH")) { $t.Pip.H = [math]::Max(0.05, [math]::Min(1.0, $PipH)) }
             $curW = [double]$t.Pip.W
@@ -2241,76 +2308,308 @@ try {
                 $t.Pip.Y = [math]::Max($curH / 2.0, [math]::Min(1.0 - $curH / 2.0, $PipY))
             }
         }
-        Update-TrimTrackLanes
+        Update-TrimLaneRows
         Request-TrimProjectSave
     }
 
-    function Remove-TrimTrack {
+    # The ROW fader/mute (spec 3.2): an audio lane's gain and mute belong to the row, not to
+    # one clip on it, so the write goes through to EVERY clip on the lane. Per-clip values
+    # are kept equal by construction this way, which is what lets the row badge read clip 0.
+    function Set-TrimLaneAudioValues {
+        param(
+            [Parameter(Mandatory = $true)][string]$Id,
+            [double]$GainDb,
+            [bool]$Muted
+        )
+        $lane = Get-TrimLaneById -Id $Id
+        if ($null -eq $lane) { return }
+        foreach ($c in @($lane.Clips)) {
+            if ($PSBoundParameters.ContainsKey("GainDb")) { $c.GainDb = [math]::Max(-30.0, [math]::Min(30.0, $GainDb)) }
+            if ($PSBoundParameters.ContainsKey("Muted")) { $c.Muted = $Muted }
+        }
+        Update-TrimLaneRows
+        Request-TrimProjectSave
+    }
+
+    # The eye (spec 3.2): a video lane is shown or hidden as a whole, so Enabled is written
+    # to every clip on it -- the model carries Enabled per clip, the UI offers it per row.
+    function Set-TrimLaneEnabled {
+        param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][bool]$Enabled)
+        $lane = Get-TrimLaneById -Id $Id
+        if ($null -eq $lane) { return }
+        foreach ($c in @($lane.Clips)) { $c.Enabled = $Enabled }
+        Update-TrimLaneRows
+        Request-TrimProjectSave
+    }
+
+    # Reads the row's headline gain/mute off clip 0 -- see Set-TrimLaneAudioValues for why
+    # one clip can stand for the row.
+    function Get-TrimLaneHeadClip {
+        param($Lane)
+        $clips = @($Lane.Clips)
+        if ($clips.Count -eq 0) { return $null }
+        return $clips[0]
+    }
+
+    # Spec 4.4: deleting a linked overlay clip takes its audio peer with it -- a video clip
+    # and the audio that came out of the same file are one thing to the user. The MAIN
+    # video clip is the exception: it shares its LinkId with every source audio row, and
+    # deleting it means "audio-only export" (exactly what deleting v2's video-main did),
+    # never "delete all the audio too".
+    function Remove-TrimClipWithLinks {
         param([Parameter(Mandatory = $true)][string]$Id)
-        $t = Get-TrimTrackById -Id $Id
-        if ($null -eq $t) { return }
-        [void]$script:TrimTracks.Remove($t)
-        if ($script:TrimSelectedTrack -eq $Id) { $script:TrimSelectedTrack = $null }
-        Update-TrimTrackLanes
+        $ref = Get-TrimClipRef -Id $Id
+        if ($null -eq $ref) { return }
+        $ids = if (Test-TrimClipIsMainVideo -Lane $ref.Lane -Clip $ref.Clip) {
+            @([string]$Id)
+        } else {
+            @(Get-TrimLinkedClipIds -Lanes @($script:TrimLanes) -ClipId $Id)
+        }
+        if (@($ids).Count -eq 0) { $ids = @([string]$Id) }
+        foreach ($cid in @($ids)) {
+            $r = Get-TrimClipRef -Id $cid
+            if ($null -eq $r) { continue }
+            [void]$r.Lane.Clips.Remove($r.Clip)
+            if ($script:TrimSelectedClip -eq $cid) { $script:TrimSelectedClip = $null }
+        }
+        Update-TrimLaneRows
         Request-TrimProjectSave
     }
 
-    # U's handler. Flips the linked/unlinked flag for the whole stack -- individual tracks
-    # do not carry their own linked bit, the session does, exactly like ZoomMagnet is a tool
-    # mode rather than a per-keyframe setting.
-    function Invoke-TrimToggleUnlink {
+    # One row's trash: the lane and everything on it. Deleting the MAIN video lane is how a
+    # user asks for an audio-only export, exactly as deleting v2's video-main track was.
+    function Remove-TrimLaneRow {
+        param([Parameter(Mandatory = $true)][string]$Id)
+        $lane = Get-TrimLaneById -Id $Id
+        if ($null -eq $lane) { return }
+        foreach ($c in @($lane.Clips)) {
+            if ($script:TrimSelectedClip -eq [string]$c.Id) { $script:TrimSelectedClip = $null }
+        }
+        [void]$script:TrimLanes.Remove($lane)
+        if ($script:TrimSelectedLane -eq $Id) { $script:TrimSelectedLane = $null }
+        Update-TrimLaneRows
+        Request-TrimProjectSave
+    }
+
+    # The video lane header's trash: the lane AND every audio lane grouped under it, since
+    # those rows are that video's own audio and would be left orphaned otherwise.
+    function Remove-TrimLaneGroup {
+        param([Parameter(Mandatory = $true)][string]$Id)
+        $lane = Get-TrimLaneById -Id $Id
+        if ($null -eq $lane) { return }
+        $victims = @($lane)
+        if ($lane.Kind -eq "video") {
+            foreach ($g in @(Get-TrimLaneGroups)) {
+                if ($null -ne $g.VideoLane -and [string]$g.VideoLane.Id -eq [string]$Id) {
+                    foreach ($a in @($g.AudioLanes)) { $victims += ,$a }
+                }
+            }
+        }
+        foreach ($v in $victims) { Remove-TrimLaneRow -Id ([string]$v.Id) }
+    }
+
+    # Spec 4.3: a new video lane goes to the TOP of the list (the topmost video lane paints
+    # last, so a new one is what the user expects to see over everything); a new audio lane
+    # goes to the end. Returns the lane so the caller can select it.
+    function Add-TrimLaneRow {
+        param([Parameter(Mandatory = $true)][string]$Kind, [string]$Label = "")
+        $text = if ([string]::IsNullOrWhiteSpace($Label)) {
+            if ($Kind -eq "video") { "Video" } else { "Audio" }
+        } else { $Label }
+        $lane = New-TrimLane -Kind $Kind -Label $text
+        # New-TrimLane hands back a plain array; the app's invariant is an ArrayList per
+        # lane so clips can be added in place (see Set-TrimLanes).
+        $lane.Clips = New-Object System.Collections.ArrayList
+        if ($Kind -eq "video") { $script:TrimLanes.Insert(0, $lane) } else { [void]$script:TrimLanes.Add($lane) }
+        Update-TrimLaneRows
+        Request-TrimProjectSave
+        return $lane
+    }
+
+    # Adds an already-built clip to a lane. Separate from Add-TrimLaneRow so the add flow
+    # can drop a clip onto an EXISTING row without creating one.
+    function Add-TrimClipToLane {
+        param([Parameter(Mandatory = $true)][string]$LaneId, [Parameter(Mandatory = $true)]$Clip)
+        $lane = Get-TrimLaneById -Id $LaneId
+        if ($null -eq $lane) { return }
+        [void]$lane.Clips.Add($Clip)
+    }
+
+    # The â‹®â‹® reorder. A video lane never travels alone: its grouped audio rows are that
+    # video's own audio and move as one block, or the group would silently dissolve on the
+    # next Get-TrimLaneGroups pass (which reads the lanes array IN ORDER).
+    function Move-TrimLaneTo {
+        param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][int]$NewIndex)
+        $lane = Get-TrimLaneById -Id $Id
+        if ($null -eq $lane) { return }
+        $block = @($lane)
+        if ($lane.Kind -eq "video") {
+            foreach ($g in @(Get-TrimLaneGroups)) {
+                if ($null -ne $g.VideoLane -and [string]$g.VideoLane.Id -eq [string]$Id) {
+                    foreach ($a in @($g.AudioLanes)) { $block += ,$a }
+                }
+            }
+        }
+        $blockIds = @{}
+        foreach ($b in $block) { $blockIds[[string]$b.Id] = $true }
+        $rest = @()
+        foreach ($l in @($script:TrimLanes)) { if (-not $blockIds.ContainsKey([string]$l.Id)) { $rest += ,$l } }
+        $idx = [math]::Max(0, [math]::Min(@($rest).Count, $NewIndex))
+        $out = @()
+        for ($i = 0; $i -lt @($rest).Count; $i++) {
+            if ($i -eq $idx) { foreach ($b in $block) { $out += ,$b } }
+            $out += ,$rest[$i]
+        }
+        if ($idx -ge @($rest).Count) { foreach ($b in $block) { $out += ,$b } }
+        Set-TrimLanes -Lanes @($out)
+        Update-TrimLaneRows
+        Request-TrimProjectSave
+    }
+
+    # Grouping (spec 2): an audio lane belongs under a video lane when it holds at least one
+    # clip and EVERY one of its clips is linked to a clip on that video lane. Anything else
+    # -- an empty row, a row with a free clip on it, a row linked to two different videos --
+    # is a free row and lands in the trailing group. Evaluated in lanes-array order, so the
+    # first video lane that can claim an audio row gets it.
+    function Get-TrimLaneGroups {
+        $lanes = @($script:TrimLanes)
+        $videoLanes = @(@($lanes) | Where-Object { $_.Kind -eq "video" })
+        $audioLanes = @(@($lanes) | Where-Object { $_.Kind -eq "audio" })
+        $claimed = @{}
+        $groups = @()
+        foreach ($v in $videoLanes) {
+            $vLinks = @{}
+            foreach ($c in @($v.Clips)) {
+                $lk = [string]$c.LinkId
+                if (-not [string]::IsNullOrEmpty($lk)) { $vLinks[$lk] = $true }
+            }
+            $members = @()
+            foreach ($a in $audioLanes) {
+                if ($claimed.ContainsKey([string]$a.Id)) { continue }
+                $clips = @($a.Clips)
+                if ($clips.Count -eq 0) { continue }
+                $all = $true
+                foreach ($c in $clips) {
+                    $lk = [string]$c.LinkId
+                    if ([string]::IsNullOrEmpty($lk) -or -not $vLinks.ContainsKey($lk)) { $all = $false; break }
+                }
+                if ($all) {
+                    $members += ,$a
+                    $claimed[[string]$a.Id] = $true
+                }
+            }
+            $groups += ,@{ VideoLane = $v; AudioLanes = @($members) }
+        }
+        $free = @()
+        foreach ($a in $audioLanes) { if (-not $claimed.ContainsKey([string]$a.Id)) { $free += ,$a } }
+        $groups += ,@{ VideoLane = $null; AudioLanes = @($free) }
+        return ,@($groups)
+    }
+
+    # U / the toolbar button. Pops the SELECTED clip out of its link group (spec 4.2's
+    # pop-one-with-orphan-tidy, which Clear-TrimClipLinks owns) -- or, with a lane header
+    # selected, pops every clip on that lane. A selection with no links at all is a no-op
+    # rather than an undo step that changes nothing.
+    function Invoke-TrimUnlink {
         if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
-        $script:TrimTracksUnlinked = -not $script:TrimTracksUnlinked
-        Update-TrimTrackLanes
+        $targets = @()
+        if ($null -ne $script:TrimSelectedClip) {
+            $ref = Get-TrimClipRef -Id $script:TrimSelectedClip
+            if ($null -ne $ref -and -not [string]::IsNullOrEmpty([string]$ref.Clip.LinkId)) {
+                $targets += ,([string]$ref.Clip.Id)
+            }
+        } elseif ($null -ne $script:TrimSelectedLane) {
+            $lane = Get-TrimLaneById -Id $script:TrimSelectedLane
+            if ($null -ne $lane) {
+                foreach ($c in @($lane.Clips)) {
+                    if (-not [string]::IsNullOrEmpty([string]$c.LinkId)) { $targets += ,([string]$c.Id) }
+                }
+            }
+        }
+        if (@($targets).Count -eq 0) { return }
+        Push-TrimUndo
+        foreach ($cid in @($targets)) {
+            [void](Clear-TrimClipLinks -Lanes @($script:TrimLanes) -ClipId $cid)
+        }
+        Update-TrimLaneRows
         Request-TrimProjectSave
     }
 
-    # Track selection. A track Id string (or $null), like the caption/zoom selections.
-    # Selecting a track drops both of the others -- three selections sharing one Delete
-    # key and one sidebar-style highlight would otherwise be ambiguous. Mirrors
-    # Set-TrimSelectedZoom's half of the pattern: the Set- function reaches across and
-    # clears the other two only when selecting something real, never on a plain deselect.
-    # Redraw is the caller's job, exactly as it is for Set-TrimSelectedCaption/Zoom.
-    function Set-TrimSelectedTrack {
+    # Clip selection. A clip Id string (or $null), like the caption/zoom selections.
+    # Selecting a clip drops the caption and zoom selections AND the lane selection -- four
+    # selections sharing one Delete key and one gold highlight would otherwise be ambiguous
+    # (spec 3.3's single gold selection). Redraw is the caller's job, exactly as it is for
+    # Set-TrimSelectedCaption/Zoom.
+    function Set-TrimSelectedClip {
         param($Id)
-        $script:TrimSelectedTrack = $Id
+        $script:TrimSelectedClip = $Id
         if ($null -ne $Id) {
+            $script:TrimSelectedLane = $null
             Clear-TrimCaptionSelection
             Clear-TrimZoomSelection
         }
     }
 
-    # Only the two -clip kinds carry a draggable bar; video-main and audio-source are
-    # time-locked to the video by design (New-TrimTrack enforces this at construction) and
-    # are drawn full-width instead. Centralised here so the initial lane build and the
-    # live drag reposition read the same geometry.
-    function Test-TrimTrackIsClip {
-        param($Track)
-        return ($Track.Kind -eq "audio-clip" -or $Track.Kind -eq "video-clip")
+    function Set-TrimSelectedLane {
+        param($Id)
+        $script:TrimSelectedLane = $Id
+        if ($null -ne $Id) {
+            $script:TrimSelectedClip = $null
+            Clear-TrimCaptionSelection
+            Clear-TrimZoomSelection
+        }
     }
 
-    function Get-TrimTrackBarBounds {
-        param($Track)
-        # SourceDuration: a -clip track's own probed duration comes from
-        # $script:TrimClipDurations (populated once at add-time by Invoke-TrimAddTrack
-        # and, for a restored project, once per clip track right after Set-TrimTracks in
-        # $onTrimFile) -- NOT the main video's duration, which is what a source track
-        # (video-main/audio-source, time-locked to the video by design) legitimately
-        # spans. 0.0 on a cache miss rather than re-probing here: this runs on every
-        # mouse-move of a live bar drag (Update-TrimTrackBarGeometry), and shelling out to
-        # ffprobe that often would stall the drag -- a miss should not happen in practice
-        # since every path that can produce a clip track also populates the cache, so 0.0
-        # (InEnd 0 reads as a zero-length span, same as Get-TrackTimelineSpan's own
-        # behavior for a genuinely zero-duration source) is the honest degenerate case
-        # rather than silently borrowing the main video's length.
-        $sourceDuration = if (Test-TrimTrackIsClip -Track $Track) {
-            if ($script:TrimClipDurations.ContainsKey([string]$Track.Path)) {
-                [double]$script:TrimClipDurations[[string]$Track.Path]
-            } else { 0.0 }
+    # Snap is a TOOL MODE, not a per-file setting: it lives in settings.json and survives
+    # the session, the same convention $script:ZoomMagnet follows within one.
+    # Reader, so a click handler never has to touch $script:TrimSnapEnabled bare (inside a
+    # closure that read would land in the closure's own module and come back $null).
+    function Get-TrimSnapEnabled {
+        return [bool]$script:TrimSnapEnabled
+    }
+
+    function Set-TrimSnapEnabled {
+        param([Parameter(Mandatory = $true)][bool]$Value)
+        $script:TrimSnapEnabled = $Value
+        $global:TrimSnapEnabled = $Value
+        Save-Settings
+        Update-TrimSnapButton
+    }
+
+    # The toolbar magnet's accent. The button itself arrives with Task 11's XAML, so this
+    # is null-guarded exactly like every other optional control lookup in this file.
+    function Update-TrimSnapButton {
+        if ($null -eq $buttonTrimSnap) { return }
+        if ($script:TrimSnapEnabled) {
+            $accent = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+            $buttonTrimSnap.BorderBrush = $accent
+            if ($null -ne $textTrimSnapGlyph) { $textTrimSnapGlyph.Foreground = $accent }
         } else {
-            [double]$script:TrimDuration
+            $buttonTrimSnap.ClearValue([System.Windows.Controls.Control]::BorderBrushProperty)
+            if ($null -ne $textTrimSnapGlyph) {
+                $textTrimSnapGlyph.ClearValue([System.Windows.Controls.TextBlock]::ForegroundProperty)
+            }
         }
-        $span = Get-TrackTimelineSpan -Track $Track -SourceDuration $sourceDuration
+    }
+
+    # A clip's own source duration for span math: the probed duration of ITS file from
+    # $script:TrimClipDurations (populated at add-time and, for a restored project, once
+    # per clip in $onTrimFile) -- NOT the main video's duration, which is only right for
+    # the main lane's own clip. 0.0 on a cache miss rather than re-probing here: this runs
+    # on every mouse-move of a live drag, and shelling out to ffprobe that often would
+    # stall it.
+    function Get-TrimClipSourceDuration {
+        param($Lane, $Clip)
+        if (Test-TrimClipIsMainVideo -Lane $Lane -Clip $Clip) { return [double]$script:TrimDuration }
+        $p = [string]$Clip.Path
+        if ($p -eq [string]$script:TrimInputFile) { return [double]$script:TrimDuration }
+        if ($script:TrimClipDurations.ContainsKey($p)) { return [double]$script:TrimClipDurations[$p] }
+        return 0.0
+    }
+
+    function Get-TrimClipBarBounds {
+        param($Lane, $Clip)
+        $span = Get-TrimClipSpan -Clip $Clip -SourceDuration (Get-TrimClipSourceDuration -Lane $Lane -Clip $Clip)
         $left = Convert-TrimTimeToX -Seconds ([double]$span.Start)
         $right = Convert-TrimTimeToX -Seconds ([double]$span.End)
         return @{ Left = $left; Width = [math]::Max(2.0, $right - $left) }
@@ -2318,11 +2617,11 @@ try {
 
     # Repositions an already-built bar in place -- no Children.Clear(), no new elements --
     # so it can run on every mouse-move of a live drag without disturbing the mouse capture
-    # the drag is holding on $Canvas (see Update-TrimTrackDrag below).
-    function Update-TrimTrackBarGeometry {
-        param($Track, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
-        if ($null -eq $Rect -or -not (Test-TrimTrackIsClip -Track $Track)) { return }
-        $bounds = Get-TrimTrackBarBounds -Track $Track
+    # the drag is holding on $Canvas (see Update-TrimClipDrag below).
+    function Update-TrimClipBarGeometry {
+        param($Lane, $Clip, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
+        if ($null -eq $Rect) { return }
+        $bounds = Get-TrimClipBarBounds -Lane $Lane -Clip $Clip
         [System.Windows.Controls.Canvas]::SetLeft($Rect, $bounds.Left)
         $Rect.Width = $bounds.Width
         if ($null -ne $GripStart) { [System.Windows.Controls.Canvas]::SetLeft($GripStart, $bounds.Left) }
@@ -2333,34 +2632,35 @@ try {
     # mouse-down (pushed on release only if something actually moved), the drag applied
     # against the ORIGINAL values every move (never accumulated deltas, which drift and
     # let a clamp "eat" motion), and a direct reference to the Rect/Canvas this drag owns
-    # rather than a redraw -- Update-TrimTrackLanes rebuilds every lane's Border/Grid/Canvas
+    # rather than a redraw -- Update-TrimLaneRows rebuilds every row's Border/Grid/Canvas
     # from scratch, which would tear down the very canvas this drag has captured.
-    function Start-TrimTrackDrag {
-        param([string]$Id, [string]$Mode, [double]$StartX, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
-        $t = Get-TrimTrackById -Id $Id
-        if ($null -eq $t) { return }
-        # InEnd 0.0 is the "natural end of clip" sentinel (New-TrimTrack), but the
+    function Start-TrimClipDrag {
+        param([string]$ClipId, [string]$Mode, [double]$StartX, $Canvas, $Rect, $GripStart = $null, $GripEnd = $null)
+        $ref = Get-TrimClipRef -Id $ClipId
+        if ($null -eq $ref) { return }
+        $t = $ref.Clip
+        # InEnd 0.0 is the "natural end of clip" sentinel (New-TrimClip), but the
         # instart/inend drag math below treats OrigInEnd as a literal timestamp -- taken
         # literally, a fresh clip's InEnd reads as already-zero-length, which either makes
         # the left-edge drag inert (deltaMax collapses below deltaMin) or lets the right-edge
         # drag stretch InEnd from 0 up to only ~dt, collapsing a real clip to ~0.1-2s. Resolve
-        # the sentinel to the EFFECTIVE end here, once, using the same cache
-        # Get-TrimTrackBarBounds reads from -- every path that can produce a clip track
-        # populates it, so a miss should not happen in practice.
+        # the sentinel to the EFFECTIVE end here, once, from the same duration lookup the
+        # bar geometry reads.
         $origInEnd = [double]$t.InEnd
         $inEndResolved = $true
         if ($origInEnd -le 0.0) {
-            if ((Test-TrimTrackIsClip -Track $t) -and $script:TrimClipDurations.ContainsKey([string]$t.Path)) {
-                $origInEnd = [double]$script:TrimClipDurations[[string]$t.Path]
+            $known = Get-TrimClipSourceDuration -Lane $ref.Lane -Clip $t
+            if ($known -gt 0.0) {
+                $origInEnd = $known
             } else {
-                # Cache miss: no known duration to resolve the sentinel to. Don't invent
-                # one -- Update-TrimTrackDrag checks InEndResolved and leaves the edge
-                # inert (appliedDelta 0) for both instart and inend while this is false.
+                # No known duration to resolve the sentinel to. Don't invent one --
+                # Update-TrimClipDrag checks InEndResolved and leaves the edge inert
+                # (appliedDelta 0) for both instart and inend while this is false.
                 $inEndResolved = $false
             }
         }
-        $script:TrimTrackDrag = @{
-            Id            = $Id
+        $script:TrimClipDrag = @{
+            Id            = $ClipId
             Mode          = $Mode
             StartX        = $StartX
             OrigOffset    = [double]$t.Offset
@@ -2375,38 +2675,31 @@ try {
         }
     }
 
-    function Test-TrimTrackDrag {
-        return ($null -ne $script:TrimTrackDrag)
+    function Test-TrimClipDrag {
+        return ($null -ne $script:TrimClipDrag)
     }
 
-    function Update-TrimTrackDrag {
+    function Update-TrimClipDrag {
         param([double]$CurrentX)
-        $drag = $script:TrimTrackDrag
+        $drag = $script:TrimClipDrag
         if ($null -eq $drag) { return }
-        $t = Get-TrimTrackById -Id $drag.Id
-        if ($null -eq $t) { return }
+        $ref = Get-TrimClipRef -Id $drag.Id
+        if ($null -eq $ref) { return }
+        $t = $ref.Clip
         $dt = Convert-TrimPixelsToSeconds -Pixels ($CurrentX - $drag.StartX)
         # 0.0 rather than 0 in every clamp: the int-overload truncation trap that
         # quantised the caption drags to whole seconds (see Move-TrimCaption).
         switch ($drag.Mode) {
             "instart" {
                 # Left-edge (in-point) trim, NLE-style: InStart alone can't keep the bar's
-                # left edge under the mouse, because Get-TrackTimelineSpan.Start is always
-                # Track.Offset, never InStart (Task 2's settled semantics, consumed by the
-                # audio mix graph's clipIn math -- not something this task changes). So the
-                # timeline delta has to be applied to BOTH fields in lockstep: InStart moves
-                # the in-point, Offset moves the bar's on-timeline position by the same
-                # amount, and Span.End (Offset + (InEnd - InStart)) is unchanged because the
-                # length shrinks by exactly what Offset grows by (or vice versa).
+                # left edge under the mouse, because Get-TrimClipSpan.Start is always
+                # Clip.Offset, never InStart. So the timeline delta has to be applied to
+                # BOTH fields in lockstep: InStart moves the in-point, Offset moves the
+                # bar's on-timeline position by the same amount, and Span.End is unchanged
+                # because the length shrinks by exactly what Offset grows by.
                 $minGap = 0.1
-                # Same clamp, expressed as a bound on the DELTA rather than on InStart alone,
-                # so InStart and Offset apply the identical, already-clamped amount instead of
-                # each being clamped independently and drifting apart:
-                #   InStart + delta >= 0            -> delta >= -OrigInStart
-                #   Offset  + delta >= 0             -> delta >= -OrigOffset
-                #   InStart + delta <= InEnd - minGap -> delta <= OrigInEnd - minGap - OrigInStart
                 if (-not $drag.InEndResolved) {
-                    # Cache miss at drag-start (see Start-TrimTrackDrag): no known duration
+                    # Cache miss at drag-start (see Start-TrimClipDrag): no known duration
                     # to clamp the left edge against. Leave it inert rather than clamp
                     # against an invented value.
                 } else {
@@ -2429,15 +2722,16 @@ try {
                 $t.Offset = [math]::Max(0.0, $drag.OrigOffset + $dt)
             }
         }
-        Update-TrimTrackBarGeometry -Track $t -Canvas $drag.Canvas -Rect $drag.Rect -GripStart $drag.GripStart -GripEnd $drag.GripEnd
+        Update-TrimClipBarGeometry -Lane $ref.Lane -Clip $t -Canvas $drag.Canvas -Rect $drag.Rect -GripStart $drag.GripStart -GripEnd $drag.GripEnd
     }
 
-    function Complete-TrimTrackDrag {
-        $drag = $script:TrimTrackDrag
-        $script:TrimTrackDrag = $null
+    function Complete-TrimClipDrag {
+        $drag = $script:TrimClipDrag
+        $script:TrimClipDrag = $null
         if ($null -eq $drag) { return }
-        $t = Get-TrimTrackById -Id $drag.Id
-        if ($null -eq $t) { return }
+        $ref = Get-TrimClipRef -Id $drag.Id
+        if ($null -eq $ref) { return }
+        $t = $ref.Clip
         $changed = ([math]::Abs([double]$t.Offset - $drag.OrigOffset) -gt 0.001) -or
                    ([math]::Abs([double]$t.InStart - $drag.OrigInStart) -gt 0.001) -or
                    ([math]::Abs([double]$t.InEnd - $drag.OrigInEnd) -gt 0.001)
@@ -2446,50 +2740,62 @@ try {
         Request-TrimProjectSave
     }
 
+    # Bridge rendering (Task 9 replaces this with the grouped NLE rows). One row per lane in
+    # group order -- video lane, then its own audio rows, then the free rows -- drawn with
+    # the v2 lane visuals: a 190px header carrying the mute/eye dot, label, gain badge and
+    # trash, and a span canvas carrying one bar per clip.
+    #
     # Rebuilt from scratch on every structural change, like the caption/zoom lanes -- with
-    # one exception. While a bar drag is live, this returns immediately instead: a full
-    # rebuild replaces every lane's Canvas with a brand-new object, and WPF releases mouse
+    # one exception. While a clip drag is live, this returns immediately instead: a full
+    # rebuild replaces every row's Canvas with a brand-new object, and WPF releases mouse
     # capture the instant the captured element leaves the visual tree, which would abort
-    # the drag after its very first pixel of movement. Update-TrimTrackDrag repositions the
+    # the drag after its very first pixel of movement. Update-TrimClipDrag repositions the
     # one bar it owns directly instead, and this function catches back up on mouse-up.
-    function Update-TrimTrackLanes {
-        if ($null -eq $panelTrimTracks) { return }
-        if (Test-TrimTrackDrag) { return }
-        # Prunes the PiP/audio-clip preview pools down to the tracks that still exist --
-        # every structural change (add, delete, undo/redo, unlink toggle, load) reaches
-        # here, which is exactly when a track can have vanished out from under its pooled
+    function Update-TrimLaneRows {
+        if ($null -eq $panelTrimLanes) { return }
+        if (Test-TrimClipDrag) { return }
+        # Prunes the PiP/audio-clip preview pools down to the clips that still exist --
+        # every structural change (add, delete, undo/redo, unlink, load) reaches here,
+        # which is exactly when a clip can have vanished out from under its pooled
         # MediaElement.
         Sync-TrimClipMediaElementPools
-        $panelTrimTracks.Children.Clear()
-        if (-not $script:TrimInputFile) { $panelTrimTracks.Visibility = "Collapsed"; return }
+        $panelTrimLanes.Children.Clear()
+        if (-not $script:TrimInputFile) { $panelTrimLanes.Visibility = "Collapsed"; return }
+        if (@($script:TrimLanes).Count -eq 0) { $panelTrimLanes.Visibility = "Collapsed"; return }
+        # Always visible now: spec 4.1 makes the source audio rows part of the ordinary
+        # single-file session (no U toggle needed to see them).
+        $panelTrimLanes.Visibility = "Visible"
 
-        $hasClip = $false
-        foreach ($t in @($script:TrimTracks)) { if (Test-TrimTrackIsClip -Track $t) { $hasClip = $true; break } }
-        # Visible only when there is something to show beyond "one video, its own audio" --
-        # the ordinary single-clip session must look exactly like the pre-multitrack editor.
-        if (-not $script:TrimTracksUnlinked -and -not $hasClip) {
-            $panelTrimTracks.Visibility = "Collapsed"
-            return
-        }
-        $panelTrimTracks.Visibility = "Visible"
-
-        $visible = @(@($script:TrimTracks) | Where-Object { $script:TrimTracksUnlinked -or $_.Kind -ne "video-main" })
         $selectedBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E0C48F")
         $muteLiveBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
         $muteOffBrush  = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#44506A")
         $audioBarBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#5A7EA8")
         $videoBarBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#B08CFF")
 
-        foreach ($t in $visible) {
-            $thisId = $t.Id
-            $isClip = Test-TrimTrackIsClip -Track $t
-            $isSelected = ($t.Id -eq $script:TrimSelectedTrack)
+        # Display order: each video lane followed by its own audio rows, then the free rows.
+        $ordered = @()
+        foreach ($g in @(Get-TrimLaneGroups)) {
+            if ($null -ne $g.VideoLane) { $ordered += ,$g.VideoLane }
+            foreach ($a in @($g.AudioLanes)) { $ordered += ,$a }
+        }
 
-            $lane = New-Object System.Windows.Controls.Border
-            $lane.Style = $ctx.Window.FindResource("TrackLaneStyle")
-            $lane.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
-            $lane.ClipToBounds = $true
-            if ($isSelected) { $lane.BorderBrush = $selectedBrush }
+        foreach ($ln in $ordered) {
+            $thisLaneId = [string]$ln.Id
+            $isVideoLane = ($ln.Kind -eq "video")
+            $isSelectedLane = ([string]$ln.Id -eq [string]$script:TrimSelectedLane)
+            $head = Get-TrimLaneHeadClip -Lane $ln
+            # The row's headline state: an empty row reads as live and unmuted rather than
+            # crashing on a clip that isn't there.
+            $rowMuted = if ($null -ne $head) { [bool]$head.Muted } else { $false }
+            $rowEnabled = if ($null -ne $head) { [bool]$head.Enabled } else { $true }
+            $rowGain = if ($null -ne $head) { [double]$head.GainDb } else { 0.0 }
+            $rowOff = if ($isVideoLane) { -not $rowEnabled } else { $rowMuted }
+
+            $row = New-Object System.Windows.Controls.Border
+            $row.Style = $ctx.Window.FindResource("TrackLaneStyle")
+            $row.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
+            $row.ClipToBounds = $true
+            if ($isSelectedLane) { $row.BorderBrush = $selectedBrush }
 
             $grid = New-Object System.Windows.Controls.Grid
             $col0 = New-Object System.Windows.Controls.ColumnDefinition
@@ -2499,7 +2805,7 @@ try {
             [void]$grid.ColumnDefinitions.Add($col0)
             [void]$grid.ColumnDefinitions.Add($col1)
 
-            # ---- Header: mute dot, label, gain badge, delete ----
+            # ---- Header: mute/eye dot, label, gain badge, delete ----
             $header = New-Object System.Windows.Controls.StackPanel
             $header.Orientation = "Horizontal"
             $header.VerticalAlignment = "Center"
@@ -2515,30 +2821,37 @@ try {
             $mute.Margin = New-Object System.Windows.Thickness(0, 0, 6, 0)
             $muteDot = New-Object System.Windows.Shapes.Ellipse
             $muteDot.Width = 14; $muteDot.Height = 14
-            $muteDot.Fill = $(if ($t.Muted) { $muteOffBrush } else { $muteLiveBrush })
+            $muteDot.Fill = $(if ($rowOff) { $muteOffBrush } else { $muteLiveBrush })
             $mute.Content = $muteDot
+            # GetNewClosure over the per-row locals ONLY, and every write goes through a
+            # top-level write-through -- a bare $script: read or write in here would land in
+            # this closure's own private module and never see the real state.
             $mute.Add_Click({
-                $track = Get-TrimTrackById -Id $thisId
-                if ($null -eq $track) { return }
                 Push-TrimUndo
-                Set-TrimTrackValues -Id $thisId -Muted (-not $track.Muted)
+                if ($isVideoLane) {
+                    Set-TrimLaneEnabled -Id $thisLaneId -Enabled (-not $rowEnabled)
+                } else {
+                    Set-TrimLaneAudioValues -Id $thisLaneId -Muted (-not $rowMuted)
+                }
             }.GetNewClosure())
             [void]$header.Children.Add($mute)
 
             $label = New-Object System.Windows.Controls.TextBlock
             $label.Style = $ctx.Window.FindResource("TrackChipTextStyle")
-            $label.Text = if ([string]::IsNullOrWhiteSpace($t.Label)) { $t.Kind } else { $t.Label }
+            $label.Text = if ([string]::IsNullOrWhiteSpace($ln.Label)) { $ln.Kind } else { $ln.Label }
             $label.VerticalAlignment = "Center"
             $label.MaxWidth = 78
             $label.TextTrimming = "CharacterEllipsis"
             [void]$header.Children.Add($label)
 
-            $gainBadge = New-Object System.Windows.Controls.TextBlock
-            $gainBadge.Style = $ctx.Window.FindResource("TrackChipTextStyle")
-            $gainBadge.Text = "{0:+0.0;-0.0;0} dB" -f [double]$t.GainDb
-            $gainBadge.VerticalAlignment = "Center"
-            $gainBadge.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
-            [void]$header.Children.Add($gainBadge)
+            if (-not $isVideoLane) {
+                $gainBadge = New-Object System.Windows.Controls.TextBlock
+                $gainBadge.Style = $ctx.Window.FindResource("TrackChipTextStyle")
+                $gainBadge.Text = "{0:+0.0;-0.0;0} dB" -f $rowGain
+                $gainBadge.VerticalAlignment = "Center"
+                $gainBadge.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+                [void]$header.Children.Add($gainBadge)
+            }
 
             $delete = New-Object System.Windows.Controls.Button
             $delete.Content = [char]0x00D7  # "x"
@@ -2550,31 +2863,55 @@ try {
             $delete.Foreground = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#8FA8C0")
             $delete.Cursor = [System.Windows.Input.Cursors]::Hand
             $delete.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+            # A video row's trash takes its grouped audio rows with it; an audio row's takes
+            # only itself.
             $delete.Add_Click({
                 Push-TrimUndo
-                Remove-TrimTrack -Id $thisId
+                if ($isVideoLane) { Remove-TrimLaneGroup -Id $thisLaneId } else { Remove-TrimLaneRow -Id $thisLaneId }
             }.GetNewClosure())
             [void]$header.Children.Add($delete)
 
             [void]$grid.Children.Add($header)
 
-            # ---- Span bar canvas ----
+            # ---- Span bar canvas: one bar per clip on this lane ----
             $barCanvas = New-Object System.Windows.Controls.Canvas
             $barCanvas.Background = [System.Windows.Media.Brushes]::Transparent
             [System.Windows.Controls.Grid]::SetColumn($barCanvas, 1)
+            $barBrush = if ($isVideoLane) { $videoBarBrush } else { $audioBarBrush }
 
-            $barBrush = if ($t.Kind -eq "video-main" -or $t.Kind -eq "video-clip") { $videoBarBrush } else { $audioBarBrush }
-            $bar = New-Object System.Windows.Shapes.Rectangle
-            $bar.Height = 18
-            $bar.Fill = $barBrush
-            $bar.RadiusX = 3; $bar.RadiusY = 3
-            [System.Windows.Controls.Canvas]::SetTop($bar, 7)
+            foreach ($clip in @($ln.Clips)) {
+                $thisClipId = [string]$clip.Id
+                $isMainClip = Test-TrimClipIsMainVideo -Lane $ln -Clip $clip
+                $bar = New-Object System.Windows.Shapes.Rectangle
+                $bar.Height = 18
+                $bar.Fill = $barBrush
+                $bar.RadiusX = 3; $bar.RadiusY = 3
+                $bar.Opacity = $(if ($clip.Enabled) { 1.0 } else { 0.35 })
+                [System.Windows.Controls.Canvas]::SetTop($bar, 7)
 
-            if ($isClip) {
-                $bounds = Get-TrimTrackBarBounds -Track $t
+                if ($isMainClip) {
+                    # The main recording's own video clip IS the piece list -- it spans the
+                    # whole timeline and carries no drag, exactly as v2's video-main did.
+                    [System.Windows.Controls.Canvas]::SetLeft($bar, 0)
+                    $barLaneWidth = $barCanvas.ActualWidth
+                    if ($barLaneWidth -le 0) { $barLaneWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth - 190) }
+                    $bar.Width = $barLaneWidth
+                    $barCanvas.Add_SizeChanged({
+                        param($eventSource, $e)
+                        $bar.Width = $eventSource.ActualWidth
+                    }.GetNewClosure())
+                    [void]$barCanvas.Children.Add($bar)
+                    continue
+                }
+
+                $bounds = Get-TrimClipBarBounds -Lane $ln -Clip $clip
                 [System.Windows.Controls.Canvas]::SetLeft($bar, $bounds.Left)
                 $bar.Width = $bounds.Width
                 $bar.Cursor = [System.Windows.Input.Cursors]::SizeAll
+                if ([string]$clip.Id -eq [string]$script:TrimSelectedClip) {
+                    $bar.Stroke = $selectedBrush
+                    $bar.StrokeThickness = 2
+                }
 
                 $gripStart = $null
                 $gripEnd = $null
@@ -2594,21 +2931,21 @@ try {
                     [System.Windows.Controls.Canvas]::SetLeft($gripEnd, $bounds.Left + $bounds.Width - 6.0)
                 }
 
-                # GetNewClosure over $thisId, exactly as the caption block/grips do -- without
-                # it every bar captures the loop's final track and dragging any of them moves
-                # the last one. $barCanvas/$bar/$gripStart/$gripEnd are closed over too: they
-                # are per-iteration locals already (New-Object each time round the loop), so
-                # capturing them just pins each handler to the instance it was built for.
+                # GetNewClosure over $thisClipId, exactly as the caption blocks/grips do --
+                # without it every bar captures the loop's final clip and dragging any of
+                # them moves the last one. $barCanvas/$bar/$gripStart/$gripEnd are captured
+                # too: they are per-iteration locals already (New-Object each time round the
+                # loop), so capturing them just pins each handler to its own instance.
                 $bar.Add_MouseLeftButtonDown({
                     param($eventSource, $e)
                     $x = ($e.GetPosition($barCanvas)).X
-                    Set-TrimSelectedTrack -Id $thisId
-                    # Direct call, not a lane rebuild: Update-TrimTrackLanes bails out for
-                    # the whole duration of the drag that Start-TrimTrackDrag is about to
-                    # start (Test-TrimTrackDrag), so the props strip needs its own refresh
-                    # here rather than waiting for the rebuild that follows on mouse-up.
+                    Set-TrimSelectedClip -Id $thisClipId
+                    # Direct call, not a row rebuild: Update-TrimLaneRows bails out for the
+                    # whole duration of the drag that Start-TrimClipDrag is about to start
+                    # (Test-TrimClipDrag), so the props strip needs its own refresh here
+                    # rather than waiting for the rebuild that follows on mouse-up.
                     Update-TrimTrackProps
-                    Start-TrimTrackDrag -Id $thisId -Mode "move" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
+                    Start-TrimClipDrag -ClipId $thisClipId -Mode "move" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
                     $barCanvas.CaptureMouse() | Out-Null
                     $e.Handled = $true
                 }.GetNewClosure())
@@ -2618,9 +2955,9 @@ try {
                     $gripStart.Add_MouseLeftButtonDown({
                         param($eventSource, $e)
                         $x = ($e.GetPosition($barCanvas)).X
-                        Set-TrimSelectedTrack -Id $thisId
+                        Set-TrimSelectedClip -Id $thisClipId
                         Update-TrimTrackProps
-                        Start-TrimTrackDrag -Id $thisId -Mode "instart" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
+                        Start-TrimClipDrag -ClipId $thisClipId -Mode "instart" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
                         $barCanvas.CaptureMouse() | Out-Null
                         $e.Handled = $true
                     }.GetNewClosure())
@@ -2629,67 +2966,55 @@ try {
                     $gripEnd.Add_MouseLeftButtonDown({
                         param($eventSource, $e)
                         $x = ($e.GetPosition($barCanvas)).X
-                        Set-TrimSelectedTrack -Id $thisId
+                        Set-TrimSelectedClip -Id $thisClipId
                         Update-TrimTrackProps
-                        Start-TrimTrackDrag -Id $thisId -Mode "inend" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
+                        Start-TrimClipDrag -ClipId $thisClipId -Mode "inend" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
                         $barCanvas.CaptureMouse() | Out-Null
                         $e.Handled = $true
                     }.GetNewClosure())
                     [void]$barCanvas.Children.Add($gripEnd)
                 }
-
-                # Live drag reads and writes $script:TrimTrackDrag through the top-level
-                # Test-/Update-/Complete- functions, not a closure, so it captures nothing --
-                # same reasoning as the caption and zoom lane canvases.
-                $barCanvas.Add_MouseMove({
-                    param($eventSource, $e)
-                    if (-not (Test-TrimTrackDrag)) { return }
-                    Update-TrimTrackDrag -CurrentX ($e.GetPosition($eventSource)).X
-                })
-                $barCanvas.Add_MouseLeftButtonUp({
-                    param($eventSource, $e)
-                    if (-not (Test-TrimTrackDrag)) { return }
-                    $eventSource.ReleaseMouseCapture()
-                    Complete-TrimTrackDrag
-                    Update-TrimTrackLanes
-                })
-            } else {
-                # Source kinds are time-locked to the video (New-TrimTrack enforces zero
-                # offset/trim for them) and simply ride the whole timeline -- no drag, no
-                # per-second geometry, just a full-width chip.
-                [System.Windows.Controls.Canvas]::SetLeft($bar, 0)
-                $barLaneWidth = $barCanvas.ActualWidth
-                if ($barLaneWidth -le 0) { $barLaneWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth - 190) }
-                $bar.Width = $barLaneWidth
-                $barCanvas.Add_SizeChanged({
-                    param($eventSource, $e)
-                    $bar.Width = $eventSource.ActualWidth
-                }.GetNewClosure())
-                [void]$barCanvas.Children.Add($bar)
             }
 
+            # Live drag reads and writes $script:TrimClipDrag through the top-level
+            # Test-/Update-/Complete- functions, not a closure, so it captures nothing --
+            # same reasoning as the caption and zoom lane canvases. The capture lives on the
+            # CANVAS, never on a bar: a bar can be replaced by a rebuild mid-gesture.
+            $barCanvas.Add_MouseMove({
+                param($eventSource, $e)
+                if (-not (Test-TrimClipDrag)) { return }
+                Update-TrimClipDrag -CurrentX ($e.GetPosition($eventSource)).X
+            })
+            $barCanvas.Add_MouseLeftButtonUp({
+                param($eventSource, $e)
+                if (-not (Test-TrimClipDrag)) { return }
+                $eventSource.ReleaseMouseCapture()
+                Complete-TrimClipDrag
+                Update-TrimLaneRows
+            })
+
             [void]$grid.Children.Add($barCanvas)
-            $lane.Child = $grid
+            $row.Child = $grid
 
             # Whole-row select. Fires for header clicks always, and for bar-area clicks only
-            # on non-clip lanes -- a clip bar's own handlers above mark their clicks Handled,
-            # so this one never doubles up with a drag start.
-            $lane.Add_MouseLeftButtonDown({
+            # where no clip bar sits -- a clip bar's own handlers above mark their clicks
+            # Handled, so this one never doubles up with a drag start.
+            $row.Add_MouseLeftButtonDown({
                 param($eventSource, $e)
-                Set-TrimSelectedTrack -Id $thisId
-                Update-TrimTrackLanes
+                Set-TrimSelectedLane -Id $thisLaneId
+                Update-TrimLaneRows
             }.GetNewClosure())
 
-            [void]$panelTrimTracks.Children.Add($lane)
+            [void]$panelTrimLanes.Children.Add($row)
         }
 
-        # Every structural change (mute, gain, delete, unlink toggle, undo/redo, load) comes
-        # through here, so refreshing the props strip at the end of a lane rebuild is enough
-        # to keep it in sync without a second call at each of those sites. The three points
-        # that select a track WITHOUT rebuilding the lanes (drag-start on a bar/grip, mid-drag)
-        # call Update-TrimTrackProps directly instead -- see Start-TrimTrackDrag's callers.
+        # Every structural change (mute, gain, delete, unlink, undo/redo, load) comes
+        # through here, so refreshing the props strip at the end of a row rebuild is enough
+        # to keep it in sync without a second call at each of those sites. The points that
+        # select a clip WITHOUT rebuilding the rows (drag-start on a bar/grip, mid-drag)
+        # call Update-TrimTrackProps directly instead -- see Start-TrimClipDrag's callers.
         Update-TrimTrackProps
-        # And the PiP box/preview follow the same rule: a lane rebuild is what a track
+        # And the PiP box/preview follow the same rule: a row rebuild is what a clip
         # selection change (or add/delete) usually comes through, so this is the one place
         # that keeps both in sync without a second call at every site above.
         Update-PipBoxOverlay
@@ -2698,7 +3023,7 @@ try {
 
     # Mirrors Set-ZoomUiLoading: raised while Update-TrimTrackProps is writing the slider/
     # checkbox from model state, so the ValueChanged/Click handlers those writes trigger
-    # know to no-op instead of feeding the value straight back into Set-TrimTrackValues.
+    # know to no-op instead of feeding the value straight back into Set-TrimClipValues.
     function Set-TrackUiLoading {
         param([bool]$Value)
         $script:TrackUiLoading = $Value
@@ -2708,16 +3033,51 @@ try {
         return $script:TrackUiLoading
     }
 
-    # Fills the strip from whichever track is selected, or hides it. Called after every
-    # lane rebuild (see Update-TrimTrackLanes) and directly from the three selection points
-    # that intentionally skip a lane rebuild while a drag is starting.
+    # What the props strip is currently pointed at: the selected CLIP if there is one, else
+    # the selected LANE (a header selection edits the whole row -- see
+    # Set-TrimLaneAudioValues), else $null. One resolver rather than the same if/else
+    # repeated in the strip's fill, its slider, its checkbox and its Delete button.
+    function Get-TrimPropsTarget {
+        if ($null -ne $script:TrimSelectedClip) {
+            $ref = Get-TrimClipRef -Id $script:TrimSelectedClip
+            if ($null -ne $ref) {
+                return @{
+                    Scope   = "clip"
+                    Id      = [string]$ref.Clip.Id
+                    Label   = $(if ([string]::IsNullOrWhiteSpace($ref.Lane.Label)) { [string]$ref.Clip.Kind } else { [string]$ref.Lane.Label })
+                    GainDb  = [double]$ref.Clip.GainDb
+                    Muted   = [bool]$ref.Clip.Muted
+                    IsVideo = ($ref.Clip.Kind -ne "audio")
+                }
+            }
+        }
+        if ($null -ne $script:TrimSelectedLane) {
+            $lane = Get-TrimLaneById -Id $script:TrimSelectedLane
+            if ($null -ne $lane) {
+                $head = Get-TrimLaneHeadClip -Lane $lane
+                return @{
+                    Scope   = "lane"
+                    Id      = [string]$lane.Id
+                    Label   = $(if ([string]::IsNullOrWhiteSpace($lane.Label)) { [string]$lane.Kind } else { [string]$lane.Label })
+                    GainDb  = $(if ($null -ne $head) { [double]$head.GainDb } else { 0.0 })
+                    Muted   = $(if ($null -ne $head) { [bool]$head.Muted } else { $false })
+                    IsVideo = ($lane.Kind -eq "video")
+                }
+            }
+        }
+        return $null
+    }
+
+    # Fills the strip from whatever is selected, or hides it. Called after every row
+    # rebuild (see Update-TrimLaneRows) and directly from the selection points that
+    # intentionally skip a rebuild while a drag is starting.
     function Update-TrimTrackProps {
-        # "Selection ticks": every lane rebuild (load, undo/redo, mute/gain/delete, unlink
-        # toggle) ends up here, so this is also the one place that keeps the preview volume
-        # caught up with the model without a second call at each of those sites.
+        # "Selection ticks": every row rebuild (load, undo/redo, mute/gain/delete, unlink)
+        # ends up here, so this is also the one place that keeps the preview volume caught
+        # up with the model without a second call at each of those sites.
         Update-TrimPreviewVolume
         if ($null -eq $panelTrimTrackProps) { return }
-        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+        $t = Get-TrimPropsTarget
         if ($null -eq $t) {
             $panelTrimTrackProps.Visibility = "Collapsed"
             return
@@ -2725,12 +3085,11 @@ try {
         $panelTrimTrackProps.Visibility = "Visible"
         Set-TrackUiLoading -Value $true
         try {
-            $name = if ([string]::IsNullOrWhiteSpace($t.Label)) { $t.Kind } else { $t.Label }
-            # video-main carries no gain/mute of its own (the mix graph never touches its
-            # audio through this path), so the strip names it plainly rather than implying
-            # a slider/checkbox that would not do anything.
+            # A video row/clip carries no gain of its own (the mix graph never touches
+            # picture), so the strip names it plainly rather than implying a slider that
+            # would not do anything.
             if ($null -ne $textTrackPropsName) {
-                $textTrackPropsName.Text = if ($t.Kind -eq "video-main") { "$name (video)" } else { $name }
+                $textTrackPropsName.Text = if ($t.IsVideo) { "$($t.Label) (video)" } else { [string]$t.Label }
             }
             if ($null -ne $sliderTrackGain) { $sliderTrackGain.Value = [double]$t.GainDb }
             if ($null -ne $textTrackGain) { $textTrackGain.Text = "{0:+0.0;-0.0;0.0} dB" -f [double]$t.GainDb }
@@ -2740,17 +3099,27 @@ try {
         }
     }
 
-    # Approximates the export's per-track gain in the single preview decoder: one MediaElement
+    # Approximates the export's per-row gain in the single preview decoder: one MediaElement
     # cannot play separate streams at separate volumes, so this collapses the whole stack to
-    # one number -- silence if every audio-source track is muted, otherwise the gain of the
+    # one number -- silence if every source audio clip is muted, otherwise the gain of the
     # first unmuted one. The EXPORT (Tracks.psm1's mix graph) is authoritative; this is only
     # ever what plays back while editing.
     function Update-TrimPreviewVolume {
         if ($null -eq $mediaTrimPreview) { return }
-        $sources = @(@($script:TrimTracks) | Where-Object { $_.Kind -eq "audio-source" })
-        if ($sources.Count -eq 0) { return }
-        $unmuted = @($sources | Where-Object { -not $_.Muted })
-        if ($unmuted.Count -eq 0) {
+        # SOURCE audio only: the main file's own streams are what this element is decoding.
+        # An external audio clip has its own off-tree element (Update-TrimAudioClipPreview).
+        $sources = @()
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                if ($c.Kind -ne "audio") { continue }
+                if ([string]$c.Path -ne [string]$script:TrimInputFile) { continue }
+                if (-not $c.Enabled) { continue }
+                $sources += ,$c
+            }
+        }
+        if (@($sources).Count -eq 0) { return }
+        $unmuted = @(@($sources) | Where-Object { -not $_.Muted })
+        if (@($unmuted).Count -eq 0) {
             $mediaTrimPreview.Volume = 0
             return
         }
@@ -2762,18 +3131,32 @@ try {
     # the slider's ValueChanged fires on every tick, so the snapshot is taken once at
     # mouse-down and pushed once at mouse-up rather than once per tick.
     function Start-TrackGainEdit {
-        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+        $t = Get-TrimPropsTarget
         if ($null -eq $t) { $script:TrackGainEdit = $null; return }
-        $script:TrackGainEdit = @{ Id = [string]$t.Id; GainDb = [double]$t.GainDb; Snapshot = New-TrimUndoSnapshot }
+        $script:TrackGainEdit = @{
+            Scope    = [string]$t.Scope
+            Id       = [string]$t.Id
+            GainDb   = [double]$t.GainDb
+            Snapshot = New-TrimUndoSnapshot
+        }
     }
 
     function Complete-TrackGainEdit {
         $edit = $script:TrackGainEdit
         $script:TrackGainEdit = $null
         if ($null -eq $edit) { return }
-        $t = Get-TrimTrackById -Id $edit.Id
-        if ($null -eq $t) { return }
-        if ([math]::Abs([double]$t.GainDb - [double]$edit.GainDb) -lt 1e-9) { return }
+        $now = if ($edit.Scope -eq "clip") {
+            $ref = Get-TrimClipRef -Id $edit.Id
+            if ($null -eq $ref) { return }
+            [double]$ref.Clip.GainDb
+        } else {
+            $lane = Get-TrimLaneById -Id $edit.Id
+            if ($null -eq $lane) { return }
+            $head = Get-TrimLaneHeadClip -Lane $lane
+            if ($null -eq $head) { return }
+            [double]$head.GainDb
+        }
+        if ([math]::Abs($now - [double]$edit.GainDb) -lt 1e-9) { return }
         Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
     }
 
@@ -3096,14 +3479,17 @@ try {
         }
     }
 
-    # Prunes both pools down to the tracks that still exist. Called from Update-TrimTrackLanes
-    # (every structural change -- add, delete, undo/redo, unlink toggle, load) so an undone
-    # add or a deleted track never leaves an orphaned MediaElement sitting in the visual tree
-    # (or, for an audio clip, silently still playing off-tree).
+    # Prunes both pools down to the clips that still exist. Called from Update-TrimLaneRows
+    # (every structural change -- add, delete, undo/redo, unlink, load) so an undone add or
+    # a deleted clip never leaves an orphaned MediaElement sitting in the visual tree (or,
+    # for an audio clip, silently still playing off-tree). Keyed by CLIP id.
     function Sync-TrimClipMediaElementPools {
         $liveIds = @{}
-        foreach ($t in @($script:TrimTracks)) {
-            if (Test-TrimTrackIsClip -Track $t) { $liveIds[[string]$t.Id] = $true }
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
+                $liveIds[[string]$c.Id] = $true
+            }
         }
         foreach ($id in @($script:PipMediaElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
         foreach ($id in @($script:AudioClipMediaElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
@@ -3116,12 +3502,12 @@ try {
         foreach ($id in @($script:AudioClipMediaElements.Keys)) { Remove-TrimClipMediaElement -Id $id }
     }
 
-    # One MediaElement per video-clip track, built once and reused: inserted into
+    # One MediaElement per overlay video CLIP, built once and reused: inserted into
     # PreviewCell's visual tree AFTER PreviewZoomHost and BEFORE CanvasCaptionOverlay, so
-    # the picture sits over the main preview but under the caption/PiP-box overlay --
-    # exactly the stacking order Task 10's brief specifies.
+    # the picture sits over the main preview but under the caption/PiP-box overlay.
     function Get-PipMediaElement {
-        param($Track)
+        param($Clip)
+        $Track = $Clip
         $id = [string]$Track.Id
         if (-not $script:PipMediaElements.ContainsKey($id)) {
             $el = New-Object System.Windows.Controls.MediaElement
@@ -3149,7 +3535,8 @@ try {
     # entered the span" (seed Position once) from "still inside it" (let it run) without
     # re-seeking on every single tick.
     function Get-AudioClipMediaElement {
-        param($Track)
+        param($Clip)
+        $Track = $Clip
         $id = [string]$Track.Id
         if (-not $script:AudioClipMediaElements.ContainsKey($id)) {
             $el = New-Object System.Windows.Controls.MediaElement
@@ -3161,10 +3548,14 @@ try {
         return $script:AudioClipMediaElements[$id]
     }
 
-    # Positions/plays every video-clip track's PiP MediaElement against the TIMELINE
+    # Positions/plays every overlay video clip's PiP MediaElement against the TIMELINE
     # playhead (never source seconds -- a clip's Offset is a timeline position, exactly
-    # like a track bar drag writes). Called from the same places Update-PreviewZoom is:
+    # like a clip bar drag writes). Called from the same places Update-PreviewZoom is:
     # the transport tick, every scrub, and the preview frame resize.
+    #
+    # Image clips and the true full-frame render belong to Task 12; until then a
+    # full-frame (Pip $null) video clip is previewed as a box at FULL SIZE, which is the
+    # same rectangle minus the aspect-fit letterboxing the export does.
     function Update-PipPreview {
         param([double]$SourceSeconds)
         if ($null -eq $previewCell -or $null -eq $script:PreviewBox) { return }
@@ -3174,19 +3565,29 @@ try {
         $state = Get-TrimTimelineState
         $timelinePlayhead = Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
         $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
-        foreach ($t in @($script:TrimTracks)) {
-            if ($t.Kind -ne "video-clip") { continue }
-            $el = Get-PipMediaElement -Track $t
-            $dur = if ($script:TrimClipDurations.ContainsKey([string]$t.Path)) { [double]$script:TrimClipDurations[[string]$t.Path] } else { 0.0 }
-            $span = Get-TrackTimelineSpan -Track $t -SourceDuration $dur
+        # Overlay clips only: the main lane's own video clip IS the main preview element.
+        $overlays = @()
+        foreach ($lane in @($script:TrimLanes)) {
+            if ($lane.Kind -ne "video") { continue }
+            foreach ($c in @($lane.Clips)) {
+                if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
+                if ($c.Kind -ne "video") { continue }
+                $overlays += ,@{ Lane = $lane; Clip = $c }
+            }
+        }
+        foreach ($o in $overlays) {
+            $t = $o.Clip
+            $el = Get-PipMediaElement -Clip $t
+            $span = Get-TrimClipSpan -Clip $t -SourceDuration (Get-TrimClipSourceDuration -Lane $o.Lane -Clip $t)
             $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End)
-            if (-not $inSpan -or $bw -le 0 -or $bh -le 0) {
+            if (-not $inSpan -or -not $t.Enabled -or $bw -le 0 -or $bh -le 0) {
                 $el.Visibility = "Collapsed"
                 try { $el.Pause() } catch {}
                 continue
             }
             $el.Visibility = "Visible"
-            $pip = if ($null -ne $t.Pip) { $t.Pip } else { @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 } }
+            # Task 12 replaces this substitute with a real aspect-fit full-frame render.
+            $pip = if ($null -ne $t.Pip) { $t.Pip } else { @{ X = 0.5; Y = 0.5; W = 1.0; H = 1.0 } }
             $pw = [double]$pip.W * $bw
             $ph = [double]$pip.H * $bh
             $el.Width = $pw
@@ -3196,7 +3597,7 @@ try {
             $marginX = [double]$box.X + (([double]$pip.X - ([double]$pip.W / 2.0)) * $bw)
             $marginY = [double]$box.Y + (([double]$pip.Y - ([double]$pip.H / 2.0)) * $bh)
             $el.Margin = New-Object System.Windows.Thickness($marginX, $marginY, 0, 0)
-            # PiP audio comes through only if the user ALSO added an audio-clip track --
+            # PiP audio comes through only if the clip has a linked audio row --
             # this MediaElement is picture only.
             $el.Volume = 0
             $pos = [math]::Max(0.0, ($timelinePlayhead - [double]$t.Offset + [double]$t.InStart))
@@ -3205,21 +3606,30 @@ try {
         }
     }
 
-    # Plays every audio-clip track's off-tree MediaElement while the timeline playhead is
+    # Plays every EXTERNAL audio clip's off-tree MediaElement while the timeline playhead is
     # inside its span AND the main transport is playing -- scrubbing deliberately never
     # seeks these (the comment on Get-AudioClipMediaElement explains why: the export's own
-    # mix is authoritative, this is only ever an approximation while editing).
+    # mix is authoritative, this is only ever an approximation while editing). The loaded
+    # file's OWN audio streams are excluded: the main preview element is already decoding
+    # them, and playing them twice would double the source audio.
     function Update-TrimAudioClipPreview {
         param([double]$SourceSeconds, [bool]$Playing)
         $state = Get-TrimTimelineState
         $timelinePlayhead = Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
-        foreach ($t in @($script:TrimTracks)) {
-            if ($t.Kind -ne "audio-clip") { continue }
-            $entry = Get-AudioClipMediaElement -Track $t
+        $clips = @()
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                if ($c.Kind -ne "audio") { continue }
+                if ([string]$c.Path -eq [string]$script:TrimInputFile) { continue }
+                $clips += ,@{ Lane = $lane; Clip = $c }
+            }
+        }
+        foreach ($entryRef in $clips) {
+            $t = $entryRef.Clip
+            $entry = Get-AudioClipMediaElement -Clip $t
             $el = $entry.Element
-            $dur = if ($script:TrimClipDurations.ContainsKey([string]$t.Path)) { [double]$script:TrimClipDurations[[string]$t.Path] } else { 0.0 }
-            $span = Get-TrackTimelineSpan -Track $t -SourceDuration $dur
-            $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End)
+            $span = Get-TrimClipSpan -Clip $t -SourceDuration (Get-TrimClipSourceDuration -Lane $entryRef.Lane -Clip $t)
+            $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End -and [bool]$t.Enabled)
             $vol = if ($t.Muted) { 0.0 } else { [math]::Min(1.0, [math]::Pow(10.0, [double]$t.GainDb / 20.0)) }
             $el.Volume = $vol
             if ($Playing -and $inSpan) {
@@ -3259,33 +3669,44 @@ try {
 
         Push-TrimUndo
         if ($isAudio) {
-            $track = New-TrimTrack -Kind "audio-clip" -Path $path -Label $label -Offset $timelineOffset
+            # A free audio row: no link, its own offset, appended below everything else.
+            $clip = New-TrimClip -Kind "audio" -Path $path -Offset $timelineOffset
+            $lane = Add-TrimLaneRow -Kind "audio" -Label $label
+            Add-TrimClipToLane -LaneId ([string]$lane.Id) -Clip $clip
+            Set-TrimSelectedClip -Id ([string]$clip.Id)
         } else {
-            # Pip.H preserves the clip's own aspect against the 16:9 frame, so a
-            # portrait or ultrawide clip doesn't land in the editor pre-squashed: a box
-            # W wide (as a fraction of the 16:9 frame) needs H = W * (frameAspect /
-            # clipAspect) to keep the CLIP's pixels square, not the frame's.
+            # Aspect is cached for the magnet-locked PiP resize, which must not shell out to
+            # ffprobe on a mouse-move.
             $profile = Get-TrimSourceProfile -InputFile $path
             $frameAspect = 16.0 / 9.0
             $clipAspect = if ([double]$profile.Height -gt 0) { [double]$profile.Width / [double]$profile.Height } else { $frameAspect }
             $script:TrimClipAspect[[string]$path] = $clipAspect
-            $pipW = 0.35
-            $pipH = [math]::Max(0.05, [math]::Min(1.0, $pipW * ($frameAspect / $clipAspect)))
-            $track = New-TrimTrack -Kind "video-clip" -Path $path -Label $label -Offset $timelineOffset `
-                -Pip @{ X = 0.5; Y = 0.5; W = $pipW; H = $pipH }
+            # Spec 4.6: an added video lands FULL-FRAME (Pip $null), not boxed -- the box
+            # is something the user opts into afterwards.
+            $linkId = [guid]::NewGuid().ToString("N")
+            $vclip = New-TrimClip -Kind "video" -Path $path -Offset $timelineOffset -LinkId $linkId
+            $videoLane = Add-TrimLaneRow -Kind "video" -Label $label
+            Add-TrimClipToLane -LaneId ([string]$videoLane.Id) -Clip $vclip
+            # Its own audio rides along on a grouped row, one row per stream, linked to the
+            # video clip so moving/deleting either takes the other with it.
+            foreach ($s in @(Get-TrimAudioStreams -InputFile $path)) {
+                $aclip = New-TrimClip -Kind "audio" -Path $path -StreamIdx ([int]$s.StreamIdx) `
+                    -Offset $timelineOffset -LinkId $linkId
+                $aLane = Add-TrimLaneRow -Kind "audio" -Label ([string]$s.Label)
+                Add-TrimClipToLane -LaneId ([string]$aLane.Id) -Clip $aclip
+            }
+            Set-TrimSelectedClip -Id ([string]$vclip.Id)
         }
-        [void]$script:TrimTracks.Add($track)
-        Set-TrimSelectedTrack -Id $track.Id
-        Update-TrimTrackLanes
+        Update-TrimLaneRows
         Update-PipPreview -SourceSeconds $script:TrimPlayhead
         Request-TrimProjectSave
     }
 
     # ---- PiP spotlight box (drag/resize on the caption overlay canvas) ----
     #
-    # Drawn only while the selected track is a video-clip, the same "one thing owns the
-    # overlay's furniture at a time" rule the zoom box and captions already share (see
-    # Set-TrimSelectedTrack/-Zoom/-Caption clearing each other). Cloned from the zoom
+    # Drawn only while the selected clip is a BOXED overlay video clip, the same "one thing
+    # owns the overlay's furniture at a time" rule the zoom box and captions already share
+    # (see Set-TrimSelectedClip/-Zoom/-Caption clearing each other). Cloned from the zoom
     # box's element pattern (gold frame + body mover + bottom-right handle) per the
     # Task 10 brief, with its own PipBoxElements tracking list so it can be torn down
     # and rebuilt without disturbing the zoom box's or the captions' own elements.
@@ -3309,20 +3730,33 @@ try {
     # Redrawn from the model, called right after Update-ZoomBoxOverlay at every point the
     # caption/zoom overlay redraws (tick, scrub, selection change) -- see the call sites
     # added alongside Update-ZoomBoxOverlay's own.
+    # The selected clip when -- and only when -- it is a BOXED overlay video clip: the box
+    # is what drags a PiP around, and a full-frame clip (Pip $null) has nothing to drag
+    # until Task 12's full-frame handling lands.
+    function Get-TrimSelectedPipClip {
+        if ($null -eq $script:TrimSelectedClip) { return $null }
+        $ref = Get-TrimClipRef -Id $script:TrimSelectedClip
+        if ($null -eq $ref) { return $null }
+        if (Test-TrimClipIsMainVideo -Lane $ref.Lane -Clip $ref.Clip) { return $null }
+        if ($ref.Clip.Kind -ne "video" -and $ref.Clip.Kind -ne "image") { return $null }
+        if ($null -eq $ref.Clip.Pip) { return $null }
+        return $ref.Clip
+    }
+
     function Update-PipBoxOverlay {
         if ($null -eq $canvasCaptionOverlay) { return }
         Remove-PipBoxElements
-        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
-        if ($null -eq $t -or $t.Kind -ne "video-clip") { return }
+        $t = Get-TrimSelectedPipClip
+        if ($null -eq $t) { return }
 
         $w = [double]$canvasCaptionOverlay.ActualWidth
         $h = [double]$canvasCaptionOverlay.ActualHeight
         if ($w -le 0 -or $h -le 0) { return }
 
         # Mid-drag the box on screen is the one being dragged, not the one stored: the
-        # values already landed live (Update-PipBoxDrag writes through Set-TrimTrackValues
+        # values already landed live (Update-PipBoxDrag writes through Set-TrimClipValues
         # every move), but reading them back off the drag state avoids a redundant
-        # Get-TrimTrackById round trip mid-gesture, mirroring the zoom box's $forming path.
+        # clip lookup mid-gesture, mirroring the zoom box's $forming path.
         $drag = $script:PipBoxDrag
         $pip = if ($null -ne $drag -and $drag.Moved) {
             @{ X = $drag.X; Y = $drag.Y; W = $drag.W; H = $drag.H }
@@ -3387,8 +3821,8 @@ try {
     # box actually moved.
     function Start-PipBoxDrag {
         param([double]$StartX, [double]$StartY, [string]$Mode)
-        $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
-        if ($null -eq $t -or $t.Kind -ne "video-clip") { return }
+        $t = Get-TrimSelectedPipClip
+        if ($null -eq $t) { return }
         $pip = if ($null -ne $t.Pip) { $t.Pip } else { @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 } }
         $script:PipBoxDrag = @{
             Mode   = $Mode
@@ -3403,7 +3837,7 @@ try {
             Y      = [double]$pip.Y
             W      = [double]$pip.W
             H      = [double]$pip.H
-            TrackId  = [string]$t.Id
+            ClipId   = [string]$t.Id
             Snapshot = New-TrimUndoSnapshot
         }
     }
@@ -3429,15 +3863,16 @@ try {
         if (-not $drag.Moved -and ([math]::Abs($dx) -gt 4.0 -or [math]::Abs($dy) -gt 4.0)) { $drag.Moved = $true }
         if (-not $drag.Moved) { return }
 
-        $t = Get-TrimTrackById -Id $drag.TrackId
-        if ($null -eq $t) { return }
+        $ref = Get-TrimClipRef -Id $drag.ClipId
+        if ($null -eq $ref) { return }
+        $t = $ref.Clip
 
         if ($drag.Mode -eq "pipmove") {
             $cx = [math]::Max($drag.OrigW / 2.0, [math]::Min(1.0 - $drag.OrigW / 2.0, $drag.OrigX + ($dx / $w)))
             $cy = [math]::Max($drag.OrigH / 2.0, [math]::Min(1.0 - $drag.OrigH / 2.0, $drag.OrigY + ($dy / $h)))
             $drag.X = $cx
             $drag.Y = $cy
-            Set-TrimTrackValues -Id $drag.TrackId -PipX $cx -PipY $cy
+            Set-TrimClipValues -Id $drag.ClipId -PipX $cx -PipY $cy
             return
         }
 
@@ -3461,7 +3896,7 @@ try {
             $drag.H = $newH
             $drag.X = $cx
             $drag.Y = $cy
-            Set-TrimTrackValues -Id $drag.TrackId -PipW $newW -PipH $newH -PipX $cx -PipY $cy
+            Set-TrimClipValues -Id $drag.ClipId -PipW $newW -PipH $newH -PipX $cx -PipY $cy
             return
         }
     }
@@ -4414,13 +4849,18 @@ try {
 
     function Update-TrimSelectionText {
         if (-not $script:TrimEditorReady) { return }
-        # The track props strip's Delete allows removing video-main (the only way this
-        # build lets an audio-only export happen), which nothing else about the selection
-        # text would otherwise reveal -- so it is appended regardless of which branch below
-        # sets the base text.
-        $hasVideoMain = $false
-        foreach ($t in @($script:TrimTracks)) { if ($t.Kind -eq "video-main") { $hasVideoMain = $true; break } }
-        $audioOnlySuffix = if (-not $hasVideoMain -and @($script:TrimTracks).Count -gt 0) { " -- audio-only export" } else { "" }
+        # Deleting the main video lane is how this build lets an audio-only export happen,
+        # which nothing else about the selection text would otherwise reveal -- so it is
+        # appended regardless of which branch below sets the base text.
+        $hasVideo = $false
+        $clipTotal = 0
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                $clipTotal++
+                if (($c.Kind -eq "video" -or $c.Kind -eq "image") -and $c.Enabled) { $hasVideo = $true }
+            }
+        }
+        $audioOnlySuffix = if (-not $hasVideo -and $clipTotal -gt 0) { " -- audio-only export" } else { "" }
         $state = Get-TrimTimelineState
         if ($script:TrimSelected -lt 0 -or $script:TrimSelected -ge $state.Pieces.Count) {
             $textTrimSelection.Text = "nothing selected" + $audioOnlySuffix
@@ -4448,12 +4888,13 @@ try {
             # hand undo the very objects the edit is about to change.
             Zooms           = @(foreach ($z in $script:TrimZooms) { Copy-TrimZoom -Zoom $z })
             SelectedZoom    = $script:TrimSelectedZoom
-            # Cloned for the same reason as the zooms: a future lane drag (Task 8) and the
-            # sidebar both edit track objects IN PLACE, so an uncloned snapshot would hand
-            # undo the very objects the edit is about to change.
-            Tracks          = @(foreach ($t in $script:TrimTracks) { Copy-TrimTrack -Track $t })
-            Unlinked        = $script:TrimTracksUnlinked
-            SelectedTrack   = $script:TrimSelectedTrack
+            # Cloned for the same reason as the zooms: a clip drag, the fader and the PiP box
+            # all edit clip objects IN PLACE, so an uncloned snapshot would hand undo the
+            # very objects the edit is about to change. Copy-TrimLaneObj is deep (lane AND
+            # its clips), so nothing in the snapshot shares a reference with the live model.
+            Lanes           = @(foreach ($l in $script:TrimLanes) { Copy-TrimLaneObj -Lane $l })
+            SelectedClip    = $script:TrimSelectedClip
+            SelectedLane    = $script:TrimSelectedLane
         }
     }
 
@@ -4549,14 +4990,17 @@ try {
             # the restore writes both straight through.
             $script:TrimSelectedZoom = $last.SelectedZoom
         }
-        # Same "only restore what was recorded" rule for tracks: entries pushed before the
-        # track stack existed carry no Tracks key, and treating that as "no tracks" would
+        # Same "only restore what was recorded" rule for lanes: entries pushed before the
+        # lane stack existed carry no Lanes key, and treating that as "no lanes" would
         # wipe the stack down to nothing.
-        if ($last.ContainsKey("Tracks")) {
-            Set-TrimTracks -Tracks $last.Tracks
-            $script:TrimTracksUnlinked = $last.Unlinked
-            $script:TrimSelectedTrack = $last.SelectedTrack
-            Update-TrimTrackLanes
+        if ($last.ContainsKey("Lanes")) {
+            Set-TrimLanes -Lanes $last.Lanes
+            # NOT Set-TrimSelectedClip/Lane: those clear the caption/zoom selections, which
+            # the lines above have just restored. A snapshot already records a consistent
+            # set, so the restore writes all of them straight through.
+            $script:TrimSelectedClip = $last.SelectedClip
+            $script:TrimSelectedLane = $last.SelectedLane
+            Update-TrimLaneRows
         }
         $buttonTrimDelete.IsEnabled = ($script:TrimSelected -ge 0)
         $buttonTrimUndo.IsEnabled = ($script:TrimUndoStack.Count -gt 0)
@@ -5401,8 +5845,8 @@ try {
         # Track lanes: the panel itself is the stable element (its per-lane children are
         # rebuilt on every structural change), so a resize just needs the one redraw --
         # there is no per-lane capture to protect here since a resize cannot happen mid-drag.
-        if ($null -ne $panelTrimTracks) {
-            $panelTrimTracks.Add_SizeChanged({ Update-TrimTrackLanes })
+        if ($null -ne $panelTrimLanes) {
+            $panelTrimLanes.Add_SizeChanged({ Update-TrimLaneRows })
         }
 
         # The zoom translate is computed from the host's own width and height, so every
@@ -5440,7 +5884,7 @@ try {
                 param($eventSource, $e)
                 # PiP box first: it and the zoom box can never both be live (selecting a
                 # track clears the zoom selection, selecting a zoom clears the track
-                # selection -- Set-TrimSelectedTrack/-Zoom's mutual-exclusion), so testing
+                # selection -- Set-TrimSelectedClip/-Zoom's mutual-exclusion), so testing
                 # order between the two never matters, only that both are checked before
                 # falling through to the caption drag.
                 if (Test-PipBoxDrag) {
@@ -5471,7 +5915,7 @@ try {
                 if (Test-PipBoxDrag) {
                     $canvasCaptionOverlay.ReleaseMouseCapture()
                     Complete-PipBoxDrag
-                    Update-TrimTrackLanes
+                    Update-TrimLaneRows
                     Update-PipBoxOverlay
                     return
                 }
@@ -5510,22 +5954,31 @@ try {
         if ($null -ne $buttonCaptionDelete) { $buttonCaptionDelete.Add_Click({ Invoke-TrimDeleteCaption }) }
         if ($null -ne $buttonTrimAddZoom) { $buttonTrimAddZoom.Add_Click({ Invoke-TrimAddZoom }) }
         if ($null -ne $buttonTrimAddTrack) { $buttonTrimAddTrack.Add_Click({ Invoke-TrimAddTrack }) }
-        if ($null -ne $buttonTrimUnlink) { $buttonTrimUnlink.Add_Click({ Invoke-TrimToggleUnlink }) }
+        if ($null -ne $buttonTrimUnlink) { $buttonTrimUnlink.Add_Click({ Invoke-TrimUnlink }) }
+        if ($null -ne $buttonTrimSnap) { $buttonTrimSnap.Add_Click({ Set-TrimSnapEnabled -Value (-not (Get-TrimSnapEnabled)) }) }
+        # Once at startup, after Import-Config seeded the flag: the magnet has to show its
+        # restored state before the user touches anything.
+        Update-TrimSnapButton
 
         # ---- Track properties strip handlers ----
         #
         # No GetNewClosure on any of these: like the zoom pill's slider, they reach the
-        # selected track through $script:TrimSelectedTrack via the top-level functions only,
-        # never through a captured loop variable.
+        # selection through the top-level Get-TrimPropsTarget only, never through a captured
+        # loop variable.
         if ($null -ne $sliderTrackGain) {
             $sliderTrackGain.Add_ValueChanged({
                 if (Test-TrackUiLoading) { return }
-                $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+                $t = Get-TrimPropsTarget
                 if ($null -eq $t) { return }
-                # Set-TrimTrackValues rebuilds the lanes, which redraws this very strip
-                # (badge text, and the slider/checkbox re-armed under the loading flag) and
-                # refreshes the preview volume -- nothing else needs doing here.
-                Set-TrimTrackValues -Id $t.Id -GainDb ([double]$sliderTrackGain.Value)
+                # Both write-throughs rebuild the rows, which redraws this very strip (badge
+                # text, and the slider/checkbox re-armed under the loading flag) and refreshes
+                # the preview volume -- nothing else needs doing here. A LANE selection edits
+                # the whole row (every clip on it), a CLIP selection edits just that clip.
+                if ($t.Scope -eq "lane") {
+                    Set-TrimLaneAudioValues -Id $t.Id -GainDb ([double]$sliderTrackGain.Value)
+                } else {
+                    Set-TrimClipValues -Id $t.Id -GainDb ([double]$sliderTrackGain.Value)
+                }
             })
             # Undo brackets the whole drag, exactly as the zoom pill and the caption outline
             # slider do: ValueChanged fires on every tick of one.
@@ -5538,17 +5991,28 @@ try {
         if ($null -ne $checkTrackMute) {
             $checkTrackMute.Add_Click({
                 if (Test-TrackUiLoading) { return }
-                $t = if ($null -ne $script:TrimSelectedTrack) { Get-TrimTrackById -Id $script:TrimSelectedTrack } else { $null }
+                $t = Get-TrimPropsTarget
                 if ($null -eq $t) { return }
                 Push-TrimUndo
-                Set-TrimTrackValues -Id $t.Id -Muted ([bool]$checkTrackMute.IsChecked)
+                if ($t.Scope -eq "lane") {
+                    Set-TrimLaneAudioValues -Id $t.Id -Muted ([bool]$checkTrackMute.IsChecked)
+                } else {
+                    Set-TrimClipValues -Id $t.Id -Muted ([bool]$checkTrackMute.IsChecked)
+                }
             })
         }
         if ($null -ne $buttonTrackDelete) {
             $buttonTrackDelete.Add_Click({
-                if ($null -eq $script:TrimSelectedTrack) { return }
+                $t = Get-TrimPropsTarget
+                if ($null -eq $t) { return }
                 Push-TrimUndo
-                Remove-TrimTrack -Id $script:TrimSelectedTrack
+                # A lane header's Delete takes the row (and, for a video lane, its grouped
+                # audio rows); a clip's Delete takes the clip and its linked peers (spec 4.4).
+                if ($t.Scope -eq "lane") {
+                    Remove-TrimLaneGroup -Id $t.Id
+                } else {
+                    Remove-TrimClipWithLinks -Id $t.Id
+                }
                 Update-TrimSelectionText
             })
         }
@@ -5683,7 +6147,14 @@ try {
             if ($e.Key -eq [System.Windows.Input.Key]::S -and -not $ctrl) { Invoke-TrimSplit; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::C -and -not $ctrl) { Invoke-TrimAddCaption; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::Z -and -not $ctrl) { Invoke-TrimAddZoom; $e.Handled = $true; return }
-            if ($e.Key -eq [System.Windows.Input.Key]::U -and -not $ctrl) { Invoke-TrimToggleUnlink; $e.Handled = $true; return }
+            if ($e.Key -eq [System.Windows.Input.Key]::U -and -not $ctrl) { Invoke-TrimUnlink; $e.Handled = $true; return }
+            # N toggles snapping (the magnet), a tool mode that outlives the session --
+            # read back through Get-TrimSnapEnabled rather than the bare $script: variable.
+            if ($e.Key -eq [System.Windows.Input.Key]::N -and -not $ctrl) {
+                Set-TrimSnapEnabled -Value (-not (Get-TrimSnapEnabled))
+                $e.Handled = $true
+                return
+            }
             if ($e.Key -eq [System.Windows.Input.Key]::Delete) {
                 # A selected zoom keyframe wins. Selecting one clears the caption selection
                 # and vice versa, so at most one of these is ever armed -- but a piece can be
@@ -5717,7 +6188,7 @@ try {
         if ($script:TrimInputFile) {
             Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
                 -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) `
-                -Tracks @($script:TrimTracks) -Unlinked $script:TrimTracksUnlinked | Out-Null
+                -Lanes @($script:TrimLanes) | Out-Null
         }
 
         $props = Get-VideoProperties -inputFile $path
@@ -5750,13 +6221,15 @@ try {
         $script:TrimZooms = New-Object System.Collections.ArrayList
         $script:TrimSelectedZoom = $null
         $script:TrimZoomDrag = $null
-        # Tracks belong to the file they were probed against for exactly the same reason --
+        # Lanes belong to the file they were probed against for exactly the same reason --
         # never left $null (the Export-CutListAsync audio-only trap), always reset to an
         # empty ArrayList here and filled in below once the project/default stack is known.
-        $script:TrimTracks = New-Object System.Collections.ArrayList
-        $script:TrimTracksUnlinked = $false
-        $script:TrimSelectedTrack = $null
-        $script:TrimTrackDrag = $null
+        $script:TrimLanes = New-Object System.Collections.ArrayList
+        $script:TrimSelectedClip = $null
+        $script:TrimSelectedLane = $null
+        $script:TrimCollapsedLanes = @{}
+        $script:TrimClipDrag = $null
+        $script:TrimLaneReorderDrag = $null
         # Reset to the legacy/unknown sentinel here; set to the real probed count a few
         # lines below once Get-TrimAudioStreams has run against the new file.
         $script:TrimSourceAudioStreamCount = -1
@@ -5810,62 +6283,73 @@ try {
             $projectUnreadable = $true
         }
 
-        # Track stack: probe the file's own audio streams so the default stack (and every
-        # audio-source track's StreamIdx) reflects THIS file, not whatever the previous one
+        # Lane stack: probe the file's own audio streams so the default stack (and every
+        # source audio clip's StreamIdx) reflects THIS file, not whatever the previous one
         # had. Synchronous, same as the ffprobe call Get-VideoProperties already made above --
         # both are quick metadata reads, not the frame decode the keyframe scan needs async.
         $streams = Get-TrimAudioStreams -InputFile $path
         # @($streams).Count, not $streams.Count: Get-TrimAudioStreams always returns a real
         # array (ConvertFrom-AudioStreamProbe's `return ,@($result)`), so this is
         # belt-and-suspenders against the @($null).Count -eq 1 trap, not a fix for a real
-        # null -- same defensive habit as the -Tracks/-PipSpans wrapping at the export call
-        # site below.
+        # null -- same defensive habit as the -Lanes wrapping at the export call site below.
         $script:TrimSourceAudioStreamCount = @($streams).Count
-        if ($project -and $null -ne $project.Tracks -and @($project.Tracks).Count -gt 0) {
-            # Restored tracks carry whatever Path was on disk at save time. A "video-main"
-            # or "audio-source" track is BY DEFINITION the loaded file -- not a movable
-            # reference to it -- so if the file has since moved (renamed, relocated), its
-            # recorded Path is stale and must be rewritten to $path (the file we just
-            # resolved to load) rather than left pointing at the old location. Clip-kind
-            # tracks ("audio-clip"/"video-clip") are genuinely separate files and are left
-            # untouched; only the two locked kinds get the rewrite.
-            foreach ($rt in @($project.Tracks)) {
-                if ($null -eq $rt) { continue }
-                if ($rt.Kind -eq "video-main" -or $rt.Kind -eq "audio-source") {
-                    $rt.Path = $path
+        if ($project -and $null -ne $project.Lanes -and @($project.Lanes).Count -gt 0) {
+            # Restored lanes carry whatever Path was on disk at save time. The MAIN lane's
+            # video clip is BY DEFINITION the loaded file -- not a movable reference to it --
+            # so if the file has since moved (renamed, relocated), its recorded Path is
+            # stale and must be rewritten to $path (the file we just resolved to load). Its
+            # linked source audio clips travel with it, as does any clip that still points
+            # at the OLD main path. Genuinely external clips are left untouched.
+            $restored = @($project.Lanes)
+            $mainLink = ""
+            $oldMainPath = ""
+            foreach ($ln in $restored) {
+                foreach ($c in @($ln.Clips)) {
+                    if (Test-TrimClipIsMainVideo -Lane $ln -Clip $c) {
+                        $mainLink = [string]$c.LinkId
+                        $oldMainPath = [string]$c.Path
+                        $c.Path = $path
+                    }
                 }
             }
-            Set-TrimTracks -Tracks @($project.Tracks)
-            $script:TrimTracksUnlinked = [bool]$project.Unlinked
+            foreach ($ln in $restored) {
+                foreach ($c in @($ln.Clips)) {
+                    if ($c.Kind -ne "audio") { continue }
+                    $matchesLink = (-not [string]::IsNullOrEmpty($mainLink) -and [string]$c.LinkId -eq $mainLink)
+                    $matchesPath = (-not [string]::IsNullOrEmpty($oldMainPath) -and [string]$c.Path -eq $oldMainPath)
+                    if ($matchesLink -or $matchesPath) { $c.Path = $path }
+                }
+            }
+            Set-TrimLanes -Lanes $restored
         } else {
-            # No v2 project (a v1 file, no file at all, or a v2 file saved before any track
-            # existed) -- the app builds the same default stack Task 6's export path assumes:
-            # one video-main plus one audio-source per stream this file actually has.
-            # No @() wrapper here: Get-DefaultTrackStack already does `return ,@($stack)`, and
-            # wrapping an already-real array in another @() nests it one level deeper (trap #2)
-            # -- this exact line delivered a track "list" of Count 1 whose single element was
-            # the whole 3-track array, so every field read (GainDb, Kind, ...) on it came back
-            # as a per-track array via member-enumeration instead of one track's own value, and
-            # the first render that iterated a real track (unlink's lane rebuild) crashed trying
-            # to convert that array to a double.
-            Set-TrimTracks -Tracks (Get-DefaultTrackStack -Path $path -AudioStreams $streams)
-            $script:TrimTracksUnlinked = $false
+            # No lanes to restore (a v1 project, no project file at all, or one that saved
+            # an empty stack) -- the app builds the default lane stack: the recording's own
+            # V1 lane plus one always-visible audio row per stream this file actually has.
+            # No @() wrapper here: Get-TrimLaneStack already does `return ,@($lanes)`, and
+            # wrapping an already-real array in another @() nests it one level deeper
+            # (trap #2), which delivered a "list" of Count 1 holding the whole array.
+            Set-TrimLanes -Lanes (Get-TrimLaneStack -Path $path -AudioStreams $streams)
         }
-        # A restored project's clip tracks were probed against a PREVIOUS session's cache
+        # A restored project's external clips were probed against a PREVIOUS session's cache
         # (TrimClipDurations/TrimClipAspect were just cleared above) -- without re-probing
         # here, every one of them would read InEnd 0 as "SourceDuration 0.0" and land as a
-        # zero-length span, invisible on both the lane and the PiP preview.
-        foreach ($t in @($script:TrimTracks)) {
-            if (-not (Test-TrimTrackIsClip -Track $t)) { continue }
-            $tp = [string]$t.Path
-            if (-not $script:TrimClipDurations.ContainsKey($tp)) {
-                $script:TrimClipDurations[$tp] = Get-TrimClipDuration -Path $tp
-            }
-            if ($t.Kind -eq "video-clip" -and -not $script:TrimClipAspect.ContainsKey($tp)) {
-                $clipProfile = Get-TrimSourceProfile -InputFile $tp
-                $script:TrimClipAspect[$tp] = if ([double]$clipProfile.Height -gt 0) {
-                    [double]$clipProfile.Width / [double]$clipProfile.Height
-                } else { 16.0 / 9.0 }
+        # zero-length span, invisible on both the row and the PiP preview.
+        foreach ($ln in @($script:TrimLanes)) {
+            foreach ($c in @($ln.Clips)) {
+                if (Test-TrimClipIsMainVideo -Lane $ln -Clip $c) { continue }
+                $tp = [string]$c.Path
+                if ($tp -eq [string]$path) { continue }
+                if (-not $script:TrimClipDurations.ContainsKey($tp)) {
+                    $script:TrimClipDurations[$tp] = Get-TrimClipDuration -Path $tp
+                }
+                # Images get an aspect too: ffprobe reads their dimensions fine, and the
+                # magnet-locked PiP resize needs one for every visual clip.
+                if (($c.Kind -eq "video" -or $c.Kind -eq "image") -and -not $script:TrimClipAspect.ContainsKey($tp)) {
+                    $clipProfile = Get-TrimSourceProfile -InputFile $tp
+                    $script:TrimClipAspect[$tp] = if ([double]$clipProfile.Height -gt 0) {
+                        [double]$clipProfile.Width / [double]$clipProfile.Height
+                    } else { 16.0 / 9.0 }
+                }
             }
         }
 
@@ -6122,60 +6606,51 @@ try {
                 }
             }
 
-            # ---- Multi-track pre-flight refusals (Task 10) ----
+            # ---- Lane pre-flight refusals ----
             #
-            # An empty stack (every track, including video-main, deleted) has nothing left
-            # to export -- checked before the missing-file scan below, which would
-            # otherwise just report nothing at all with no explanation.
-            if (@($script:TrimTracks).Count -eq 0) {
-                Show-PanelMessage -Block $textTrimMeta -IsError `
-                    -Text "Every track was deleted -- nothing to export."
+            # An empty stack (every lane, or every clip, deleted) has nothing left to
+            # export -- checked before the missing-file scan below, which would otherwise
+            # just report nothing at all with no explanation.
+            $laneCount = @($script:TrimLanes).Count
+            $clipTotal = 0
+            foreach ($l in @($script:TrimLanes)) { $clipTotal += @($l.Clips).Count }
+            if ($laneCount -eq 0 -or $clipTotal -eq 0) {
+                Show-PanelMessage -Block $textTrimMeta -IsError -Text "Every track was deleted -- nothing to export."
                 return
             }
-            # A clip track's file can vanish between being added and export time (moved,
-            # renamed, deleted, or a removable drive unplugged) -- caught here rather than
-            # letting ffmpeg fail deep inside the rebuild pipeline with an opaque error.
-            $missingClip = @(@($script:TrimTracks) |
-                Where-Object { (Test-TrimTrackIsClip -Track $_) -and -not (Test-Path -LiteralPath $_.Path) } |
-                Select-Object -First 1)
-            if ($missingClip.Count -gt 0) {
-                $missingName = if ([string]::IsNullOrWhiteSpace($missingClip[0].Label)) {
-                    [System.IO.Path]::GetFileName($missingClip[0].Path)
-                } else { $missingClip[0].Label }
-                Show-PanelMessage -Block $textTrimMeta -IsError `
-                    -Text ("Can't find {0} -- it moved or was deleted." -f $missingName)
-                return
-            }
-            # Picture-in-picture spans, SOURCE... actually TIMELINE (compacted) time, exactly
-            # like every other span Get-TrackTimelineSpan produces -- built once here and
-            # reused both for the transition-clash refusal and the export call site itself.
-            $pipSpans = @()
-            foreach ($clipTrack in @($script:TrimTracks)) {
-                if ($clipTrack.Kind -ne "video-clip") { continue }
-                $clipDur = if ($script:TrimClipDurations.ContainsKey([string]$clipTrack.Path)) {
-                    [double]$script:TrimClipDurations[[string]$clipTrack.Path]
-                } else { 0.0 }
-                $clipSpan = Get-TrackTimelineSpan -Track $clipTrack -SourceDuration $clipDur
-                $pipSpans += ,@{
-                    Start   = [double]$clipSpan.Start
-                    End     = [double]$clipSpan.End
-                    Overlay = @{
-                        TrackId = [string]$clipTrack.Id
-                        Path    = [string]$clipTrack.Path
-                        Pip     = $clipTrack.Pip
-                        InStart = [double]$clipTrack.InStart
-                    }
+            # Missing external files (main-path clips are the loaded file, always present).
+            # A clip's file can vanish between being added and export time (moved, renamed,
+            # deleted, or a removable drive unplugged) -- caught here rather than letting
+            # ffmpeg fail deep inside the rebuild pipeline with an opaque error.
+            $missing = $null
+            foreach ($l in @($script:TrimLanes)) {
+                foreach ($c in @($l.Clips)) {
+                    if ($c.Path -ne $script:TrimInputFile -and -not (Test-Path -LiteralPath $c.Path)) { $missing = $c; break }
                 }
+                if ($null -ne $missing) { break }
             }
-            # Same reasoning as the zoomed-crossfade refusal above: a pip has nowhere to
+            if ($null -ne $missing) {
+                Show-PanelMessage -Block $textTrimMeta -IsError `
+                    -Text ("Can't find {0} -- it moved or was deleted." -f [System.IO.Path]::GetFileName($missing.Path))
+                return
+            }
+            # Overlay spans, TIMELINE (compacted) time -- built once here and reused both for
+            # the transition-clash refusal and the export call site itself.
+            $overlaySpans = Get-TrimOverlaySpans -Lanes @($script:TrimLanes) -MainPath $script:TrimInputFile -ClipDurations $script:TrimClipDurations
+            # Same reasoning as the zoomed-crossfade refusal above: an overlay has nowhere to
             # composite onto during a crossfade's own xfade pass. Test-PipTransitionClash
-            # (Tracks.psm1) already carries the Task 4-adjudicated window semantics --
-            # called here rather than reimplemented.
-            if (Test-PipTransitionClash -PipSpans @($pipSpans) -Pieces $pieces -FadeLengths $fadeLengths) {
+            # (Tracks.psm1) already carries the Task 4-adjudicated [T, T+d] window semantics
+            # -- called here rather than reimplemented, and the overlay spans carry the same
+            # Start/End keys the v2 pip spans did.
+            if (Test-PipTransitionClash -PipSpans @($overlaySpans) -Pieces $pieces -FadeLengths $fadeLengths) {
                 Show-PanelMessage -Block $textTrimMeta -IsError `
                     -Text "Move the clip or the fade -- a clip over a crossfade isn't supported yet."
                 return
             }
+            # The full timeline, including any lane content that runs past the last piece --
+            # the export extends the video with black rather than truncating it.
+            $timelineLength = Get-TrimTimelineLength -Lanes @($script:TrimLanes) -Pieces $pieces -FadeLengths $fadeLengths `
+                -ClipDurations $script:TrimClipDurations -MainPath $script:TrimInputFile
 
             # Fonts are resolved by libass at burn time, from the fonts installed on THIS
             # machine. A name that is not installed still exports -- libass substitutes --
@@ -6195,16 +6670,16 @@ try {
             } else {
                 Show-PanelMessage -Block $textTrimMeta -Text ""
             }
-            # -Tracks @($script:TrimTracks), never a bare $script:TrimTracks: the PS 5.1
-            # @($null).Count -eq 1 trap (Task 10 ruling #2) means a null reaching the
-            # binder here would silently take the audio-only branch instead of erroring --
-            # but TrimTracks is never actually $null (same invariant Set-TrimTracks/the
-            # file-load reset both keep), so this is belt-and-suspenders, not a fix for a
-            # real null. $pipSpans is already a real array built above; @() around it is
-            # the same defensive habit for the same reason.
+            # -Lanes @($script:TrimLanes), never a bare $script:TrimLanes: the PS 5.1
+            # @($null).Count -eq 1 trap means a null reaching the binder here would silently
+            # take a different export branch instead of erroring -- but TrimLanes is never
+            # actually $null (same invariant Set-TrimLanes/the file-load reset both keep),
+            # so this is belt-and-suspenders, not a fix for a real null. $overlaySpans is
+            # already a real array built above; @() around it is the same defensive habit.
             Register-Job (Export-CutListAsync -Context $ctx -InputFile $script:TrimInputFile -Pieces $pieces `
                 -FadeLengths $fadeLengths -Captions $captions -Zooms $zooms `
-                -Tracks @($script:TrimTracks) -ClipDurations $script:TrimClipDurations -PipSpans @($pipSpans) `
+                -Lanes @($script:TrimLanes) -ClipDurations $script:TrimClipDurations -OverlaySpans @($overlaySpans) `
+                -TimelineLength $timelineLength `
                 -SourceAudioStreamCount $script:TrimSourceAudioStreamCount `
                 -OnFinished { param($src, $out) & $recordJob "Trim" $src $out }.GetNewClosure())
         })
@@ -6557,7 +7032,7 @@ try {
         if ($script:TrimInputFile) {
             Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
                 -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) `
-                -Tracks @($script:TrimTracks) -Unlinked $script:TrimTracksUnlinked | Out-Null
+                -Lanes @($script:TrimLanes) | Out-Null
         }
         foreach ($dir in @($script:TrimThumbDir, $script:TrimFadeProxyDir)) {
             if ($dir -and (Test-Path $dir)) {
