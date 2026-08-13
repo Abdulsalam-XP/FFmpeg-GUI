@@ -314,6 +314,17 @@ Describe "Get-TrimLinkedClipIds / Clear-TrimClipLinks" {
         $lanes[0].Clips[0].LinkId | Should Be ""
         $lanes[1].Clips[0].LinkId | Should Be ""
     }
+    It "pops only the targeted clip out of a 3-member group, leaving the rest linked (spec 4.2)" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"}, @{StreamIdx=2;Label="Mic"})
+        $vid = $lanes[0].Clips[0]
+        $game = $lanes[1].Clips[0]
+        $mic = $lanes[2].Clips[0]
+        $n = Clear-TrimClipLinks -Lanes $lanes -ClipId $mic.Id
+        $n | Should Be 1
+        $mic.LinkId | Should Be ""
+        $vid.LinkId | Should Not Be ""
+        $game.LinkId | Should Be $vid.LinkId
+    }
 }
 
 Describe "Get-TrimClipSpan" {
