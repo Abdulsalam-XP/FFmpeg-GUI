@@ -334,3 +334,33 @@ Describe "Get-TrimExportMode (lanes)" {
         Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" | Should Be "audio-only"
     }
 }
+
+Describe "Split-TrimSegmentsForPips with black extension segments" {
+    It "splits a black segment at overlay edges and tags the inside part" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 10.0 }, @{ Kind = "black"; Start = 0.0; Duration = 10.0 })
+        $spans = @(@{ Start = 12.0; End = 16.0; Overlay = @{ ClipId="c1"; Path="c.mp4"; Kind="video"; InStart = 1.0; Pip = $null } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $r.Count | Should Be 4
+        $r[1].Kind | Should Be "black"
+        $r[1].Duration | Should Be 2.0
+        $p = @($r[2].Pips)
+        $p.Count | Should Be 1
+        $p[0].SegmentClipStart | Should Be 1.0
+        $r[2].Duration | Should Be 4.0
+    }
+    It "carries Kind and null Pip through the overlay descriptor" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 10.0 })
+        $spans = @(@{ Start = 2.0; End = 6.0; Overlay = @{ ClipId="i1"; Path="l.png"; Kind="image"; InStart = 0.0; Pip = $null } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $r[1].Pips[0].Kind | Should Be "image"
+        $r[1].Pips[0].Pip | Should Be $null
+    }
+}
+
+Describe "Get-TrimSourceProfile Fps" {
+    It "defaults Fps to 120.0 when the probe is unreadable" {
+        # Unreadable path exercises every default in one call, same as the Width/Height tests do.
+        $p = Get-TrimSourceProfile -InputFile "Z:\does\not\exist.mp4"
+        $p.Fps | Should Be 120.0
+    }
+}
