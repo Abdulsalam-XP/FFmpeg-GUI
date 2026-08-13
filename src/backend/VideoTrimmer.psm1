@@ -889,6 +889,17 @@ function Export-TrimThumbnail {
 # sqrt + draw=full + filter=peak, not the defaults: game audio is quiet on average
 # with sharp peaks, and a linear scale renders it as a hairline scribble. Peak-held
 # square-root scaling is what makes the strip read like an editor's waveform.
+# The waveform filtergraph, split out so the stream selection can be unit tested without
+# shelling out. -1 (the default) keeps the historical "[0:a:0]" label -- the FIRST audio
+# stream -- so every pre-existing caller renders byte-identically. A non-negative index is
+# an ABSOLUTE stream index (what Get-TrimAudioStreams reports and what a lane clip's
+# StreamIdx carries), hence "[0:N]" and not "[0:a:N]".
+function Get-TrimWaveformFilter {
+    param([int]$StreamIndex = -1, [int]$Width = 1600, [int]$Height = 96)
+    $label = if ($StreamIndex -ge 0) { "[0:$StreamIndex]" } else { "[0:a:0]" }
+    return "${label}aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84:scale=sqrt:draw=full:filter=peak"
+}
+
 function Export-TrimWaveform {
     param(
         [Parameter(Mandatory = $true)][string]$InputFile,
@@ -896,12 +907,13 @@ function Export-TrimWaveform {
         [Parameter(Mandatory = $true)][double]$DurationSeconds,
         [Parameter(Mandatory = $true)][string]$OutputFile,
         [int]$Width = 1600,
-        [int]$Height = 96
+        [int]$Height = 96,
+        [int]$StreamIndex = -1
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     & $ffmpeg -y -hide_banner -loglevel error `
         -ss $StartSeconds -t $DurationSeconds -i $InputFile `
-        -filter_complex "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84:scale=sqrt:draw=full:filter=peak" `
+        -filter_complex (Get-TrimWaveformFilter -StreamIndex $StreamIndex -Width $Width -Height $Height) `
         -frames:v 1 $OutputFile 2>&1 | Out-Null
 }
 
@@ -1008,5 +1020,5 @@ function Test-TrackStackHasAudio {
 
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
-    ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
+    ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimWaveformFilter, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
     Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration

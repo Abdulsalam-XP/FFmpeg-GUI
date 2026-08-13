@@ -364,3 +364,17 @@ Describe "Get-TrimSourceProfile Fps" {
         $p.Fps | Should Be 120.0
     }
 }
+
+Describe "Get-TrimWaveformFilter stream selection" {
+    It "defaults to the first audio stream, byte-identical to the pre-lane graph" {
+        Get-TrimWaveformFilter |
+            Should Be "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=1600x96:colors=#3E9B84:scale=sqrt:draw=full:filter=peak"
+    }
+    It "uses an absolute stream label when StreamIndex is non-negative" {
+        Get-TrimWaveformFilter -StreamIndex 2 -Width 1600 -Height 34 |
+            Should Be "[0:2]aformat=channel_layouts=mono,showwavespic=s=1600x34:colors=#3E9B84:scale=sqrt:draw=full:filter=peak"
+    }
+    It "treats stream index 0 as absolute, not as the -1 default" {
+        (Get-TrimWaveformFilter -StreamIndex 0).StartsWith("[0:0]") | Should Be $true
+    }
+}

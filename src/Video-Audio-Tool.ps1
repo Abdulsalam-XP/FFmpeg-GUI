@@ -850,11 +850,11 @@ try {
     $textTrimPosition    = $panelTrim.FindName("TextTrimPosition")
     $canvasTrimTimeline  = $panelTrim.FindName("CanvasTrimTimeline")
     $canvasTrimRuler     = $panelTrim.FindName("CanvasTrimRuler")
-    $canvasTrimWave      = $panelTrim.FindName("CanvasTrimWave")
     $canvasTrimFades     = $panelTrim.FindName("CanvasTrimFades")
     $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
     $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
     $panelTrimLanes      = $panelTrim.FindName("PanelTrimTracks")
+    $canvasTrimLaneOverlay = $panelTrim.FindName("CanvasTrimLaneOverlay")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $previewCell         = $panelTrim.FindName("PreviewCell")
     $panelTrimFadeLength = $panelTrim.FindName("PanelTrimFadeLength")
@@ -917,10 +917,6 @@ try {
     $script:TrimFades = @{}
     $script:TrimFadeSeconds = 0.5
     $script:TrimActiveFade = $null
-    # Height of the waveform row inside the timeline track. Pairs with the XAML
-    # RowDefinition in MainWindow.xaml (the track's inner Grid); the playhead overhang
-    # and the waveform fallback both read this so the three cannot silently desync.
-    $script:TrimWaveRowHeight = 48.0
     # Rendered crossfades for the preview: key -> file path, plus the in-flight set and
     # the key currently on screen so the overlay is only re-sourced when it really changes.
     $script:TrimFadeProxies = @{}
@@ -1027,6 +1023,26 @@ try {
     # Live lane-reorder (⋮⋮) drag state. Same $null-when-idle convention; the rows it moves
     # are whole group blocks, see Move-TrimLaneTo.
     $script:TrimLaneReorderDrag = $null
+    # Live fader edit on an audio row header. Holds the undo snapshot for the whole
+    # gesture (drag or a burst of Up/Down presses) plus a Dragging flag: while a fader
+    # drag holds the mouse, Update-TrimLaneRows must not rebuild the very canvas that
+    # owns the capture, exactly as it must not during a clip drag.
+    $script:TrimLaneGainEdit = $null
+    # Debounce for keyboard gain: the undo bracket closes 600ms after the last key,
+    # so holding Up is one undo step rather than one per 0.5 dB.
+    $script:TrimLaneGainTimer = $null
+    # Lane id whose fader had keyboard focus when the rows were last rebuilt, so the
+    # rebuild a keyboard gain change triggers does not eat the next key press.
+    $script:TrimFaderFocusLane = $null
+    # Row media pump (filmstrip frames + per row waveforms). Queue, claimed-key set,
+    # the single in-flight job, the pump timer, decoded strip bitmaps, and the
+    # "something landed, redraw when the queue drains" flag.
+    $script:TrimStripPending = New-Object System.Collections.ArrayList
+    $script:TrimRowMediaClaimed = @{}
+    $script:TrimRowMediaJob = $null
+    $script:TrimRowMediaTimer = $null
+    $script:TrimStripImages = @{}
+    $script:TrimRowMediaDirty = $false
     # Path -> probed duration (seconds) for every external clip added to the stack. Never
     # left $null for the same reason TrimLanes isn't: it feeds -ClipDurations at
     # Export-CutListAsync's call site and Get-TrimClipSpan's SourceDuration fallback
@@ -1534,11 +1550,10 @@ try {
         if ($playheadVisible) {
             $head = New-Object System.Windows.Shapes.Rectangle
             $head.Style = $ctx.Window.FindResource("TimelinePlayheadStyle")
-            # +20, the waveform row's fixed height: the playhead is meant to read as one
-            # line across the whole track, and stopping it at the filmstrip's bottom edge
-            # left the waveform with no position marker at all. The enclosing Border clips
-            # it, so it can never spill past the track.
-            $head.Height = $h + $script:TrimWaveRowHeight
+            # The filmstrip row is the whole track now that the waveform strip is gone
+            # (spec 3.1). The lane rows below get their own playhead line, drawn on
+            # CanvasTrimLaneOverlay by Update-TrimLaneOverlay.
+            $head.Height = $h
             [System.Windows.Controls.Canvas]::SetLeft($head, $playX - 1)
             [System.Windows.Controls.Canvas]::SetTop($head, 0)
             $canvasTrimTimeline.Children.Add($head) | Out-Null
@@ -1636,7 +1651,6 @@ try {
         # during the first layout pass, before anything has been picked.
         $buttonTrimExport.IsEnabled = ($pieces.Count -gt 0 -and $null -ne $script:TrimInputFile)
 
-        Update-TrimWaveform
         Update-TrimCaptionLane
         # Last: the zoom lane is the bottom row and depends on the same timeline pieces
         # everything above it has just been drawn from.
@@ -1644,92 +1658,6 @@ try {
         # Same hook point, same reasoning: the track lanes' clip bars are positioned with
         # Convert-TrimTimeToX too, so they need the timeline pieces this pass just drew from.
         Update-TrimLaneRows
-    }
-
-    # Waveform strip under the filmstrip, one image per piece that is at least partly on
-    # screen -- one slot per piece instead of several like the filmstrip loop above, since
-    # a whole piece's waveform is cheap to stretch across its own width. Guarded on
-    # $canvasTrimWave being non-null: it is $null on XAML that predates this task, same
-    # stale-XAML rule as the rest of the trim editor.
-    # No -TimelinePieces param, deliberately: Set-TrimWaveform calls this after a render
-    # lands, from inside a closured timer tick, and has no timeline state of its own to
-    # hand in. Computing it here via Get-TrimTimelineState makes every caller -- the end
-    # of Update-TrimTimeline and the render callback alike -- agree on current pieces
-    # instead of the redraw silently running against stale or missing ones.
-    function Update-TrimWaveform {
-        if ($null -eq $canvasTrimWave) { return }
-        $canvasTrimWave.Children.Clear()
-        if (-not $script:TrimInputFile) { return }
-
-        $timelinePieces = (Get-TrimTimelineState).TimelinePieces
-
-        $waveWidth = $canvasTrimWave.ActualWidth
-        if ($waveWidth -le 0) { $waveWidth = $canvasTrimTimeline.ActualWidth }
-        $waveHeight = $canvasTrimWave.ActualHeight
-        if ($waveHeight -le 0) { $waveHeight = $script:TrimWaveRowHeight }
-
-        foreach ($tp in @($timelinePieces)) {
-            $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
-            $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
-            # NOT clamped to the viewport, deliberately -- the cached bitmap covers this
-            # piece's FULL source range, so squeezing it into a clipped visible sub-range
-            # (the way the clamped version used to) stretches the whole waveform into
-            # whatever sliver is on screen, misaligning it in time at any zoom/pan where
-            # a piece runs off either edge. Full unclipped left/width keeps the bitmap
-            # time-aligned; CanvasTrimWave's parent Border has ClipToBounds="True", the
-            # same mechanism the filmstrip's piece containers rely on, so WPF crops the
-            # overhang visually without any math here.
-            if ($x2 -lt 0 -or $x1 -gt $waveWidth) { continue }
-            $pieceWidth = $x2 - $x1
-            if ($pieceWidth -le 0) { continue }
-
-            $key = "{0:N2}_{1:N2}" -f $tp.SourceStart, $tp.SourceEnd
-            # Hydrate from the persistent disk cache before deciding this strip is
-            # missing: any earlier open of this file already paid the ffmpeg render,
-            # and loading the PNG here is what makes reopening feel instant. Done
-            # inline in the draw pass (not inside Request-TrimWaveform) so a cache
-            # hit never triggers a re-entrant redraw mid-loop.
-            if (-not $script:TrimWaveCache.ContainsKey($key)) {
-                $diskFile = Join-Path (Get-TrimWaveDir) ("w{0}.png" -f ($key -replace '[^\d]', ''))
-                if (Test-Path -LiteralPath $diskFile) {
-                    try {
-                        $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
-                        $bmp.BeginInit()
-                        $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-                        $bmp.UriSource = New-Object System.Uri($diskFile)
-                        $bmp.EndInit()
-                        $bmp.Freeze()
-                        $script:TrimWaveCache[$key] = $bmp
-                    } catch { }
-                }
-            }
-            if ($script:TrimWaveCache.ContainsKey($key)) {
-                $img = New-Object System.Windows.Controls.Image
-                $img.Stretch = "Fill"
-                $img.Width = $pieceWidth
-                $img.Height = $waveHeight
-                $img.Source = $script:TrimWaveCache[$key]
-                [System.Windows.Controls.Canvas]::SetLeft($img, $x1)
-                [System.Windows.Controls.Canvas]::SetTop($img, 0)
-                $canvasTrimWave.Children.Add($img) | Out-Null
-            } else {
-                Request-TrimWaveform -File $script:TrimInputFile -SourceStart $tp.SourceStart -SourceEnd $tp.SourceEnd
-                # First-ever render of this strip: say so instead of showing a black
-                # band that reads as "no audio". Only on strips wide enough to fit it.
-                if ($pieceWidth -gt 130) {
-                    $note = New-Object System.Windows.Controls.TextBlock
-                    $note.Text = "rendering waveform..."
-                    $note.FontSize = 12
-                    $note.FontStyle = "Italic"
-                    $note.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(0xAA, 0x6E, 0x8A, 0x9E))
-                    $note.Width = $pieceWidth
-                    $note.TextAlignment = "Center"
-                    [System.Windows.Controls.Canvas]::SetLeft($note, $x1)
-                    [System.Windows.Controls.Canvas]::SetTop($note, ($waveHeight - 17.0) / 2.0)
-                    $canvasTrimWave.Children.Add($note) | Out-Null
-                }
-            }
-        }
     }
 
     # Where waveform strips live on disk: the persistent per-source cache when it was
@@ -2747,296 +2675,683 @@ try {
         Request-TrimProjectSave
     }
 
-    # Bridge rendering (Task 9 replaces this with the grouped NLE rows). One row per lane in
-    # group order -- video lane, then its own audio rows, then the free rows -- drawn with
-    # the v2 lane visuals: a 190px header carrying the mute/eye dot, label, gain badge and
-    # trash, and a span canvas carrying one bar per clip.
+    # Grouped NLE rows (spec 3.1-3.3 and the approved mockup): one row per visible lane,
+    # each a 250px header beside a body canvas, video lanes 44px with their own audio rows
+    # indented 18px under a gold spine beneath them, free audio rows flat at the bottom.
+    # Video clip bodies carry filmstrips, audio clip bodies carry waveforms.
     #
     # Rebuilt from scratch on every structural change, like the caption/zoom lanes -- with
-    # one exception. While a clip drag is live, this returns immediately instead: a full
+    # one exception. While a drag is live, this returns immediately instead: a full
     # rebuild replaces every row's Canvas with a brand-new object, and WPF releases mouse
     # capture the instant the captured element leaves the visual tree, which would abort
-    # the drag after its very first pixel of movement. Update-TrimClipDrag repositions the
-    # one bar it owns directly instead, and this function catches back up on mouse-up.
+    # the drag after its very first pixel of movement. The live drag repositions the one
+    # element it owns directly instead, and this catches back up on mouse-up.
     function Update-TrimLaneRows {
         if ($null -eq $panelTrimLanes) { return }
         if (Test-TrimClipDrag) { return }
+        if (Test-TrimLaneReorderDrag) { return }
+        if (Test-TrimLaneGainDrag) { return }
         # Prunes the PiP/audio-clip preview pools down to the clips that still exist --
         # every structural change (add, delete, undo/redo, unlink, load) reaches here,
         # which is exactly when a clip can have vanished out from under its pooled
         # MediaElement.
         Sync-TrimClipMediaElementPools
         $panelTrimLanes.Children.Clear()
-        if (-not $script:TrimInputFile) { $panelTrimLanes.Visibility = "Collapsed"; return }
-        if (@($script:TrimLanes).Count -eq 0) { $panelTrimLanes.Visibility = "Collapsed"; return }
+        if (-not $script:TrimInputFile -or @($script:TrimLanes).Count -eq 0) {
+            $panelTrimLanes.Visibility = "Collapsed"
+            Update-TrimLaneOverlay
+            return
+        }
         # Always visible now: spec 4.1 makes the source audio rows part of the ordinary
         # single-file session (no U toggle needed to see them).
         $panelTrimLanes.Visibility = "Visible"
 
-        $selectedBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E0C48F")
-        $muteLiveBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
-        $muteOffBrush  = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#44506A")
-        $audioBarBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#5A7EA8")
-        $videoBarBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#B08CFF")
+        $bc = New-Object System.Windows.Media.BrushConverter
+        $goldBrush        = $bc.ConvertFromString("#E0C48F")
+        $lineBrush        = $bc.ConvertFromString("#2A3B52")
+        $dimBrush         = $bc.ConvertFromString("#44506A")
+        $iconBrush        = $bc.ConvertFromString("#8FA8C0")
+        $iconBackBrush    = $bc.ConvertFromString("#101828")
+        $redBrush         = $bc.ConvertFromString("#E64A3C")
+        $redBackBrush     = $bc.ConvertFromString("#2A1210")
+        $trashBrush       = $bc.ConvertFromString("#E68A7C")
+        $trashBackBrush   = $bc.ConvertFromString("#1A0D0B")
+        $trashBorderBrush = $bc.ConvertFromString("#B3382A")
+        $clipBorderBrush  = $bc.ConvertFromString("#5A82B8")
+        $imageBorderBrush = $bc.ConvertFromString("#8CC7FF")
+        $placeholderBrush = $bc.ConvertFromString("#101828")
+        $audioBodyBrush   = $bc.ConvertFromString("#16324E")
+        $railBrush        = $bc.ConvertFromString("#1A2436")
+        $fillBrush        = $bc.ConvertFromString("#5A7EA8")
+        $plateBrush       = $bc.ConvertFromString("#88000000")
+        $chipBackBrush    = $bc.ConvertFromString("#99070B14")
+        $plateTextBrush   = $bc.ConvertFromString("#DDE7F2")
 
-        # Display order: each video lane followed by its own audio rows, then the free rows.
+        $eyeGlyph   = [char]::ConvertFromUtf32(0x1F441)   # the eye is a surrogate PAIR
+        $trashGlyph = [char]::ConvertFromUtf32(0x1F5D1)
+        $liveGlyph  = [char]::ConvertFromUtf32(0x1F50A)
+        $mutedGlyph = [char]::ConvertFromUtf32(0x1F507)
+
+        # Display order: each video lane, then its own audio rows (skipped while the group
+        # is collapsed), then the free rows flat at the bottom.
         $ordered = @()
         foreach ($g in @(Get-TrimLaneGroups)) {
-            if ($null -ne $g.VideoLane) { $ordered += ,$g.VideoLane }
-            foreach ($a in @($g.AudioLanes)) { $ordered += ,$a }
+            if ($null -ne $g.VideoLane) {
+                $ordered += ,@{ Lane = $g.VideoLane; Grouped = $false }
+                if (-not $script:TrimCollapsedLanes.ContainsKey([string]$g.VideoLane.Id)) {
+                    foreach ($a in @($g.AudioLanes)) { $ordered += ,@{ Lane = $a; Grouped = $true } }
+                }
+            } else {
+                foreach ($a in @($g.AudioLanes)) { $ordered += ,@{ Lane = $a; Grouped = $false } }
+            }
         }
 
-        foreach ($ln in $ordered) {
-            $thisLaneId = [string]$ln.Id
+        # Numbering by POSITION (spec 4.5): the main lane is always V1 wherever it sits,
+        # the other video lanes count upward from the row nearest it, and the free audio
+        # lanes are A1.. top-down. Grouped audio rows show a note glyph, not a number.
+        $names = @{}
+        $videoLanes = @()
+        foreach ($e in $ordered) { if ($e.Lane.Kind -eq "video") { $videoLanes += ,$e.Lane } }
+        $mainIdx = -1
+        for ($i = 0; $i -lt @($videoLanes).Count; $i++) {
+            if ([bool]$videoLanes[$i].IsMain) { $mainIdx = $i; break }
+        }
+        if ($mainIdx -ge 0) {
+            $names[[string]$videoLanes[$mainIdx].Id] = "V1"
+            $n = 2
+            for ($i = $mainIdx - 1; $i -ge 0; $i--) { $names[[string]$videoLanes[$i].Id] = "V$n"; $n++ }
+            for ($i = $mainIdx + 1; $i -lt @($videoLanes).Count; $i++) { $names[[string]$videoLanes[$i].Id] = "V$n"; $n++ }
+        } else {
+            $n = 1
+            for ($i = 0; $i -lt @($videoLanes).Count; $i++) { $names[[string]$videoLanes[$i].Id] = "V$n"; $n++ }
+        }
+        $an = 1
+        foreach ($e in $ordered) {
+            if ($e.Lane.Kind -eq "audio" -and -not $e.Grouped) { $names[[string]$e.Lane.Id] = "A$an"; $an++ }
+        }
+
+        # Timeline geometry for the ghosts: V1's own end (the cut list) and the full
+        # timeline including anything that runs past it (spec 4.7's montage).
+        $state = Get-TrimTimelineState
+        $v1End = [double]$state.TotalDuration
+        $fadeLengths = Get-TrimFadeLengths -Pieces @($state.Pieces)
+        $timelineLength = Get-TrimTimelineLength -Lanes @($script:TrimLanes) -Pieces @($state.Pieces) `
+            -FadeLengths ([double[]]@($fadeLengths)) -ClipDurations $script:TrimClipDurations -MainPath $script:TrimInputFile
+        $focusLane = Get-TrimFaderFocusLane
+
+        foreach ($entry in $ordered) {
+            $ln = $entry.Lane
+            $thisId = [string]$ln.Id
             $isVideoLane = ($ln.Kind -eq "video")
             # Captured by the trash handler below: the main lane deletes ALONE (audio-only
             # export), never as a group.
             $isMainLane = [bool]$ln.IsMain
-            $isSelectedLane = ([string]$ln.Id -eq [string]$script:TrimSelectedLane)
+            $isGrouped = [bool]$entry.Grouped
+            $isSelectedLane = ($thisId -eq [string]$script:TrimSelectedLane)
+            $rowHeight = $(if ($isVideoLane) { 44.0 } else { 40.0 })
             $head = Get-TrimLaneHeadClip -Lane $ln
             # The row's headline state: an empty row reads as live and unmuted rather than
             # crashing on a clip that isn't there.
-            $rowMuted = if ($null -ne $head) { [bool]$head.Muted } else { $false }
-            $rowEnabled = if ($null -ne $head) { [bool]$head.Enabled } else { $true }
-            $rowGain = if ($null -ne $head) { [double]$head.GainDb } else { 0.0 }
-            $rowOff = if ($isVideoLane) { -not $rowEnabled } else { $rowMuted }
+            $rowMuted = $(if ($null -ne $head) { [bool]$head.Muted } else { $false })
+            $rowEnabled = $(if ($null -ne $head) { [bool]$head.Enabled } else { $true })
+            $rowGain = $(if ($null -ne $head) { [double]$head.GainDb } else { 0.0 })
+            $rowDim = $(if ($isVideoLane) { -not $rowEnabled } else { $rowMuted })
+            $isCollapsed = $script:TrimCollapsedLanes.ContainsKey($thisId)
 
-            $row = New-Object System.Windows.Controls.Border
-            $row.Style = $ctx.Window.FindResource("TrackLaneStyle")
-            $row.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
-            $row.ClipToBounds = $true
-            if ($isSelectedLane) { $row.BorderBrush = $selectedBrush }
+            $rowGrid = New-Object System.Windows.Controls.Grid
+            $rowGrid.Height = $rowHeight
+            $rowGrid.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
+            $c0 = New-Object System.Windows.Controls.ColumnDefinition
+            $c0.Width = New-Object System.Windows.GridLength(250)
+            $c1 = New-Object System.Windows.Controls.ColumnDefinition
+            $c1.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)
+            [void]$rowGrid.ColumnDefinitions.Add($c0)
+            [void]$rowGrid.ColumnDefinitions.Add($c1)
 
-            $grid = New-Object System.Windows.Controls.Grid
-            $col0 = New-Object System.Windows.Controls.ColumnDefinition
-            $col0.Width = New-Object System.Windows.GridLength(190)
-            $col1 = New-Object System.Windows.Controls.ColumnDefinition
-            $col1.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)
-            [void]$grid.ColumnDefinitions.Add($col0)
-            [void]$grid.ColumnDefinitions.Add($col1)
+            # ---- Header (column 0) ----
+            # A grouped audio row is inset 18px and carries a 2px gold spine on its left
+            # edge. The spine is its own element rather than a BorderBrush: WPF gives a
+            # Border ONE brush for all four sides, and the other three stay #2A3B52.
+            $headHost = New-Object System.Windows.Controls.DockPanel
+            $headHost.LastChildFill = $true
+            if ($isGrouped) {
+                $headHost.Margin = New-Object System.Windows.Thickness(18, 0, 0, 0)
+                $spine = New-Object System.Windows.Controls.Border
+                $spine.Width = 2
+                $spine.Background = $goldBrush
+                [System.Windows.Controls.DockPanel]::SetDock($spine, "Left")
+                [void]$headHost.Children.Add($spine)
+            }
+            [System.Windows.Controls.Grid]::SetColumn($headHost, 0)
 
-            # ---- Header: mute/eye dot, label, gain badge, delete ----
-            $header = New-Object System.Windows.Controls.StackPanel
-            $header.Orientation = "Horizontal"
-            $header.VerticalAlignment = "Center"
-            $header.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
-            [System.Windows.Controls.Grid]::SetColumn($header, 0)
+            $headerBorder = New-Object System.Windows.Controls.Border
+            $headerBorder.Style = $ctx.Window.FindResource("LaneHeaderStyle")
+            if ($isSelectedLane) { $headerBorder.BorderBrush = $goldBrush }
+            [void]$headHost.Children.Add($headerBorder)
 
-            $mute = New-Object System.Windows.Controls.Button
-            $mute.Width = 14; $mute.Height = 14
-            $mute.Padding = New-Object System.Windows.Thickness(0)
-            $mute.BorderThickness = New-Object System.Windows.Thickness(0)
-            $mute.Background = [System.Windows.Media.Brushes]::Transparent
-            $mute.Cursor = [System.Windows.Input.Cursors]::Hand
-            $mute.Margin = New-Object System.Windows.Thickness(0, 0, 6, 0)
-            $muteDot = New-Object System.Windows.Shapes.Ellipse
-            $muteDot.Width = 14; $muteDot.Height = 14
-            $muteDot.Fill = $(if ($rowOff) { $muteOffBrush } else { $muteLiveBrush })
-            $mute.Content = $muteDot
-            # GetNewClosure over the per-row locals ONLY, and every write goes through a
-            # top-level write-through -- a bare $script: read or write in here would land in
-            # this closure's own private module and never see the real state.
-            $mute.Add_Click({
-                Push-TrimUndo
-                if ($isVideoLane) {
-                    Set-TrimLaneEnabled -Id $thisLaneId -Enabled (-not $rowEnabled)
+            # Auto | * | Auto: left identity block, stretchy middle (the fader), right
+            # button block -- the mockup's flex header, expressed as a Grid.
+            $headGrid = New-Object System.Windows.Controls.Grid
+            $headGrid.Margin = New-Object System.Windows.Thickness(7, 0, 7, 0)
+            foreach ($w in @(0, 1, 2)) {
+                $cd = New-Object System.Windows.Controls.ColumnDefinition
+                $cd.Width = $(if ($w -eq 1) {
+                    New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)
                 } else {
-                    Set-TrimLaneAudioValues -Id $thisLaneId -Muted (-not $rowMuted)
+                    New-Object System.Windows.GridLength(0, [System.Windows.GridUnitType]::Auto)
+                })
+                [void]$headGrid.ColumnDefinitions.Add($cd)
+            }
+            $headerBorder.Child = $headGrid
+
+            $leftPanel = New-Object System.Windows.Controls.StackPanel
+            $leftPanel.Orientation = "Horizontal"
+            $leftPanel.VerticalAlignment = "Center"
+            [System.Windows.Controls.Grid]::SetColumn($leftPanel, 0)
+            [void]$headGrid.Children.Add($leftPanel)
+
+            $rightPanel = New-Object System.Windows.Controls.StackPanel
+            $rightPanel.Orientation = "Horizontal"
+            $rightPanel.VerticalAlignment = "Center"
+            [System.Windows.Controls.Grid]::SetColumn($rightPanel, 2)
+            [void]$headGrid.Children.Add($rightPanel)
+
+            if ($isVideoLane) {
+                $grip = New-Object System.Windows.Controls.TextBlock
+                $grip.Text = [string][char]0x22EE + [string][char]0x22EE
+                $grip.Foreground = $dimBrush
+                $grip.FontSize = 12
+                $grip.VerticalAlignment = "Center"
+                $grip.Cursor = [System.Windows.Input.Cursors]::SizeNS
+                $grip.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                [void]$leftPanel.Children.Add($grip)
+
+                $caret = New-Object System.Windows.Controls.Button
+                $caret.Style = $ctx.Window.FindResource("LaneCaretButtonStyle")
+                $caret.Content = $(if ($isCollapsed) { [string][char]0x25B8 } else { [string][char]0x25BE })
+                $caret.VerticalAlignment = "Center"
+                # GetNewClosure over the per-row locals ONLY, and every write goes through a
+                # top-level write-through -- a bare $script: read or write in here would land
+                # in this closure's own private module and never see the real state.
+                $caret.Add_Click({
+                    Set-TrimLaneCollapsed -Id $thisId -Collapsed (-not $isCollapsed)
+                }.GetNewClosure())
+                [void]$leftPanel.Children.Add($caret)
+
+                $nameBlock = New-Object System.Windows.Controls.TextBlock
+                $nameBlock.Style = $ctx.Window.FindResource("LaneNameStyle")
+                $nameBlock.Text = $(if ($names.ContainsKey($thisId)) { [string]$names[$thisId] } else { "V" })
+                $nameBlock.VerticalAlignment = "Center"
+                $nameBlock.Margin = New-Object System.Windows.Thickness(3, 0, 5, 0)
+                [void]$leftPanel.Children.Add($nameBlock)
+            } else {
+                $note = New-Object System.Windows.Controls.TextBlock
+                $note.Text = [string][char]0x266A
+                $note.Foreground = $iconBrush
+                $note.FontSize = 11
+                $note.FontWeight = "Bold"
+                $note.VerticalAlignment = "Center"
+                $note.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                [void]$leftPanel.Children.Add($note)
+                if (-not $isGrouped) {
+                    $nameBlock = New-Object System.Windows.Controls.TextBlock
+                    $nameBlock.Style = $ctx.Window.FindResource("LaneNameStyle")
+                    $nameBlock.Text = $(if ($names.ContainsKey($thisId)) { [string]$names[$thisId] } else { "A" })
+                    $nameBlock.VerticalAlignment = "Center"
+                    $nameBlock.Margin = New-Object System.Windows.Thickness(0, 0, 5, 0)
+                    [void]$leftPanel.Children.Add($nameBlock)
                 }
-            }.GetNewClosure())
-            [void]$header.Children.Add($mute)
-
-            $label = New-Object System.Windows.Controls.TextBlock
-            $label.Style = $ctx.Window.FindResource("TrackChipTextStyle")
-            $label.Text = if ([string]::IsNullOrWhiteSpace($ln.Label)) { $ln.Kind } else { $ln.Label }
-            $label.VerticalAlignment = "Center"
-            $label.MaxWidth = 78
-            $label.TextTrimming = "CharacterEllipsis"
-            [void]$header.Children.Add($label)
-
-            if (-not $isVideoLane) {
-                $gainBadge = New-Object System.Windows.Controls.TextBlock
-                $gainBadge.Style = $ctx.Window.FindResource("TrackChipTextStyle")
-                $gainBadge.Text = "{0:+0.0;-0.0;0} dB" -f $rowGain
-                $gainBadge.VerticalAlignment = "Center"
-                $gainBadge.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
-                [void]$header.Children.Add($gainBadge)
             }
 
-            $delete = New-Object System.Windows.Controls.Button
-            $delete.Content = [char]0x00D7  # "x"
-            $delete.Width = 16; $delete.Height = 16
-            $delete.Padding = New-Object System.Windows.Thickness(0)
-            $delete.BorderThickness = New-Object System.Windows.Thickness(0)
-            $delete.Background = [System.Windows.Media.Brushes]::Transparent
-            $delete.FontFamily = $ctx.Window.FindResource("FontData")
-            $delete.Foreground = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#8FA8C0")
-            $delete.Cursor = [System.Windows.Input.Cursors]::Hand
-            $delete.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
+            $label = New-Object System.Windows.Controls.TextBlock
+            $label.Style = $ctx.Window.FindResource("LaneLabelStyle")
+            $label.VerticalAlignment = "Center"
+            $labelText = [string]$ln.Label
+            if ([string]::IsNullOrWhiteSpace($labelText)) {
+                if (@($ln.Clips).Count -eq 0) {
+                    $labelText = "empty"
+                } elseif ($isVideoLane) {
+                    $labelText = $(if ($isMainLane) { [System.IO.Path]::GetFileName([string]$script:TrimInputFile) } else { "Overlay" })
+                } else {
+                    $labelText = "audio"
+                }
+            }
+            $label.Text = $labelText
+            if (@($ln.Clips).Count -eq 0) { $label.Foreground = $dimBrush }
+            $label.MaxWidth = $(if ($isVideoLane) { 108 } else { 62 })
+            [void]$leftPanel.Children.Add($label)
+
+            if ($isVideoLane) {
+                # Eye: the lane's clips render (grey) or are excluded from render AND
+                # preview (red, and the row's clip bodies dim to 40%).
+                $eye = New-Object System.Windows.Controls.Button
+                $eye.Style = $ctx.Window.FindResource("LaneIconButtonStyle")
+                $eye.Content = $eyeGlyph
+                $eye.Foreground = $(if ($rowEnabled) { $iconBrush } else { $redBrush })
+                $eye.Background = $(if ($rowEnabled) { $iconBackBrush } else { $redBackBrush })
+                $eye.BorderBrush = $(if ($rowEnabled) { $lineBrush } else { $redBrush })
+                $eye.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                $eye.Add_Click({
+                    Push-TrimUndo
+                    Set-TrimLaneEnabled -Id $thisId -Enabled (-not $rowEnabled)
+                }.GetNewClosure())
+                [void]$rightPanel.Children.Add($eye)
+            } else {
+                # Fader (the stretchy middle column) + dB badge, mute, trash on the right.
+                $faderPanel = New-Object System.Windows.Controls.StackPanel
+                $faderPanel.MinWidth = 70
+                $faderPanel.VerticalAlignment = "Center"
+                $faderPanel.Margin = New-Object System.Windows.Thickness(6, 0, 6, 0)
+                $faderPanel.Opacity = $(if ($rowMuted) { 0.4 } else { 1.0 })
+                [System.Windows.Controls.Grid]::SetColumn($faderPanel, 1)
+                [void]$headGrid.Children.Add($faderPanel)
+
+                $railCanvas = New-Object System.Windows.Controls.Canvas
+                # 13, not the rail's own 5: the rail is 5px of PAINT, but a 5px tall click
+                # target is a dart throw. The canvas is as tall as the thumb and the rail
+                # sits inset inside it, so the whole thumb-height band drags the fader.
+                $railCanvas.Height = 13
+                $railCanvas.Focusable = $true
+                $railCanvas.Cursor = [System.Windows.Input.Cursors]::Hand
+                # A Canvas paints nothing by default and an unpainted area is not hit
+                # testable, so the transparent background IS what makes the rail clickable.
+                $railCanvas.Background = [System.Windows.Media.Brushes]::Transparent
+                [void]$faderPanel.Children.Add($railCanvas)
+
+                $rail = New-Object System.Windows.Controls.Border
+                $rail.Height = 5
+                $rail.Background = $railBrush
+                $rail.BorderBrush = $lineBrush
+                $rail.BorderThickness = New-Object System.Windows.Thickness(1)
+                $rail.CornerRadius = New-Object System.Windows.CornerRadius(2)
+                [System.Windows.Controls.Canvas]::SetLeft($rail, 0)
+                [System.Windows.Controls.Canvas]::SetTop($rail, 4)
+                [void]$railCanvas.Children.Add($rail)
+
+                $faderFill = New-Object System.Windows.Shapes.Rectangle
+                $faderFill.Height = 5
+                $faderFill.Fill = $fillBrush
+                [System.Windows.Controls.Canvas]::SetLeft($faderFill, 0)
+                [System.Windows.Controls.Canvas]::SetTop($faderFill, 4)
+                [void]$railCanvas.Children.Add($faderFill)
+
+                $thumb = New-Object System.Windows.Shapes.Rectangle
+                $thumb.Width = 5
+                $thumb.Height = 13
+                $thumb.RadiusX = 1; $thumb.RadiusY = 1
+                $thumb.Fill = $goldBrush
+                [System.Windows.Controls.Canvas]::SetTop($thumb, 0)
+                [void]$railCanvas.Children.Add($thumb)
+
+                $ticks = New-Object System.Windows.Controls.Canvas
+                $ticks.Height = 4
+                $ticks.Margin = New-Object System.Windows.Thickness(0, 2, 0, 0)
+                [void]$faderPanel.Children.Add($ticks)
+
+                $badge = New-Object System.Windows.Controls.TextBlock
+                $badge.FontSize = 9
+                $badge.Foreground = $goldBrush
+                $badge.Width = 34
+                $badge.TextAlignment = "Right"
+                $badge.VerticalAlignment = "Center"
+                $badge.Opacity = $(if ($rowMuted) { 0.4 } else { 1.0 })
+                $badge.Text = "{0:+0.0;-0.0;0}" -f $rowGain
+                $badge.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                [void]$rightPanel.Children.Add($badge)
+
+                # First paint and every resize: the rail's width is only known after
+                # layout, so the fill/thumb/ticks are placed from the SizeChanged pass.
+                $railCanvas.Add_SizeChanged({
+                    param($eventSource, $e)
+                    Update-TrimFaderVisual -Rail $rail -Fill $faderFill -Thumb $thumb -Ticks $ticks -Badge $badge `
+                        -Gain (Get-TrimLaneGain -Id $thisId) -Width $eventSource.ActualWidth
+                }.GetNewClosure())
+
+                # The edit bracket: snapshot at mouse-down, live writes on move, one undo
+                # entry on release if anything changed. Capture lives on the rail CANVAS,
+                # never on the thumb -- the thumb moves out from under the pointer.
+                $railCanvas.Add_MouseLeftButtonDown({
+                    param($eventSource, $e)
+                    $w = $eventSource.ActualWidth
+                    if ($w -le 0) { return }
+                    if ($e.ClickCount -ge 2) {
+                        # Double-click resets to 0.0 dB as its OWN undo step; the bracket
+                        # the first click opened is dropped rather than pushed.
+                        Clear-LaneGainEdit
+                        [void]$eventSource.ReleaseMouseCapture()
+                        Push-TrimUndo
+                        Set-TrimLaneAudioValues -Id $thisId -GainDb 0.0
+                        $e.Handled = $true
+                        return
+                    }
+                    Start-LaneGainEdit -LaneId $thisId
+                    Set-LaneGainDragging -Value $true
+                    Set-TrimFaderFocusLane -Id $thisId
+                    [void]$eventSource.Focus()
+                    [void]$eventSource.CaptureMouse()
+                    Set-TrimLaneAudioValues -Id $thisId -GainDb (Convert-TrimFaderXToGain -X ($e.GetPosition($eventSource)).X -Width $w)
+                    Update-TrimFaderVisual -Rail $rail -Fill $faderFill -Thumb $thumb -Ticks $ticks -Badge $badge `
+                        -Gain (Get-TrimLaneGain -Id $thisId) -Width $w
+                    $e.Handled = $true
+                }.GetNewClosure())
+
+                $railCanvas.Add_MouseMove({
+                    param($eventSource, $e)
+                    if (-not (Test-TrimLaneGainDrag)) { return }
+                    $w = $eventSource.ActualWidth
+                    if ($w -le 0) { return }
+                    Set-TrimLaneAudioValues -Id $thisId -GainDb (Convert-TrimFaderXToGain -X ($e.GetPosition($eventSource)).X -Width $w)
+                    Update-TrimFaderVisual -Rail $rail -Fill $faderFill -Thumb $thumb -Ticks $ticks -Badge $badge `
+                        -Gain (Get-TrimLaneGain -Id $thisId) -Width $w
+                }.GetNewClosure())
+
+                $railCanvas.Add_MouseLeftButtonUp({
+                    param($eventSource, $e)
+                    if (-not (Test-TrimLaneGainDrag)) { return }
+                    [void]$eventSource.ReleaseMouseCapture()
+                    Set-LaneGainDragging -Value $false
+                    Complete-LaneGainEdit
+                    Update-TrimLaneRows
+                })
+
+                # Keyboard nudge, through the SAME bracket: Start- is a no-op while one is
+                # already open for this lane, and the 600ms debounce closes it once the
+                # presses stop -- so a burst of Up/Down is one undo entry (spec 8).
+                $railCanvas.Add_PreviewKeyDown({
+                    param($eventSource, $e)
+                    $isUp = ($e.Key -eq [System.Windows.Input.Key]::Up)
+                    $isDown = ($e.Key -eq [System.Windows.Input.Key]::Down)
+                    if (-not $isUp -and -not $isDown) { return }
+                    Start-LaneGainEdit -LaneId $thisId
+                    Set-TrimFaderFocusLane -Id $thisId
+                    Set-TrimLaneAudioValues -Id $thisId -GainDb ((Get-TrimLaneGain -Id $thisId) + $(if ($isUp) { 0.5 } else { -0.5 }))
+                    Request-LaneGainCommit
+                    $e.Handled = $true
+                }.GetNewClosure())
+
+                # The row rebuild a keyboard nudge triggers destroys the focused canvas;
+                # without this the second Up press would go nowhere.
+                if ($null -ne $focusLane -and [string]$focusLane -eq $thisId) {
+                    $railCanvas.Add_Loaded({
+                        param($eventSource, $e)
+                        [void]$eventSource.Focus()
+                    })
+                }
+
+                $mute = New-Object System.Windows.Controls.Button
+                $mute.Style = $ctx.Window.FindResource("LaneIconButtonStyle")
+                $mute.Content = $(if ($rowMuted) { $mutedGlyph } else { $liveGlyph })
+                $mute.Foreground = $(if ($rowMuted) { $redBrush } else { $iconBrush })
+                $mute.Background = $(if ($rowMuted) { $redBackBrush } else { $iconBackBrush })
+                $mute.BorderBrush = $(if ($rowMuted) { $redBrush } else { $lineBrush })
+                $mute.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
+                $mute.Add_Click({
+                    Push-TrimUndo
+                    Set-TrimLaneAudioValues -Id $thisId -Muted (-not $rowMuted)
+                }.GetNewClosure())
+                [void]$rightPanel.Children.Add($mute)
+            }
+
             # A video row's trash takes its grouped audio rows with it -- EXCEPT the main
             # lane's. Get-TrimLaneStack links V1 and every source audio row on one shared
             # LinkId, so the main lane's "group" is the whole stack; taking the group there
             # would delete everything and hit the "Every track was deleted" refusal instead
             # of producing the audio-only export that deleting the main video has always
             # meant (v2's video-main delete, and Remove-TrimLaneRow's own contract).
-            $delete.Add_Click({
+            $trash = New-Object System.Windows.Controls.Button
+            $trash.Style = $ctx.Window.FindResource("LaneIconButtonStyle")
+            $trash.Content = $trashGlyph
+            $trash.Foreground = $trashBrush
+            $trash.Background = $trashBackBrush
+            $trash.BorderBrush = $trashBorderBrush
+            $trash.Add_Click({
                 Push-TrimUndo
                 if ($isVideoLane -and -not $isMainLane) {
-                    Remove-TrimLaneGroup -Id $thisLaneId
+                    Remove-TrimLaneGroup -Id $thisId
                 } else {
-                    Remove-TrimLaneRow -Id $thisLaneId
+                    Remove-TrimLaneRow -Id $thisId
                 }
             }.GetNewClosure())
-            [void]$header.Children.Add($delete)
+            [void]$rightPanel.Children.Add($trash)
 
-            [void]$grid.Children.Add($header)
+            [void]$rowGrid.Children.Add($headHost)
 
-            # ---- Span bar canvas: one bar per clip on this lane ----
-            $barCanvas = New-Object System.Windows.Controls.Canvas
-            $barCanvas.Background = [System.Windows.Media.Brushes]::Transparent
-            [System.Windows.Controls.Grid]::SetColumn($barCanvas, 1)
-            $barBrush = if ($isVideoLane) { $videoBarBrush } else { $audioBarBrush }
+            # ---- Body (column 1) ----
+            $bodyBorder = New-Object System.Windows.Controls.Border
+            $bodyBorder.Style = $ctx.Window.FindResource("LaneRowStyle")
+            $bodyBorder.CornerRadius = New-Object System.Windows.CornerRadius(0, 4, 4, 0)
+            $bodyBorder.ClipToBounds = $true
+            if ($isSelectedLane) { $bodyBorder.BorderBrush = $goldBrush }
+            [System.Windows.Controls.Grid]::SetColumn($bodyBorder, 1)
+            $bodyCanvas = New-Object System.Windows.Controls.Canvas
+            $bodyCanvas.Background = [System.Windows.Media.Brushes]::Transparent
+            $bodyCanvas.ClipToBounds = $true
+            $bodyBorder.Child = $bodyCanvas
+            [void]$rowGrid.Children.Add($bodyBorder)
+
+            $bodyWidth = $bodyCanvas.ActualWidth
+            if ($bodyWidth -le 0) { $bodyWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth - 250.0) }
+            $clipHeight = $rowHeight - 6.0
 
             foreach ($clip in @($ln.Clips)) {
                 $thisClipId = [string]$clip.Id
                 $isMainClip = Test-TrimClipIsMainVideo -Lane $ln -Clip $clip
-                $bar = New-Object System.Windows.Shapes.Rectangle
-                $bar.Height = 18
-                $bar.Fill = $barBrush
-                $bar.RadiusX = 3; $bar.RadiusY = 3
-                $bar.Opacity = $(if ($clip.Enabled) { 1.0 } else { 0.35 })
-                [System.Windows.Controls.Canvas]::SetTop($bar, 7)
-
+                $isSelectedClip = ($thisClipId -eq [string]$script:TrimSelectedClip)
+                $sourceDuration = Get-TrimClipSourceDuration -Lane $ln -Clip $clip
                 if ($isMainClip) {
-                    # The main recording's own video clip IS the piece list -- it spans the
-                    # whole timeline and carries no drag, exactly as v2's video-main did.
-                    [System.Windows.Controls.Canvas]::SetLeft($bar, 0)
-                    $barLaneWidth = $barCanvas.ActualWidth
-                    if ($barLaneWidth -le 0) { $barLaneWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth - 190) }
-                    $bar.Width = $barLaneWidth
-                    $barCanvas.Add_SizeChanged({
-                        param($eventSource, $e)
-                        $bar.Width = $eventSource.ActualWidth
-                    }.GetNewClosure())
-                    [void]$barCanvas.Children.Add($bar)
-                    continue
+                    # The main recording's own clip IS the piece list: it spans the cut
+                    # list, not its raw source length.
+                    $left = Convert-TrimTimeToX -Seconds 0.0
+                    $width = [math]::Max(2.0, (Convert-TrimTimeToX -Seconds $v1End) - $left)
+                    $clipInStart = 0.0
+                    $clipInEnd = [math]::Max(0.1, $v1End)
+                } else {
+                    $bounds = Get-TrimClipBarBounds -Lane $ln -Clip $clip
+                    $left = [double]$bounds.Left
+                    $width = [double]$bounds.Width
+                    $clipInStart = [double]$clip.InStart
+                    $clipInEnd = $(if ([double]$clip.InEnd -gt 0.0) { [double]$clip.InEnd } else { $sourceDuration })
                 }
 
-                $bounds = Get-TrimClipBarBounds -Lane $ln -Clip $clip
-                [System.Windows.Controls.Canvas]::SetLeft($bar, $bounds.Left)
-                $bar.Width = $bounds.Width
-                $bar.Cursor = [System.Windows.Input.Cursors]::SizeAll
-                if ([string]$clip.Id -eq [string]$script:TrimSelectedClip) {
-                    $bar.Stroke = $selectedBrush
-                    $bar.StrokeThickness = 2
+                $clipBorder = New-Object System.Windows.Controls.Border
+                $clipBorder.Height = $clipHeight
+                $clipBorder.Width = $width
+                $clipBorder.CornerRadius = New-Object System.Windows.CornerRadius(3)
+                $clipBorder.ClipToBounds = $true
+                $clipBorder.BorderThickness = New-Object System.Windows.Thickness($(if ($isSelectedClip) { 2 } else { 1 }))
+                $isImageClip = ([string]$clip.Kind -eq "image")
+                $clipBorder.BorderBrush = $(if ($isSelectedClip) { $goldBrush }
+                    elseif ($isImageClip) { $imageBorderBrush } else { $clipBorderBrush })
+                $clipBorder.Background = $(if ([string]$clip.Kind -eq "audio") { $audioBodyBrush } else { $placeholderBrush })
+                $clipBorder.Opacity = $(if ($rowDim -or -not $clip.Enabled) { 0.4 } else { 1.0 })
+                $clipBorder.Cursor = [System.Windows.Input.Cursors]::Hand
+                [System.Windows.Controls.Canvas]::SetLeft($clipBorder, $left)
+                [System.Windows.Controls.Canvas]::SetTop($clipBorder, 3)
+
+                $clipGrid = New-Object System.Windows.Controls.Grid
+                $clipBorder.Child = $clipGrid
+
+                if ([string]$clip.Kind -eq "audio") {
+                    $wave = Request-TrimRowWaveform -Path ([string]$clip.Path) -StreamIndex ([int]$clip.StreamIdx) `
+                        -InStart $clipInStart -Length ([math]::Max(0.0, $clipInEnd - $clipInStart)) -Width 1600 -Height 34
+                    if ($null -ne $wave) {
+                        $waveImage = New-Object System.Windows.Controls.Image
+                        $waveImage.Source = $wave
+                        $waveImage.Stretch = "Fill"
+                        $waveImage.Opacity = 0.85
+                        [void]$clipGrid.Children.Add($waveImage)
+                    }
+                } elseif ($isImageClip) {
+                    # An image clip is its own filmstrip: one stretched frame, no ffmpeg.
+                    $still = Get-TrimStripImage -FilePath ([string]$clip.Path)
+                    if ($null -ne $still) {
+                        $stillImage = New-Object System.Windows.Controls.Image
+                        $stillImage.Source = $still
+                        $stillImage.Stretch = "UniformToFill"
+                        [void]$clipGrid.Children.Add($stillImage)
+                    }
+                } else {
+                    $strip = Request-TrimClipStrip -Path ([string]$clip.Path) -InStart $clipInStart -EffInEnd $clipInEnd
+                    if ($null -ne $strip) {
+                        $stripPanel = New-Object System.Windows.Controls.Primitives.UniformGrid
+                        $stripPanel.Rows = 1
+                        $stripPanel.Columns = 8
+                        foreach ($frame in @($strip)) {
+                            $cell = New-Object System.Windows.Controls.Image
+                            $cell.Source = $frame
+                            $cell.Stretch = "UniformToFill"
+                            [void]$stripPanel.Children.Add($cell)
+                        }
+                        [void]$clipGrid.Children.Add($stripPanel)
+                    }
                 }
 
-                $gripStart = $null
-                $gripEnd = $null
-                if ($bounds.Width -ge 20) {
-                    $gripStart = New-Object System.Windows.Shapes.Rectangle
-                    $gripStart.Width = 6; $gripStart.Height = 18
-                    $gripStart.Fill = [System.Windows.Media.Brushes]::Transparent
-                    $gripStart.Cursor = [System.Windows.Input.Cursors]::SizeWE
-                    [System.Windows.Controls.Canvas]::SetTop($gripStart, 7)
-                    [System.Windows.Controls.Canvas]::SetLeft($gripStart, $bounds.Left)
+                # Name plate, bottom-left on a dark scrim (spec 3.3).
+                $linked = -not [string]::IsNullOrEmpty([string]$clip.LinkId)
+                $plateText = [System.IO.Path]::GetFileName([string]$clip.Path)
+                if ($isMainClip) { $plateText = "{0} - cut to {1}" -f $plateText, (Format-TrimTime $v1End) }
+                if ($isImageClip) { $plateText = "{0} - {1:0.#}s" -f $plateText, [double]$clip.DurationOverride }
+                if ($linked) { $plateText = "{0} {1}" -f $plateText, ([char]::ConvertFromUtf32(0x1F517)) }
+                $plate = New-Object System.Windows.Controls.Border
+                $plate.Background = $plateBrush
+                $plate.HorizontalAlignment = "Left"
+                $plate.VerticalAlignment = "Bottom"
+                $plate.Padding = New-Object System.Windows.Thickness(3, 0, 3, 0)
+                $plateBlock = New-Object System.Windows.Controls.TextBlock
+                $plateBlock.Text = $plateText
+                $plateBlock.FontSize = 8.5
+                $plateBlock.Foreground = $plateTextBrush
+                $plate.Child = $plateBlock
+                [void]$clipGrid.Children.Add($plate)
 
-                    $gripEnd = New-Object System.Windows.Shapes.Rectangle
-                    $gripEnd.Width = 6; $gripEnd.Height = 18
-                    $gripEnd.Fill = [System.Windows.Media.Brushes]::Transparent
-                    $gripEnd.Cursor = [System.Windows.Input.Cursors]::SizeWE
-                    [System.Windows.Controls.Canvas]::SetTop($gripEnd, 7)
-                    [System.Windows.Controls.Canvas]::SetLeft($gripEnd, $bounds.Left + $bounds.Width - 6.0)
+                # State chip, top-right: full-frame / pip percentage / image.
+                if ([string]$clip.Kind -ne "audio") {
+                    $chipText = $(if ($isImageClip) { "img" }
+                        elseif ($null -eq $clip.Pip) { [string][char]0x26F6 + " full" }
+                        else { "{0} {1:0}% pip" -f ([string][char]0x25F1), ([double]$clip.Pip.W * 100.0) })
+                    $chip = New-Object System.Windows.Controls.Border
+                    $chip.BorderThickness = New-Object System.Windows.Thickness(1)
+                    $chip.BorderBrush = $(if ($isImageClip) { $imageBorderBrush } else { $goldBrush })
+                    $chip.Background = $chipBackBrush
+                    $chip.CornerRadius = New-Object System.Windows.CornerRadius(3)
+                    $chip.Padding = New-Object System.Windows.Thickness(3, 0, 3, 0)
+                    $chip.HorizontalAlignment = "Right"
+                    $chip.VerticalAlignment = "Top"
+                    $chip.Margin = New-Object System.Windows.Thickness(0, 2, 2, 0)
+                    $chipBlock = New-Object System.Windows.Controls.TextBlock
+                    $chipBlock.Text = $chipText
+                    $chipBlock.FontSize = 8.5
+                    $chipBlock.Foreground = $(if ($isImageClip) { $imageBorderBrush } else { $goldBrush })
+                    $chip.Child = $chipBlock
+                    [void]$clipGrid.Children.Add($chip)
                 }
 
-                # GetNewClosure over $thisClipId, exactly as the caption blocks/grips do --
-                # without it every bar captures the loop's final clip and dragging any of
-                # them moves the last one. $barCanvas/$bar/$gripStart/$gripEnd are captured
-                # too: they are per-iteration locals already (New-Object each time round the
-                # loop), so capturing them just pins each handler to its own instance.
-                $bar.Add_MouseLeftButtonDown({
+                # Selection only: the clip DRAG is Task 10's. GetNewClosure over
+                # $thisClipId, exactly as the caption blocks do -- without it every body
+                # captures the loop's final clip and clicking any of them selects the last.
+                $clipBorder.Add_MouseLeftButtonDown({
                     param($eventSource, $e)
-                    $x = ($e.GetPosition($barCanvas)).X
                     Set-TrimSelectedClip -Id $thisClipId
-                    # Direct call, not a row rebuild: Update-TrimLaneRows bails out for the
-                    # whole duration of the drag that Start-TrimClipDrag is about to start
-                    # (Test-TrimClipDrag), so the props strip needs its own refresh here
-                    # rather than waiting for the rebuild that follows on mouse-up.
-                    Update-TrimTrackProps
-                    Start-TrimClipDrag -ClipId $thisClipId -Mode "move" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
-                    $barCanvas.CaptureMouse() | Out-Null
+                    Update-TrimLaneRows
                     $e.Handled = $true
                 }.GetNewClosure())
-                [void]$barCanvas.Children.Add($bar)
 
-                if ($null -ne $gripStart) {
-                    $gripStart.Add_MouseLeftButtonDown({
-                        param($eventSource, $e)
-                        $x = ($e.GetPosition($barCanvas)).X
-                        Set-TrimSelectedClip -Id $thisClipId
-                        Update-TrimTrackProps
-                        Start-TrimClipDrag -ClipId $thisClipId -Mode "instart" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
-                        $barCanvas.CaptureMouse() | Out-Null
-                        $e.Handled = $true
-                    }.GetNewClosure())
-                    [void]$barCanvas.Children.Add($gripStart)
-
-                    $gripEnd.Add_MouseLeftButtonDown({
-                        param($eventSource, $e)
-                        $x = ($e.GetPosition($barCanvas)).X
-                        Set-TrimSelectedClip -Id $thisClipId
-                        Update-TrimTrackProps
-                        Start-TrimClipDrag -ClipId $thisClipId -Mode "inend" -StartX $x -Canvas $barCanvas -Rect $bar -GripStart $gripStart -GripEnd $gripEnd
-                        $barCanvas.CaptureMouse() | Out-Null
-                        $e.Handled = $true
-                    }.GetNewClosure())
-                    [void]$barCanvas.Children.Add($gripEnd)
-                }
+                [void]$bodyCanvas.Children.Add($clipBorder)
             }
 
-            # Live drag reads and writes $script:TrimClipDrag through the top-level
-            # Test-/Update-/Complete- functions, not a closure, so it captures nothing --
-            # same reasoning as the caption and zoom lane canvases. The capture lives on the
-            # CANVAS, never on a bar: a bar can be replaced by a rebuild mid-gesture.
-            $barCanvas.Add_MouseMove({
-                param($eventSource, $e)
-                if (-not (Test-TrimClipDrag)) { return }
-                Update-TrimClipDrag -CurrentX ($e.GetPosition($eventSource)).X
-            })
-            $barCanvas.Add_MouseLeftButtonUp({
-                param($eventSource, $e)
-                if (-not (Test-TrimClipDrag)) { return }
-                $eventSource.ReleaseMouseCapture()
-                Complete-TrimClipDrag
-                Update-TrimLaneRows
-            })
+            # Ghosts (spec 3.3): the montage region past V1's end on the V1 row, and the
+            # drop hint on a lane with nothing on it.
+            $ghostText = $null
+            $ghostLeft = 0.0
+            $ghostWidth = 0.0
+            if (@($ln.Clips).Count -eq 0) {
+                $ghostText = $(if ($isVideoLane) { "drop a video or image here" } else { "drop audio here" })
+                $ghostLeft = 0.0
+                $ghostWidth = $bodyWidth
+            } elseif ($isMainLane -and $isVideoLane -and $timelineLength -gt $v1End + 0.001) {
+                $ghostText = "past V1's end -> black base"
+                $ghostLeft = Convert-TrimTimeToX -Seconds $v1End
+                $ghostWidth = (Convert-TrimTimeToX -Seconds $timelineLength) - $ghostLeft
+            }
+            if ($null -ne $ghostText -and $ghostWidth -gt 4.0) {
+                $ghost = New-Object System.Windows.Controls.Grid
+                $ghost.Width = $ghostWidth
+                $ghost.Height = $clipHeight
+                $ghostRect = New-Object System.Windows.Shapes.Rectangle
+                $ghostRect.Stroke = $lineBrush
+                $ghostRect.StrokeThickness = 1
+                $ghostRect.StrokeDashArray = New-Object System.Windows.Media.DoubleCollection(@([double]3, [double]3))
+                $ghostRect.RadiusX = 3; $ghostRect.RadiusY = 3
+                [void]$ghost.Children.Add($ghostRect)
+                $ghostBlock = New-Object System.Windows.Controls.TextBlock
+                $ghostBlock.Text = $ghostText
+                $ghostBlock.FontSize = 9
+                $ghostBlock.Foreground = $dimBrush
+                $ghostBlock.HorizontalAlignment = "Center"
+                $ghostBlock.VerticalAlignment = "Center"
+                [void]$ghost.Children.Add($ghostBlock)
+                [System.Windows.Controls.Canvas]::SetLeft($ghost, $ghostLeft)
+                [System.Windows.Controls.Canvas]::SetTop($ghost, 3)
+                [void]$bodyCanvas.Children.Add($ghost)
+            }
 
-            [void]$grid.Children.Add($barCanvas)
-            $row.Child = $grid
-
-            # Whole-row select. Fires for header clicks always, and for bar-area clicks only
-            # where no clip bar sits -- a clip bar's own handlers above mark their clicks
-            # Handled, so this one never doubles up with a drag start.
-            $row.Add_MouseLeftButtonDown({
+            # Whole-row select. Fires for header clicks always, and for body clicks only
+            # where no clip body sits -- a clip's own handler marks its clicks Handled.
+            $rowGrid.Add_MouseLeftButtonDown({
                 param($eventSource, $e)
-                Set-TrimSelectedLane -Id $thisLaneId
+                Set-TrimSelectedLane -Id $thisId
                 Update-TrimLaneRows
             }.GetNewClosure())
 
-            [void]$panelTrimLanes.Children.Add($row)
+            [void]$panelTrimLanes.Children.Add($rowGrid)
         }
 
+        Update-TrimLaneOverlay
         # Every structural change (mute, gain, delete, unlink, undo/redo, load) comes
         # through here, so refreshing the props strip at the end of a row rebuild is enough
         # to keep it in sync without a second call at each of those sites. The points that
         # select a clip WITHOUT rebuilding the rows (drag-start on a bar/grip, mid-drag)
-        # call Update-TrimTrackProps directly instead -- see Start-TrimClipDrag's callers.
+        # call Update-TrimTrackProps directly instead.
         Update-TrimTrackProps
         # And the PiP box/preview follow the same rule: a row rebuild is what a clip
         # selection change (or add/delete) usually comes through, so this is the one place
         # that keeps both in sync without a second call at every site above.
         Update-PipBoxOverlay
         Update-PipPreview -SourceSeconds $script:TrimPlayhead
+    }
+
+    # The caret. Collapsed groups hide their audio rows; the state is UI-only (it never
+    # reaches the project file), which is why it lives in a plain hashtable.
+    function Set-TrimLaneCollapsed {
+        param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][bool]$Collapsed)
+        if ($Collapsed) { $script:TrimCollapsedLanes[$Id] = $true }
+        else { [void]$script:TrimCollapsedLanes.Remove($Id) }
+        Update-TrimLaneRows
+    }
+
+    # The stack-spanning playhead, drawn on the overlay canvas that sits above every lane
+    # row (Task 10 adds the green snap flash to the same canvas). +250 because the overlay
+    # spans the whole panel while Convert-TrimTimeToX is body-relative, and the body starts
+    # after the 250px header column.
+    function Update-TrimLaneOverlay {
+        if ($null -eq $canvasTrimLaneOverlay) { return }
+        $canvasTrimLaneOverlay.Children.Clear()
+        if (-not $script:TrimInputFile) { return }
+        if ($null -eq $panelTrimLanes -or $panelTrimLanes.Visibility -ne "Visible") { return }
+        $state = Get-TrimTimelineState
+        $tl = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+        $x = 250.0 + (Convert-TrimTimeToX -Seconds $tl)
+        if ($x -lt 250.0) { return }
+        $line = New-Object System.Windows.Shapes.Line
+        $line.X1 = $x; $line.X2 = $x
+        $line.Y1 = 0
+        # Taller than any realistic stack; the overlay canvas has ClipToBounds="True" so
+        # WPF crops the overhang rather than this having to know the panel's height (which
+        # is 0 during the very layout pass that adds the rows).
+        $line.Y2 = 4000
+        $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E64A3C")
+        $line.StrokeThickness = 2
+        [void]$canvasTrimLaneOverlay.Children.Add($line)
     }
 
     # Mirrors Set-ZoomUiLoading: raised while Update-TrimTrackProps is writing the slider/
@@ -3179,6 +3494,146 @@ try {
         }
         if ([math]::Abs($now - [double]$edit.GainDb) -lt 1e-9) { return }
         Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+    }
+
+    # ---- Row fader edit bracket (spec 3.2) ---------------------------------------
+    # The same Start/Complete pair as the zoom sliders and the props strip above, but
+    # scoped to a LANE and shared by all three ways a fader moves: a rail drag, a
+    # double-click reset, and Up/Down on a focused rail. One undo entry per gesture --
+    # for the keyboard that means one entry per BURST of presses, which is what the
+    # spec 8 backlog item ("keyboard gain joins the undo bracket") asks for.
+    function Start-LaneGainEdit {
+        param([Parameter(Mandatory = $true)][string]$LaneId)
+        if ($null -ne $script:TrimLaneGainEdit) {
+            if ([string]$script:TrimLaneGainEdit.LaneId -eq [string]$LaneId) { return }
+            Complete-LaneGainEdit
+        }
+        $lane = Get-TrimLaneById -Id $LaneId
+        if ($null -eq $lane) { return }
+        $head = Get-TrimLaneHeadClip -Lane $lane
+        $script:TrimLaneGainEdit = @{
+            LaneId   = [string]$LaneId
+            GainDb   = $(if ($null -ne $head) { [double]$head.GainDb } else { 0.0 })
+            Snapshot = New-TrimUndoSnapshot
+            Dragging = $false
+        }
+    }
+
+    function Complete-LaneGainEdit {
+        $edit = $script:TrimLaneGainEdit
+        $script:TrimLaneGainEdit = $null
+        if ($null -eq $edit) { return }
+        $lane = Get-TrimLaneById -Id $edit.LaneId
+        if ($null -eq $lane) { return }
+        $head = Get-TrimLaneHeadClip -Lane $lane
+        if ($null -eq $head) { return }
+        if ([math]::Abs([double]$head.GainDb - [double]$edit.GainDb) -lt 1e-9) { return }
+        Push-TrimUndoSnapshot -Snapshot $edit.Snapshot
+    }
+
+    # Drops the bracket WITHOUT pushing it -- the double-click reset takes its own
+    # Push-TrimUndo, and the click that opened the bracket changed nothing worth a
+    # second entry.
+    function Clear-LaneGainEdit {
+        $script:TrimLaneGainEdit = $null
+    }
+
+    function Set-LaneGainDragging {
+        param([bool]$Value)
+        if ($null -ne $script:TrimLaneGainEdit) { $script:TrimLaneGainEdit.Dragging = $Value }
+    }
+
+    function Test-TrimLaneGainDrag {
+        return ($null -ne $script:TrimLaneGainEdit -and [bool]$script:TrimLaneGainEdit.Dragging)
+    }
+
+    # Task 10 owns the ⋮⋮ reorder drag; the row rebuild has to stand out of its way for
+    # the same reason it stands out of a clip drag's, so the test lands here with the
+    # state variable it reads.
+    function Test-TrimLaneReorderDrag {
+        return ($null -ne $script:TrimLaneReorderDrag)
+    }
+
+    # The row's headline gain, read fresh from the model. Every fader handler goes
+    # through this rather than capturing a value: a captured gain is stale the moment
+    # the first mouse-move writes a new one.
+    function Get-TrimLaneGain {
+        param([string]$Id)
+        $lane = Get-TrimLaneById -Id $Id
+        if ($null -eq $lane) { return 0.0 }
+        $head = Get-TrimLaneHeadClip -Lane $lane
+        if ($null -eq $head) { return 0.0 }
+        return [double]$head.GainDb
+    }
+
+    function Set-TrimFaderFocusLane {
+        param($Id)
+        $script:TrimFaderFocusLane = $Id
+    }
+
+    function Get-TrimFaderFocusLane {
+        return $script:TrimFaderFocusLane
+    }
+
+    # Keyboard gain closes its bracket 600ms after the last press. A DispatcherTimer
+    # rather than a per-press push: holding Up would otherwise fill the undo stack with
+    # one entry per 0.5 dB and bury whatever came before it.
+    function Request-LaneGainCommit {
+        if ($null -eq $script:TrimLaneGainTimer) {
+            $timer = New-Object System.Windows.Threading.DispatcherTimer
+            $timer.Interval = [timespan]::FromMilliseconds(600)
+            # No GetNewClosure: both statements are top-level functions, so their
+            # $script: access is the real script scope.
+            $timer.Add_Tick({ Stop-LaneGainCommitTimer; Complete-LaneGainEdit })
+            $script:TrimLaneGainTimer = $timer
+        }
+        $script:TrimLaneGainTimer.Stop()
+        $script:TrimLaneGainTimer.Start()
+    }
+
+    function Stop-LaneGainCommitTimer {
+        if ($null -ne $script:TrimLaneGainTimer) { $script:TrimLaneGainTimer.Stop() }
+    }
+
+    # -30..+30 dB across the rail, 0 dB dead centre. Shared by the rail's mouse-down and
+    # its mouse-move so a click and a drag land on exactly the same number.
+    function Convert-TrimFaderXToGain {
+        param([double]$X, [double]$Width)
+        if ($Width -le 0) { return 0.0 }
+        $frac = [math]::Max(0.0, [math]::Min(1.0, $X / $Width))
+        return ($frac * 60.0) - 30.0
+    }
+
+    # Repositions an already-built fader in place -- no rebuild, so it can run on every
+    # mouse-move without disturbing the capture the rail canvas is holding (the same
+    # rule Update-TrimClipBarGeometry follows for clip bars).
+    function Update-TrimFaderVisual {
+        param($Rail, $Fill, $Thumb, $Ticks, $Badge, [double]$Gain, [double]$Width)
+        $g = [math]::Max(-30.0, [math]::Min(30.0, $Gain))
+        if ($null -ne $Badge) { $Badge.Text = "{0:+0.0;-0.0;0}" -f $g }
+        if ($Width -le 0) { return }
+        $frac = ($g + 30.0) / 60.0
+        if ($null -ne $Rail) { $Rail.Width = $Width }
+        if ($null -ne $Fill) { $Fill.Width = [math]::Max(0.0, $frac * $Width) }
+        if ($null -ne $Thumb) { [System.Windows.Controls.Canvas]::SetLeft($Thumb, ($frac * $Width) - 2.0) }
+        if ($null -ne $Ticks) {
+            $Ticks.Children.Clear()
+            $major = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#5A7EA8")
+            $minor = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#2A3B52")
+            # Majors at -30/-15/0/+15/+30 dB, minors halfway between each pair.
+            foreach ($t in @(
+                @{ F = 0.0;   M = $true }, @{ F = 0.125; M = $false }, @{ F = 0.25;  M = $true },
+                @{ F = 0.375; M = $false }, @{ F = 0.5;  M = $true }, @{ F = 0.625; M = $false },
+                @{ F = 0.75;  M = $true }, @{ F = 0.875; M = $false }, @{ F = 1.0;   M = $true })) {
+                $tick = New-Object System.Windows.Shapes.Rectangle
+                $tick.Width = 1
+                $tick.Height = $(if ($t.M) { 4.0 } else { 3.0 })
+                $tick.Fill = $(if ($t.M) { $major } else { $minor })
+                [System.Windows.Controls.Canvas]::SetTop($tick, 0)
+                [System.Windows.Controls.Canvas]::SetLeft($tick, [math]::Min($Width - 1.0, [double]$t.F * $Width))
+                [void]$Ticks.Children.Add($tick)
+            }
+        }
     }
 
     # Two keyframes at the same instant are a zero-length glide, which Get-TrimZoomStateAt
@@ -4757,7 +5212,6 @@ try {
     # scratch dir under an in-flight render. Flaky for months; root-caused 2026-08-11.
     function Remove-TrimFadeProxyPending { param([string]$Key) $script:TrimFadeProxyPending.Remove($Key) }
     function Remove-TrimThumbPending { param([string]$Key) $script:TrimThumbPending.Remove($Key) }
-    function Remove-TrimWavePending { param([string]$Key) $script:TrimWavePending.Remove($Key) }
 
     function Set-TrimFadeProxy {
         param([string]$Key, [string]$FilePath)
@@ -5386,6 +5840,10 @@ try {
         $state = Get-TrimTimelineState
         $tl = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
         $textTrimPosition.Text = "$(Format-TrimTime $tl) / $(Format-TrimTime $state.TotalDuration)"
+        # The lane stack's own playhead. Drawn here beside the readout rather than from a
+        # row rebuild: the playhead moves on every timer tick while playing, and rebuilding
+        # every row at 30fps is not a thing to do.
+        Update-TrimLaneOverlay
     }
 
     # Small write-through so the async-read tick handler below never assigns $script:
@@ -5457,58 +5915,209 @@ try {
         $watcher.Start()
     }
 
-    # Waveform strips, one per timeline piece rather than per pixel slot -- a piece's
-    # audio range is fixed once drawn (only split/delete changes it), so there is no
-    # zoom-driven churn to guard against the way the filmstrip slots need. Same
-    # write-through reasoning as Set-TrimThumbnail: called from a closured timer tick.
-    function Set-TrimWaveform {
-        param([string]$Key, [string]$FilePath)
-        $img = New-Object System.Windows.Media.Imaging.BitmapImage
-        $img.BeginInit()
-        $img.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-        $img.UriSource = New-Object System.Uri($FilePath)
-        $img.EndInit()
-        $img.Freeze()
-        $script:TrimWaveCache[$Key] = $img
-        $script:TrimWavePending.Remove($Key)
-        Update-TrimWaveform
+    # ---- Row media: filmstrip frames and per row waveforms -----------------------
+    # Audio rows carry their own waveforms now and video clips carry filmstrips, so a
+    # freshly loaded stack asks for a dozen renders on its first paint. Both kinds go
+    # through ONE queue driven by ONE pump timer that keeps exactly one ffmpeg job in
+    # flight (the "skip if a job is running" guard) -- same DispatcherTimer shape as
+    # Request-TrimThumbnail's watcher, but shared, because a runspace-per-request here
+    # would put ten ffmpeg processes on the box at once.
+    function Get-TrimMediaHash {
+        param([string]$Text)
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        try {
+            $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$Text))
+        } finally { $md5.Dispose() }
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
     }
 
-    # One background job per missing waveform strip, same shape as Request-TrimThumbnail.
-    function Request-TrimWaveform {
-        param([string]$File, [double]$SourceStart, [double]$SourceEnd)
-        $key = "{0:N2}_{1:N2}" -f $SourceStart, $SourceEnd
-        if ($script:TrimWaveCache.ContainsKey($key) -or $script:TrimWavePending.ContainsKey($key)) { return }
-        # Same concurrency ceiling idea as the thumbnail cap, just lower: there are far
-        # fewer pieces than filmstrip slots at once, so 4 in flight is already generous.
-        if ($script:TrimWavePending.Count -ge 4) { return }
-        $script:TrimWavePending[$key] = $true
+    # A file's identity for cache-key purposes: size + last write time. A re-encode that
+    # keeps the same name still gets a fresh key.
+    function Get-TrimMediaStamp {
+        param([string]$Path)
+        try {
+            $fi = New-Object System.IO.FileInfo([string]$Path)
+            if (-not $fi.Exists) { return "0|0" }
+            return ("{0}|{1}" -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        } catch { return "0|0" }
+    }
 
-        $outFile = Join-Path (Get-TrimWaveDir) ("w{0}.png" -f ($key -replace '[^\d]', ''))
-        $duration = [math]::Max(0.01, $SourceEnd - $SourceStart)
-        $ps = [powershell]::Create()
-        $ps.AddScript({
-            param($modulePath, $file, $start, $duration, $outFile)
-            Import-Module $modulePath -Force
-            Export-TrimWaveform -InputFile $file -StartSeconds $start -DurationSeconds $duration -OutputFile $outFile
-        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($File).AddArgument($SourceStart).AddArgument($duration).AddArgument($outFile) | Out-Null
+    # One directory per (file, in-point, out-point): the trimmed range IS part of the
+    # key, so a completed edge-trim asks for a different eight frames and an undo lands
+    # straight back on the cached set.
+    function Get-TrimStripCacheDir {
+        param([string]$Path, [double]$InStart, [double]$EffInEnd)
+        $key = "{0}|{1}|{2:N1}|{3:N1}" -f $Path, (Get-TrimMediaStamp -Path $Path), $InStart, $EffInEnd
+        return (Join-Path $env:LOCALAPPDATA ("FFmpegGUI\stripcache\" + (Get-TrimMediaHash -Text $key)))
+    }
 
-        $handle = $ps.BeginInvoke()
-        $watcher = New-Object System.Windows.Threading.DispatcherTimer
-        $watcher.Interval = [timespan]::FromMilliseconds(120)
-        $watcher.Add_Tick({
-            if (-not $handle.IsCompleted) { return }
-            $watcher.Stop()
-            try { $ps.EndInvoke($handle) | Out-Null } catch { }
-            $ps.Dispose()
-            if (Test-Path $outFile) {
-                Set-TrimWaveform -Key $key -FilePath $outFile
-            } else {
-                Remove-TrimWavePending -Key $key
+    function Add-TrimRowMediaJob {
+        param([hashtable]$Job)
+        $key = [string]$Job.Key
+        if ($script:TrimRowMediaClaimed.ContainsKey($key)) { return }
+        $script:TrimRowMediaClaimed[$key] = $true
+        [void]$script:TrimStripPending.Add($Job)
+        Start-TrimRowMediaPump
+    }
+
+    function Start-TrimRowMediaPump {
+        if ($null -eq $script:TrimRowMediaTimer) {
+            $timer = New-Object System.Windows.Threading.DispatcherTimer
+            $timer.Interval = [timespan]::FromMilliseconds(120)
+            # No GetNewClosure: the tick body is a real top-level function, so its
+            # $script: reads and writes hit the real script scope.
+            $timer.Add_Tick({ Invoke-TrimRowMediaTick })
+            $script:TrimRowMediaTimer = $timer
+        }
+        if (-not $script:TrimRowMediaTimer.IsEnabled) { $script:TrimRowMediaTimer.Start() }
+    }
+
+    function Invoke-TrimRowMediaTick {
+        $job = $script:TrimRowMediaJob
+        if ($null -ne $job) {
+            # Skip-if-running guard, exactly as the thumbnail watcher's first line.
+            if (-not $job.Handle.IsCompleted) { return }
+            try { $job.PS.EndInvoke($job.Handle) | Out-Null } catch { }
+            $job.PS.Dispose()
+            $script:TrimRowMediaJob = $null
+            if (Test-Path -LiteralPath ([string]$job.OutFile)) {
+                if ([string]$job.Kind -eq "wave") { Set-TrimRowWaveform -Key ([string]$job.Key) -FilePath ([string]$job.OutFile) }
+                $script:TrimRowMediaDirty = $true
             }
-        }.GetNewClosure())
-        $watcher.Start()
+            # A render that produced nothing (unreadable file, no such stream) keeps its
+            # claimed key, so the next redraw does not re-queue the same doomed job.
+        }
+        if (@($script:TrimStripPending).Count -eq 0) {
+            $script:TrimRowMediaTimer.Stop()
+            if ($script:TrimRowMediaDirty -and -not (Test-TrimClipDrag) -and -not (Test-TrimLaneGainDrag)) {
+                $script:TrimRowMediaDirty = $false
+                Update-TrimLaneRows
+            }
+            return
+        }
+        $next = $script:TrimStripPending[0]
+        $script:TrimStripPending.RemoveAt(0)
+        $script:TrimRowMediaJob = Start-TrimRowMediaJob -Job $next
     }
+
+    function Start-TrimRowMediaJob {
+        param([hashtable]$Job)
+        $modulePath = Join-Path $scriptRoot "backend\VideoTrimmer.psm1"
+        $ps = [powershell]::Create()
+        if ([string]$Job.Kind -eq "wave") {
+            $ps.AddScript({
+                param($modulePath, $file, $streamIndex, $start, $duration, $width, $height, $outFile)
+                Import-Module $modulePath -Force
+                Export-TrimWaveform -InputFile $file -StreamIndex $streamIndex -StartSeconds $start `
+                    -DurationSeconds $duration -Width $width -Height $height -OutputFile $outFile
+            }).AddArgument($modulePath).AddArgument([string]$Job.Path).AddArgument([int]$Job.StreamIndex).
+              AddArgument([double]$Job.Start).AddArgument([double]$Job.Duration).AddArgument([int]$Job.Width).
+              AddArgument([int]$Job.Height).AddArgument([string]$Job.OutFile) | Out-Null
+        } else {
+            $ps.AddScript({
+                param($modulePath, $file, $seconds, $outFile)
+                Import-Module $modulePath -Force
+                Export-TrimThumbnail -InputFile $file -Seconds $seconds -OutputFile $outFile -Height 80
+            }).AddArgument($modulePath).AddArgument([string]$Job.Path).AddArgument([double]$Job.Seconds).
+              AddArgument([string]$Job.OutFile) | Out-Null
+        }
+        return @{ PS = $ps; Handle = $ps.BeginInvoke(); Kind = [string]$Job.Kind; Key = [string]$Job.Key; OutFile = [string]$Job.OutFile }
+    }
+
+    # Write-through for the pump tick (which runs inside a DispatcherTimer handler).
+    # Deliberately does NOT redraw: the tick decides when a redraw is due, so a render
+    # landing mid-draw can never re-enter Update-TrimLaneRows.
+    function Set-TrimRowWaveform {
+        param([string]$Key, [string]$FilePath)
+        try {
+            $img = New-Object System.Windows.Media.Imaging.BitmapImage
+            $img.BeginInit()
+            $img.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $img.UriSource = New-Object System.Uri($FilePath)
+            $img.EndInit()
+            $img.Freeze()
+            $script:TrimWaveCache[$Key] = $img
+        } catch { }
+    }
+
+    # Decoded once per file path: a row rebuild happens on every selection change, and
+    # re-decoding eight JPEGs per clip each time is what would make that feel slow.
+    function Get-TrimStripImage {
+        param([string]$FilePath)
+        if ($script:TrimStripImages.ContainsKey($FilePath)) { return $script:TrimStripImages[$FilePath] }
+        try {
+            $img = New-Object System.Windows.Media.Imaging.BitmapImage
+            $img.BeginInit()
+            $img.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $img.UriSource = New-Object System.Uri($FilePath)
+            $img.EndInit()
+            $img.Freeze()
+            $script:TrimStripImages[$FilePath] = $img
+            return $img
+        } catch { return $null }
+    }
+
+    # Eight frames across the clip's VISIBLE range, at the middle of each eighth so the
+    # first and last cells are frames of the clip rather than its boundaries. Returns the
+    # eight bitmaps once they all exist, $null (having queued the missing ones) until then.
+    function Request-TrimClipStrip {
+        param([string]$Path, [double]$InStart, [double]$EffInEnd)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        $dir = Get-TrimStripCacheDir -Path $Path -InStart $InStart -EffInEnd $EffInEnd
+        $files = @()
+        $missing = @()
+        for ($k = 0; $k -lt 8; $k++) {
+            $f = Join-Path $dir ("strip{0}.jpg" -f $k)
+            $files += ,$f
+            if (-not (Test-Path -LiteralPath $f)) { $missing += ,$k }
+        }
+        if (@($missing).Count -eq 0) {
+            $images = @()
+            foreach ($f in $files) {
+                $img = Get-TrimStripImage -FilePath $f
+                if ($null -eq $img) { return $null }
+                $images += ,$img
+            }
+            return ,@($images)
+        }
+        # 0.05 rather than 0: a degenerate span would ask ffmpeg for eight copies of the
+        # same frame, which is harmless but pointless -- this keeps the times distinct.
+        $effLen = [math]::Max(0.05, $EffInEnd - $InStart)
+        try { if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null } } catch { return $null }
+        foreach ($k in $missing) {
+            $t = $InStart + (([double]$k + 0.5) / 8.0) * $effLen
+            Add-TrimRowMediaJob -Job @{
+                Kind = "strip"; Key = ("strip|{0}|{1}" -f $dir, $k); OutFile = $files[$k]
+                Path = $Path; Seconds = $t
+            }
+        }
+        return $null
+    }
+
+    # One waveform per audio ROW, keyed by file + absolute stream + file stamp + pixel
+    # size + the clip's own in/out. The in/out belong in the key: the render is of
+    # exactly that window, so a trimmed clip that reused the untrimmed key would show a
+    # waveform of the wrong audio.
+    function Request-TrimRowWaveform {
+        param([string]$Path, [int]$StreamIndex, [double]$InStart, [double]$Length, [int]$Width, [int]$Height)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        if ($Length -le 0.01) { return $null }
+        $key = "{0}|{1}|{2}|{3}x{4}|{5:N1}|{6:N1}" -f $Path, $StreamIndex, (Get-TrimMediaStamp -Path $Path), $Width, $Height, $InStart, $Length
+        if ($script:TrimWaveCache.ContainsKey($key)) { return $script:TrimWaveCache[$key] }
+        $outFile = Join-Path (Get-TrimWaveDir) ("row_{0}.png" -f (Get-TrimMediaHash -Text $key))
+        # Hydrate from the disk cache before deciding this row is missing: any earlier
+        # open of this file already paid the ffmpeg render.
+        if (Test-Path -LiteralPath $outFile) {
+            Set-TrimRowWaveform -Key $key -FilePath $outFile
+            if ($script:TrimWaveCache.ContainsKey($key)) { return $script:TrimWaveCache[$key] }
+        }
+        Add-TrimRowMediaJob -Job @{
+            Kind = "wave"; Key = $key; OutFile = $outFile; Path = $Path; StreamIndex = $StreamIndex
+            Start = $InStart; Duration = $Length; Width = $Width; Height = $Height
+        }
+        return $null
+    }
+
 
     # Reads keyframes off the UI thread: on a long recording this decodes the whole index
     # and would otherwise freeze the window. Until it lands, snapping is inactive and the
@@ -6396,6 +7005,15 @@ try {
         # caches still reset per file open like everything else.
         $script:TrimWaveCache = @{}
         $script:TrimWavePending = @{}
+        # Row media (filmstrips + per row waveforms): the QUEUE is dropped on a new file
+        # open -- those jobs were for the previous stack -- but the claimed-key set is
+        # dropped with it so the new stack can ask again. Any job already in flight is
+        # left to finish and land in the (now unused) cache rather than being aborted
+        # mid-ffmpeg.
+        $script:TrimStripPending = New-Object System.Collections.ArrayList
+        $script:TrimRowMediaClaimed = @{}
+        $script:TrimStripImages = @{}
+        $script:TrimRowMediaDirty = $false
         try {
             $srcInfo = Get-Item -LiteralPath $path
             $waveKeySource = "{0}|{1}|{2:o}" -f $srcInfo.FullName.ToLowerInvariant(), $srcInfo.Length, $srcInfo.LastWriteTimeUtc

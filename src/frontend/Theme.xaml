@@ -1140,6 +1140,75 @@
         <Setter Property="Foreground" Value="#8FA8C0"/>
     </Style>
 
+    <!-- NLE lane rows (2026-08-13 mockup). Video rows 44px, audio rows 40px. -->
+    <Style x:Key="LaneRowStyle" TargetType="Border">
+        <Setter Property="Background" Value="#070B14"/>
+        <Setter Property="BorderBrush" Value="#2A3B52"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="4"/>
+    </Style>
+    <Style x:Key="LaneHeaderStyle" TargetType="Border">
+        <Setter Property="Background" Value="#0A0F1C"/>
+        <Setter Property="BorderBrush" Value="#2A3B52"/>
+        <Setter Property="BorderThickness" Value="1,1,0,1"/>
+        <Setter Property="CornerRadius" Value="4,0,0,4"/>
+    </Style>
+    <Style x:Key="LaneNameStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="#E0C48F"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="FontSize" Value="11"/>
+    </Style>
+    <Style x:Key="LaneLabelStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="#C9D6E4"/>
+        <Setter Property="FontSize" Value="10.5"/>
+        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+    <!-- 20x20 chip buttons in a lane header (eye, mute, trash). Flat by design: the
+         per instance Background/BorderBrush the row sets IS the state colour, so the
+         default button chrome has to go. -->
+    <Style x:Key="LaneIconButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="20"/>
+        <Setter Property="Height" Value="20"/>
+        <Setter Property="FontSize" Value="10"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <!-- Collapse caret on a video lane header: a glyph, not a button box. -->
+    <Style x:Key="LaneCaretButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="12"/>
+        <Setter Property="Height" Value="14"/>
+        <Setter Property="FontSize" Value="9"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Foreground" Value="#E0C48F"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Sidebar field label + row spacing for the caption properties column. -->
     <Style x:Key="SidebarLabelStyle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource FontData}"/>
