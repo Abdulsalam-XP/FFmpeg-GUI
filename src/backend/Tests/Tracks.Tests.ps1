@@ -509,3 +509,72 @@ Describe "Test-TrimLaneStackHasAudio / HasVideo" {
         Test-TrimLaneStackHasVideo -Lanes $lanes | Should Be $true
     }
 }
+
+Describe "New-TrimLaneAudioMixPlan" {
+    $p1 = @([PSCustomObject]@{Start=10.0;End=20.0})
+    $p2 = @([PSCustomObject]@{Start=10.0;End=20.0}, [PSCustomObject]@{Start=30.0;End=35.0})
+    function NewStack { Get-TrimLaneStack -Path "C:\v\main.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"}, @{StreamIdx=2;Label="Mic"}) }
+
+    It "cuts linked source rows per piece over a silence base, absolute stream index" {
+        $lanes = NewStack
+        $r = New-TrimLaneAudioMixPlan -Lanes $lanes -MainPath "C:\v\main.mp4" -Pieces $p1 -FadeLengths @() -ClipDurations @{} -TimelineLength 10.0
+        $r.InputPaths[0] | Should Be "C:\v\main.mp4"
+        $r.FilterComplex | Should Match ([regex]::Escape("anullsrc=r=48000:cl=stereo,atrim=0:10[b0]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:1]atrim=start=10:end=20,asetpts=PTS-STARTPTS[s0_0]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:2]atrim=start=10:end=20,asetpts=PTS-STARTPTS[s0_1]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("amix=inputs=3:duration=first:normalize=0"))
+        $r.OutputLabel | Should Be "[aout]"
+    }
+    It "routes an unlinked slid source row through span math on the SAME input 0" {
+        $lanes = NewStack
+        $mic = $lanes[2].Clips[0]
+        [void](Clear-TrimClipLinks -Lanes $lanes -ClipId $mic.Id)
+        $mic.Offset = 1.5
+        $r = New-TrimLaneAudioMixPlan -Lanes $lanes -MainPath "C:\v\main.mp4" -Pieces $p1 -FadeLengths @() -ClipDurations @{ "C:\v\main.mp4" = 60.0 } -TimelineLength 10.0
+        $c = $r.InputPaths
+        $c.Count | Should Be 1
+        # piece window T=0..10; span 1.5..61.5 -> overlap 1.5..10; clipIn = 0 + (1.5-1.5) = 0
+        # NOTE: Clear-TrimClipLinks clears the WHOLE shared link group (tested/locked-in
+        # behavior -- see "clears the whole link group and reports the count"), so clearing
+        # via the mic clip's Id also strips Game's LinkId. Game (Path==MainPath, Offset=0,
+        # InStart=0) legitimately becomes a second free/span-routed clip too, and since it
+        # is enumerated first (lane order), it claims label [c0_0]; mic is [c0_1].
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:2]atrim=start=0:end=8.5,asetpts=PTS-STARTPTS,adelay=1500:all=1[c0_1]"))
+    }
+    It "adds the extension window as a concat-joined silence base carrying late clips" {
+        $lanes = Get-TrimLaneStack -Path "main.mp4" -AudioStreams @()
+        $song = New-TrimClip -Kind "audio" -Path "C:\m\song.mp3" -Offset 8.0
+        $lanes = @($lanes) + ,(New-TrimLane -Kind "audio" -Label "song.mp3" -Clips @($song))
+        # one piece 0..10 (output 10s), song is 12s -> timeline 20; extension window 10..20
+        $r = New-TrimLaneAudioMixPlan -Lanes $lanes -MainPath "main.mp4" -Pieces @([PSCustomObject]@{Start=0.0;End=10.0}) -FadeLengths @() -ClipDurations @{ "C:\m\song.mp3" = 12.0 } -TimelineLength 20.0
+        $r.FilterComplex | Should Match ([regex]::Escape("atrim=0:10[b1]"))
+        # window 1: T=10, L=10; overlap 10..20; clipIn = 0 + (10-8) = 2; no adelay (ovS == T)
+        $r.FilterComplex | Should Match ([regex]::Escape("atrim=start=2:end=12,asetpts=PTS-STARTPTS[c1_0]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("concat=n=2:v=0:a=1[aout]"))
+    }
+    It "keeps acrossfade joins between real pieces" {
+        $lanes = NewStack
+        $r = New-TrimLaneAudioMixPlan -Lanes $lanes -MainPath "C:\v\main.mp4" -Pieces $p2 -FadeLengths @(0.5) -ClipDurations @{} -TimelineLength 14.5
+        $r.FilterComplex | Should Match ([regex]::Escape("acrossfade=d=0.5:c1=tri:c2=tri[aout]"))
+    }
+    It "skips muted and disabled clips entirely" {
+        $lanes = NewStack
+        $lanes[1].Clips[0].Muted = $true
+        $lanes[2].Clips[0].Enabled = $false
+        $r = New-TrimLaneAudioMixPlan -Lanes $lanes -MainPath "C:\v\main.mp4" -Pieces $p1 -FadeLengths @() -ClipDurations @{} -TimelineLength 10.0
+        $r.FilterComplex | Should Not Match ([regex]::Escape("[0:1]"))
+        $r.FilterComplex | Should Not Match ([regex]::Escape("[0:2]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("amix=inputs=1"))
+    }
+    It "writes dot decimals under a comma-decimal culture" {
+        $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("de-DE")
+            $lanes = NewStack
+            $lanes[2].Clips[0].GainDb = -6.5
+            $r = New-TrimLaneAudioMixPlan -Lanes $lanes -MainPath "C:\v\main.mp4" -Pieces $p2 -FadeLengths @(0.5) -ClipDurations @{} -TimelineLength 14.5
+            $r.FilterComplex | Should Not Match "0,5"
+            $r.FilterComplex | Should Match ([regex]::Escape("volume=-6.5dB"))
+        } finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
+    }
+}

@@ -588,6 +588,121 @@ function Test-TrimLaneStackHasAudio {
     return $false
 }
 
+function New-TrimLaneAudioMixPlan {
+    param(
+        [object[]]$Lanes = @(), [string]$MainPath = "",
+        [object[]]$Pieces = @(), [double[]]$FadeLengths = @(),
+        [hashtable]$ClipDurations = @{}, [double]$TimelineLength = 0.0
+    )
+    if (@($Pieces).Count -eq 0) { throw "New-TrimLaneAudioMixPlan: no pieces" }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    function fmt([double]$v) { return $v.ToString("0.####", $inv) }
+
+    # The V1 clip's LinkId decides which audio rows are "linked source rows" (cut-list
+    # followers) vs free clips (span math).
+    $mainLink = ""
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { $mainLink = [string]$c.LinkId }
+        }
+    }
+    $linkedSources = @()
+    $freeClips = @()
+    foreach ($lane in @($Lanes)) {
+        if ($lane.Kind -ne "audio") { continue }
+        foreach ($c in @($lane.Clips)) {
+            if ($c.Kind -ne "audio" -or -not $c.Enabled -or $c.Muted) { continue }
+            $isLinkedSource = ($c.Path -eq $MainPath -and $mainLink -ne "" -and $c.LinkId -eq $mainLink -and
+                               [double]$c.Offset -eq 0.0 -and [double]$c.InStart -eq 0.0)
+            if ($isLinkedSource) { $linkedSources += ,$c } else { $freeClips += ,$c }
+        }
+    }
+
+    # Outer @() around the WHOLE if/else (trap #5): the else branch's one-element array
+    # would otherwise unwrap to a bare string and every += below would concatenate text.
+    $needsMainInput = ($linkedSources.Count -gt 0) -or (@($freeClips | Where-Object { $_.Path -eq $MainPath }).Count -gt 0)
+    $inputPaths = @(if ($needsMainInput) { @($MainPath) } else { @() })
+
+    $starts = Get-TrimTimelineStarts -Pieces $Pieces -FadeLengths $FadeLengths
+    $outLen = Get-TrimOutputLength -Pieces $Pieces -FadeLengths $FadeLengths
+
+    # Window list: real pieces plus (maybe) one extension window with no source cut.
+    $windows = @()
+    for ($i = 0; $i -lt @($Pieces).Count; $i++) {
+        $S = [double]$Pieces[$i].Start; $E = [double]$Pieces[$i].End
+        $fade = if ($i -lt @($FadeLengths).Count) { [double]$FadeLengths[$i] } else { 0.0 }
+        $windows += ,@{ S = $S; E = $E; L = ($E - $S); T = [double]$starts[$i]; IsExtension = $false; FadeAfter = $fade }
+    }
+    if ($TimelineLength -gt $outLen + 0.0005) {
+        $windows += ,@{ S = 0.0; E = 0.0; L = ($TimelineLength - $outLen); T = $outLen; IsExtension = $true; FadeAfter = 0.0 }
+    }
+
+    $graph = @()
+    $labels = @()
+    for ($i = 0; $i -lt $windows.Count; $i++) {
+        $w = $windows[$i]
+        $inputs = @("[b$i]")
+        $graph += ,("anullsrc=r=48000:cl=stereo,atrim=0:{0}[b{1}]" -f (fmt ([double]$w.L)), $i)
+        $k = 0
+        if (-not $w.IsExtension) {
+            foreach ($src in $linkedSources) {
+                $vol = if ([math]::Abs([double]$src.GainDb) -gt 0.0001) { ",volume={0}dB" -f (fmt ([double]$src.GainDb)) } else { "" }
+                # [0:{StreamIdx}] -- ABSOLUTE ffprobe index (StreamIdx ruling), never 0:a:N.
+                $graph += ,("[0:{0}]atrim=start={1}:end={2},asetpts=PTS-STARTPTS{3}[s{4}_{5}]" -f `
+                    ([int]$src.StreamIdx), (fmt ([double]$w.S)), (fmt ([double]$w.E)), $vol, $i, $k)
+                $inputs += "[s${i}_${k}]"; $k++
+            }
+        }
+        $c = 0
+        foreach ($clip in $freeClips) {
+            $dur = if ($ClipDurations.ContainsKey([string]$clip.Path)) { [double]$ClipDurations[[string]$clip.Path] } else { 0.0 }
+            $span = Get-TrimClipSpan -Clip $clip -SourceDuration $dur
+            $T = [double]$w.T; $L = [double]$w.L
+            $ovS = if ([double]$span.Start -gt $T) { [double]$span.Start } else { $T }
+            $ovE = if ([double]$span.End -lt ($T + $L)) { [double]$span.End } else { $T + $L }
+            if ($ovE - $ovS -le 0.0005) { continue }
+            $path = [string]$clip.Path
+            if ($path -eq $MainPath) {
+                # An unlinked/slid SOURCE row still reads the main file: input 0, its own
+                # absolute stream -- never a duplicate -i of the same recording.
+                $ref = "[0:{0}]" -f ([int]$clip.StreamIdx)
+            } else {
+                $n = [array]::IndexOf($inputPaths, $path)
+                if ($n -lt 0) { $inputPaths += $path; $n = $inputPaths.Count - 1 }
+                $ref = "[{0}:a]" -f $n
+            }
+            $clipIn = [double]$clip.InStart + ($ovS - [double]$clip.Offset)
+            $clipOut = $clipIn + ($ovE - $ovS)
+            $vol = if ([math]::Abs([double]$clip.GainDb) -gt 0.0001) { ",volume={0}dB" -f (fmt ([double]$clip.GainDb)) } else { "" }
+            $ms = [int][math]::Round(($ovS - $T) * 1000.0)
+            $delay = if ($ms -gt 0) { ",adelay={0}:all=1" -f $ms } else { "" }
+            $graph += ,("{0}atrim=start={1}:end={2},asetpts=PTS-STARTPTS{3}{4}[c{5}_{6}]" -f `
+                $ref, (fmt $clipIn), (fmt $clipOut), $vol, $delay, $i, $c)
+            $inputs += "[c${i}_${c}]"; $c++
+        }
+        $graph += ,("{0}amix=inputs={1}:duration=first:normalize=0[p{2}]" -f ($inputs -join ""), $inputs.Count, $i)
+        $labels += "[p$i]"
+    }
+
+    if ($labels.Count -eq 1) {
+        $graph[$graph.Count - 1] = $graph[$graph.Count - 1] -replace [regex]::Escape("[p0]"), "[aout]"
+    } else {
+        $acc = $labels[0]
+        for ($i = 0; $i -lt $labels.Count - 1; $i++) {
+            $next = $labels[$i + 1]
+            $out = if ($i -eq $labels.Count - 2) { "[aout]" } else { "[j$i]" }
+            $fade = [double]$windows[$i].FadeAfter
+            if ($fade -gt 0.0) {
+                $graph += ,("{0}{1}acrossfade=d={2}:c1=tri:c2=tri{3}" -f $acc, $next, (fmt $fade), $out)
+            } else {
+                $graph += ,("{0}{1}concat=n=2:v=0:a=1{2}" -f $acc, $next, $out)
+            }
+            $acc = $out
+        }
+    }
+    return @{ InputPaths = @($inputPaths); FilterComplex = ($graph -join ";"); OutputLabel = "[aout]" }
+}
+
 function Test-TrimLaneStackHasVideo {
     param([object[]]$Lanes = @())
     foreach ($lane in @($Lanes)) {
@@ -598,4 +713,4 @@ function Test-TrimLaneStackHasVideo {
     return $false
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked, Test-TrimLaneStackTrivial, Test-TrimLaneStackHasAudio, Test-TrimLaneStackHasVideo
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked, Test-TrimLaneStackTrivial, Test-TrimLaneStackHasAudio, Test-TrimLaneStackHasVideo, New-TrimLaneAudioMixPlan
