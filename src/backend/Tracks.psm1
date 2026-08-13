@@ -538,4 +538,64 @@ function Set-TrimClipOutPointLinked {
     return $applied
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked
+# Lane-stack triviality (spec 5.1): the fast path for the montage/black-base design.
+# Exactly one video lane, IsMain, holding exactly one enabled, untouched V1 clip of
+# MainPath, linked; every other lane is an audio lane holding exactly one enabled,
+# linked, untrimmed, unslid, ungained/unmuted audio clip of MainPath. This supersedes
+# Test-TrackStackTrivial's role for the app -- but that function stays exported and
+# untouched for the legacy -Tracks arm (see Get-TrimExportMode).
+function Test-TrimLaneStackTrivial {
+    param([object[]]$Lanes = @(), [string]$MainPath = "", [int]$SourceAudioStreamCount = -1)
+    $videoLanes = @(@($Lanes) | Where-Object { $_.Kind -eq "video" })
+    if ($videoLanes.Count -ne 1) { return $false }
+    $main = $videoLanes[0]
+    if (-not [bool]$main.IsMain) { return $false }
+    $mainClips = @($main.Clips)
+    if ($mainClips.Count -ne 1) { return $false }
+    $v = $mainClips[0]
+    if ($v.Kind -ne "video" -or $v.Path -ne $MainPath -or -not $v.Enabled) { return $false }
+    if ([double]$v.Offset -ne 0.0 -or [double]$v.InStart -ne 0.0 -or [double]$v.InEnd -ne 0.0) { return $false }
+    if ([string]::IsNullOrEmpty([string]$v.LinkId)) { return $false }
+    $audioLaneCount = 0
+    foreach ($lane in @($Lanes)) {
+        if ($lane.Id -eq $main.Id) { continue }
+        if ($lane.Kind -ne "audio") { return $false }
+        $clips = @($lane.Clips)
+        if ($clips.Count -ne 1) { return $false }   # empty added lanes break triviality too (spec 5.1: "no other tracks/clips")
+        $a = $clips[0]
+        if ($a.Kind -ne "audio" -or $a.Path -ne $MainPath -or [int]$a.StreamIdx -lt 0) { return $false }
+        if ($a.LinkId -ne $v.LinkId) { return $false }
+        if (-not $a.Enabled -or $a.Muted) { return $false }
+        if ([math]::Abs([double]$a.GainDb) -gt 0.0001) { return $false }
+        if ([double]$a.Offset -ne 0.0 -or [double]$a.InStart -ne 0.0 -or [double]$a.InEnd -ne 0.0) { return $false }
+        $audioLaneCount++
+    }
+    # -SourceAudioStreamCount: -1 keeps the legacy sentinel semantics (no check); >= 0
+    # requires the linked source rows to match the file's probed stream count, so a
+    # DELETED row (nothing left in the stack to object to) still breaks triviality --
+    # the exact hole Test-TrackStackTrivial's parameter was added to close.
+    if ($SourceAudioStreamCount -ge 0 -and $audioLaneCount -ne $SourceAudioStreamCount) { return $false }
+    return $true
+}
+
+function Test-TrimLaneStackHasAudio {
+    param([object[]]$Lanes = @())
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if ($c.Kind -eq "audio" -and $c.Enabled -and -not $c.Muted) { return $true }
+        }
+    }
+    return $false
+}
+
+function Test-TrimLaneStackHasVideo {
+    param([object[]]$Lanes = @())
+    foreach ($lane in @($Lanes)) {
+        foreach ($c in @($lane.Clips)) {
+            if (($c.Kind -eq "video" -or $c.Kind -eq "image") -and $c.Enabled) { return $true }
+        }
+    }
+    return $false
+}
+
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked, Test-TrimLaneStackTrivial, Test-TrimLaneStackHasAudio, Test-TrimLaneStackHasVideo

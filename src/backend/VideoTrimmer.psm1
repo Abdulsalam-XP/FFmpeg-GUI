@@ -886,7 +886,16 @@ function Split-TrimSegmentsForPips {
 #   "audio-only" -- no video-main in the stack at all: only the audio pass runs, and it
 #                   writes the final output directly.
 function Get-TrimExportMode {
-    param([object[]]$Tracks = @(), [object[]]$PipSpans = @(), [int]$SourceAudioStreamCount = -1)
+    param(
+        [object[]]$Tracks = @(), [object[]]$PipSpans = @(), [int]$SourceAudioStreamCount = -1,
+        [object[]]$Lanes = @(), [string]$MainPath = ""
+    )
+    if (@($Lanes).Count -gt 0) {
+        if (-not (Test-TrimLaneStackHasVideo -Lanes $Lanes)) { return "audio-only" }
+        if (Test-TrimLaneStackTrivial -Lanes $Lanes -MainPath $MainPath -SourceAudioStreamCount $SourceAudioStreamCount) { return "trivial" }
+        return "rebuild"
+    }
+    # ---- legacy v2 arm below: UNCHANGED, byte for byte ----
     if (@($Tracks).Count -eq 0) { return "trivial" }
     $mains = @(@($Tracks) | Where-Object { $_.Kind -eq "video-main" })
     if ($mains.Count -eq 0) { return "audio-only" }

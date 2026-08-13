@@ -314,3 +314,23 @@ Describe "Test-TrackStackHasAudio" {
         Test-TrackStackHasAudio -Tracks @() | Should Be $false
     }
 }
+
+Describe "Get-TrimExportMode (lanes)" {
+    $streams = @(@{StreamIdx=1;Label="Game"})
+    It "is trivial for a fresh lane stack and preserves the legacy arm untouched" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" -SourceAudioStreamCount 1 | Should Be "trivial"
+        # legacy arm, no lanes: identical to the pre-existing contract
+        Get-TrimExportMode -Tracks @() -PipSpans @() | Should Be "trivial"
+    }
+    It "rebuilds on any lane-stack deviation" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        $lanes[1].Clips[0].GainDb = 3.0
+        Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" | Should Be "rebuild"
+    }
+    It "is audio-only when no enabled video content exists" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        $lanes[0].Clips = @()
+        Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" | Should Be "audio-only"
+    }
+}

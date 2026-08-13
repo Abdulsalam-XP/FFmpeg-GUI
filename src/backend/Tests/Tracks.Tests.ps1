@@ -463,3 +463,49 @@ Describe "Set-TrimClipInPointLinked / Set-TrimClipOutPointLinked" {
         $img.Offset | Should Be 4.8
     }
 }
+
+Describe "Test-TrimLaneStackTrivial" {
+    $streams = @(@{StreamIdx=1;Label="Game"}, @{StreamIdx=2;Label="Mic"})
+    It "is trivial for a fresh auto-built stack" {
+        $lanes = Get-TrimLaneStack -Path "C:\v\a.mp4" -AudioStreams $streams
+        Test-TrimLaneStackTrivial -Lanes $lanes -MainPath "C:\v\a.mp4" -SourceAudioStreamCount 2 | Should Be $true
+    }
+    It "keeps the -1 sentinel semantics: no stream-count check" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        $lanes = @($lanes | Where-Object { $_.IsMain -or $_.Label -eq "Game" })
+        Test-TrimLaneStackTrivial -Lanes $lanes -MainPath "a.mp4" | Should Be $true
+        Test-TrimLaneStackTrivial -Lanes $lanes -MainPath "a.mp4" -SourceAudioStreamCount 2 | Should Be $false
+    }
+    It "breaks on gain, mute, unlink, slide, extra lanes and image clips" {
+        $mk = { Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"}) }
+        $l1 = & $mk; $l1[1].Clips[0].GainDb = -4.5
+        Test-TrimLaneStackTrivial -Lanes $l1 -MainPath "a.mp4" | Should Be $false
+        $l2 = & $mk; $l2[1].Clips[0].Muted = $true
+        Test-TrimLaneStackTrivial -Lanes $l2 -MainPath "a.mp4" | Should Be $false
+        $l3 = & $mk; [void](Clear-TrimClipLinks -Lanes $l3 -ClipId $l3[1].Clips[0].Id)
+        Test-TrimLaneStackTrivial -Lanes $l3 -MainPath "a.mp4" | Should Be $false
+        $l4 = & $mk; $l4[1].Clips[0].Offset = 1.5
+        Test-TrimLaneStackTrivial -Lanes $l4 -MainPath "a.mp4" | Should Be $false
+        $l5 = @((& $mk)) + ,(New-TrimLane -Kind "video" -Label "empty")
+        Test-TrimLaneStackTrivial -Lanes $l5 -MainPath "a.mp4" | Should Be $false
+        $l6 = & $mk; $l6[0].Clips = @($l6[0].Clips) + ,(New-TrimClip -Kind "image" -Path "l.png")
+        Test-TrimLaneStackTrivial -Lanes $l6 -MainPath "a.mp4" | Should Be $false
+    }
+}
+
+Describe "Test-TrimLaneStackHasAudio / HasVideo" {
+    It "reports audio only from enabled unmuted audio clips" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{StreamIdx=1;Label="Game"})
+        Test-TrimLaneStackHasAudio -Lanes $lanes | Should Be $true
+        $lanes[1].Clips[0].Muted = $true
+        Test-TrimLaneStackHasAudio -Lanes $lanes | Should Be $false
+    }
+    It "reports video from any enabled video or image clip" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @()
+        Test-TrimLaneStackHasVideo -Lanes $lanes | Should Be $true
+        $lanes[0].Clips = @()
+        Test-TrimLaneStackHasVideo -Lanes $lanes | Should Be $false
+        $lanes[0].Clips = @(,(New-TrimClip -Kind "image" -Path "l.png"))
+        Test-TrimLaneStackHasVideo -Lanes $lanes | Should Be $true
+    }
+}
