@@ -534,12 +534,7 @@ Describe "New-TrimLaneAudioMixPlan" {
         $c = $r.InputPaths
         $c.Count | Should Be 1
         # piece window T=0..10; span 1.5..61.5 -> overlap 1.5..10; clipIn = 0 + (1.5-1.5) = 0
-        # NOTE: Clear-TrimClipLinks clears the WHOLE shared link group (tested/locked-in
-        # behavior -- see "clears the whole link group and reports the count"), so clearing
-        # via the mic clip's Id also strips Game's LinkId. Game (Path==MainPath, Offset=0,
-        # InStart=0) legitimately becomes a second free/span-routed clip too, and since it
-        # is enumerated first (lane order), it claims label [c0_0]; mic is [c0_1].
-        $r.FilterComplex | Should Match ([regex]::Escape("[0:2]atrim=start=0:end=8.5,asetpts=PTS-STARTPTS,adelay=1500:all=1[c0_1]"))
+        $r.FilterComplex | Should Match ([regex]::Escape("[0:2]atrim=start=0:end=8.5,asetpts=PTS-STARTPTS,adelay=1500:all=1[c0_0]"))
     }
     It "adds the extension window as a concat-joined silence base carrying late clips" {
         $lanes = Get-TrimLaneStack -Path "main.mp4" -AudioStreams @()

@@ -341,16 +341,32 @@ function Get-TrimLinkedClipIds {
     return ,@($ids)
 }
 
+# Pop-one-with-orphan-tidy (spec 4.2): unlinking a single clip detaches ONLY that clip
+# from its group, not the whole group. A member left with no remaining peer (its old
+# LinkId now matches nobody else in the lanes) is an orphan-of-one and gets tidied to ""
+# too -- a 2-member group dissolves fully (both singles), but a 3+ member group shrinks
+# by exactly the popped clip, leaving the rest still linked to each other.
 function Clear-TrimClipLinks {
     param([object[]]$Lanes = @(), [Parameter(Mandatory = $true)][string]$ClipId)
-    $ids = Get-TrimLinkedClipIds -Lanes $Lanes -ClipId $ClipId
+    $hit = Get-TrimClipById2 -Lanes $Lanes -ClipId $ClipId
+    if ($null -eq $hit) { return 0 }
+    $oldLink = [string]$hit.Clip.LinkId
+    if ([string]::IsNullOrEmpty($oldLink)) { return 0 }
     $n = 0
+    $hit.Clip.LinkId = ""
+    $n++
     foreach ($lane in @($Lanes)) {
         foreach ($c in @($lane.Clips)) {
-            if ($ids -contains [string]$c.Id -and -not [string]::IsNullOrEmpty([string]$c.LinkId)) {
-                $c.LinkId = ""
-                $n++
+            if ([string]$c.Id -eq $ClipId) { continue }
+            if ([string]$c.LinkId -ne $oldLink) { continue }
+            $hasPeer = $false
+            foreach ($lane2 in @($Lanes)) {
+                foreach ($c2 in @($lane2.Clips)) {
+                    if ([string]$c2.Id -eq [string]$c.Id) { continue }
+                    if ([string]$c2.LinkId -eq $oldLink) { $hasPeer = $true }
+                }
             }
+            if (-not $hasPeer) { $c.LinkId = ""; $n++ }
         }
     }
     return $n
