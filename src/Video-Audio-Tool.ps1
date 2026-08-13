@@ -1083,8 +1083,33 @@ try {
     # they actually render; audio-clip elements are deliberately kept OFF the tree -- they
     # exist only to play sound, never to be seen, and the export is authoritative for the
     # real mix regardless of what the preview does.
+    # Every entry is @{ Element; InSpan } -- InSpan is what stops the 20x/sec transport tick
+    # from re-seeking an element that is already playing the right thing (see
+    # Update-PipPreview's -Seek plumbing); the audio pool has worked this way since Task 8.
     $script:PipMediaElements = @{}
     $script:AudioClipMediaElements = @{}
+    # Stills get an Image element rather than a MediaElement (same pool shape, same
+    # clip-Id key, same visual-tree slot): a BitmapImage is decoded once at OnLoad and
+    # then costs nothing per tick, where a MediaElement on a .png would not play at all.
+    $script:ImageElements = @{}
+    # The black montage base: one Rectangle sized to the preview box, sitting under every
+    # clip element, shown only while the playhead is past V1's own end (spec 4.7). Built
+    # lazily by Update-TrimBlackBase because PreviewCell is not resolved yet up here.
+    $script:TrimBlackBase = $null
+    # Timeline length INCLUDING anything that runs past the cut list, recomputed once per
+    # redraw (Update-TrimTimelineLengthCache) rather than per tick: the transport clamps,
+    # the ruler's view window and the position readout's denominator all read it 20x a
+    # second while playing, and Get-TrimTimelineLength walks every clip on every lane.
+    $script:TrimTimelineLengthCache = 0.0
+    # How far PAST V1's own end the playhead is, in timeline seconds. 0.0 means "inside the
+    # cut list", which is the only state that existed before spec 4.7's montage region:
+    # there is no source second out there for $script:TrimPlayhead to hold, so the position
+    # lives here and Get-TrimTimelinePlayhead adds the two together.
+    $script:TrimExtensionOffset = 0.0
+    # Wall-clock stamp of the last extension advance. Out past V1's end the main
+    # MediaElement has no frames to give, so its Position cannot drive the transport and
+    # DateTime deltas do the job instead.
+    $script:TrimExtensionClock = $null
     # In-flight PiP box drag: $null, or a hashtable shaped exactly like $script:ZoomBoxDrag
     # (Mode "pipmove"/"pipresize", StartX/Y, Moved, orig Pip fields, Snapshot).
     $script:PipBoxDrag = $null
@@ -1393,6 +1418,71 @@ try {
         return ,([double[]]$lengths)
     }
 
+    # ---- Timeline length + the montage extension past V1's end (spec 4.7) -------------
+    #
+    # The cut list is no longer the whole timeline: a clip on any lane can start after V1's
+    # last frame, and everything from V1's end to that clip's end is the "extension" (the
+    # montage region, black under the clips). Recomputed ONCE per redraw and cached,
+    # because the transport tick, the ruler and the position readout all want it 20x a
+    # second and Get-TrimTimelineLength walks every clip on every lane to produce it.
+    function Update-TrimTimelineLengthCache {
+        if (-not $script:TrimInputFile) {
+            $script:TrimTimelineLengthCache = 0.0
+            $script:TrimExtensionOffset = 0.0
+            return 0.0
+        }
+        $state = Get-TrimTimelineState
+        $fadeLengths = Get-TrimFadeLengths -Pieces @($state.Pieces)
+        $script:TrimTimelineLengthCache = Get-TrimTimelineLength -Lanes @($script:TrimLanes) `
+            -Pieces @($state.Pieces) -FadeLengths ([double[]]@($fadeLengths)) `
+            -ClipDurations $script:TrimClipDurations -MainPath $script:TrimInputFile
+        # An edit can shorten the timeline out from under a playhead that is sitting in the
+        # extension (delete the clip that made the montage, undo the add). Clamping here --
+        # the one place the length is recomputed -- is what keeps the playhead from hanging
+        # past the end of a timeline that no longer reaches it.
+        $max = [math]::Max(0.0, [double]$script:TrimTimelineLengthCache - [double]$state.TotalDuration)
+        if ($script:TrimExtensionOffset -gt $max) { $script:TrimExtensionOffset = $max }
+        return $script:TrimTimelineLengthCache
+    }
+
+    # Never shorter than the cut list itself: a stale cache (read before the first redraw)
+    # must not clamp the transport to less than V1's own footage.
+    function Get-TrimTimelineLengthCached {
+        $state = Get-TrimTimelineState
+        $len = [double]$script:TrimTimelineLengthCache
+        if ($len -lt [double]$state.TotalDuration) { $len = [double]$state.TotalDuration }
+        return $len
+    }
+
+    # THE timeline position of the playhead. Inside the cut list that is just the source
+    # second converted into timeline space, exactly as before; out in the extension there is
+    # no source second to convert (the source ran out), so the offset carries it.
+    function Get-TrimTimelinePlayhead {
+        $state = Get-TrimTimelineState
+        if ($script:TrimExtensionOffset -gt 0) {
+            return ([double]$state.TotalDuration + [double]$script:TrimExtensionOffset)
+        }
+        return (Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces)
+    }
+
+    function Test-TrimInExtension { return ([double]$script:TrimExtensionOffset -gt 0) }
+
+    # Write-throughs, so the transport handlers (which ARE GetNewClosure'd blocks) never
+    # assign $script: state from inside their own private module -- the same reason
+    # Set-TrimKeyframes and Set-TrimSelection exist.
+    function Set-TrimExtensionPosition {
+        param([double]$Seconds)
+        if ($Seconds -gt 0) {
+            $script:TrimExtensionOffset = $Seconds
+            $script:TrimExtensionClock = [datetime]::UtcNow
+        } else {
+            $script:TrimExtensionOffset = 0.0
+            $script:TrimExtensionClock = $null
+        }
+    }
+
+    function Reset-TrimExtensionClock { $script:TrimExtensionClock = [datetime]::UtcNow }
+
     # A crossfade is built from footage the two neighbouring pieces give up, so a piece
     # has to be long enough to donate its neighbours' fade lengths. Reported before the
     # export starts rather than letting ffmpeg produce a zero-length segment and a file
@@ -1444,10 +1534,16 @@ try {
         # controls) does not shrink on its own, so without this the ruler and the empty
         # canvas past the last piece would keep showing however much space the OLD,
         # longer timeline used to span.
-        if ($state.TotalDuration -gt 0) {
-            if ($script:TrimViewSpan -gt $state.TotalDuration) { $script:TrimViewSpan = $state.TotalDuration }
-            if ($script:TrimViewStart + $script:TrimViewSpan -gt $state.TotalDuration) {
-                $script:TrimViewStart = [math]::Max(0.0, $state.TotalDuration - $script:TrimViewSpan)
+        #
+        # Clamped to the FULL timeline length, not to the cut list: a clip that runs past
+        # V1's end is part of what this ruler measures now (spec 4.7), and clamping to
+        # TotalDuration would make the montage region unreachable by scrub or zoom. This is
+        # also the piece-edit refresh of the cache -- every split/delete/undo repaints here.
+        $timelineLength = Update-TrimTimelineLengthCache
+        if ($timelineLength -gt 0) {
+            if ($script:TrimViewSpan -gt $timelineLength) { $script:TrimViewSpan = $timelineLength }
+            if ($script:TrimViewStart + $script:TrimViewSpan -gt $timelineLength) {
+                $script:TrimViewStart = [math]::Max(0.0, $timelineLength - $script:TrimViewSpan)
             }
         }
 
@@ -2999,9 +3095,11 @@ try {
         # timeline including anything that runs past it (spec 4.7's montage).
         $state = Get-TrimTimelineState
         $v1End = [double]$state.TotalDuration
-        $fadeLengths = Get-TrimFadeLengths -Pieces @($state.Pieces)
-        $timelineLength = Get-TrimTimelineLength -Lanes @($script:TrimLanes) -Pieces @($state.Pieces) `
-            -FadeLengths ([double[]]@($fadeLengths)) -ClipDurations $script:TrimClipDurations -MainPath $script:TrimInputFile
+        # The structural refresh of the cache the transport/ruler read (the other one is in
+        # Update-TrimTimeline, for piece edits): every add, delete, drag-drop, unlink,
+        # undo/redo and load rebuilds these rows, which is exactly when a clip can have
+        # started or stopped reaching past V1's end.
+        $timelineLength = Update-TrimTimelineLengthCache
         $focusLane = Get-TrimFaderFocusLane
 
         foreach ($entry in $ordered) {
@@ -3715,7 +3813,18 @@ try {
         # selection change (or add/delete) usually comes through, so this is the one place
         # that keeps both in sync without a second call at every site above.
         Update-PipBoxOverlay
+        # Paint order first: a lane reorder changes which clip covers which without
+        # touching a single element, so the stack has to be re-asserted before the pass
+        # that makes those elements visible.
+        Update-TrimPreviewStackOrder
+        # NOT -Seek: a rebuild does not move the playhead, and an element that is already
+        # inside its span is already showing the right frame. A clip that is genuinely new
+        # here has InSpan $false and gets its Position seeded by that branch anyway. This
+        # matters because a rebuild is NOT a rare event -- the lane panel's own
+        # SizeChanged re-enters it, and seeding on every one of those would re-seek every
+        # visible clip several times a second.
         Update-PipPreview -SourceSeconds $script:TrimPlayhead
+        Update-TrimBlackBase
     }
 
     # The caret. Collapsed groups hide their audio rows; the state is UI-only (it never
@@ -3736,8 +3845,10 @@ try {
         $canvasTrimLaneOverlay.Children.Clear()
         if (-not $script:TrimInputFile) { return }
         if ($null -eq $panelTrimLanes -or $panelTrimLanes.Visibility -ne "Visible") { return }
-        $state = Get-TrimTimelineState
-        $tl = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+        # Get-TrimTimelinePlayhead, not the plain source->timeline convert: out in the
+        # montage region the source has run out and only the extension offset knows where
+        # the playhead is.
+        $tl = Get-TrimTimelinePlayhead
         $x = 250.0 + (Convert-TrimTimeToX -Seconds $tl)
         if ($x -lt 250.0) { return }
         $line = New-Object System.Windows.Shapes.Line
@@ -4579,11 +4690,19 @@ try {
     function Remove-TrimClipMediaElement {
         param([string]$Id)
         if ($script:PipMediaElements.ContainsKey($Id)) {
-            $el = $script:PipMediaElements[$Id]
+            $el = $script:PipMediaElements[$Id].Element
             try { $el.Stop() } catch {}
             try { $el.Close() } catch {}
             if ($null -ne $previewCell -and $previewCell.Children.Contains($el)) { $previewCell.Children.Remove($el) | Out-Null }
             $script:PipMediaElements.Remove($Id)
+        }
+        # A still has no media to stop -- pulling the Image out of the visual tree and
+        # dropping the entry is the whole teardown (the BitmapImage it points at is freed
+        # with it).
+        if ($script:ImageElements.ContainsKey($Id)) {
+            $img = $script:ImageElements[$Id].Element
+            if ($null -ne $previewCell -and $previewCell.Children.Contains($img)) { $previewCell.Children.Remove($img) | Out-Null }
+            $script:ImageElements.Remove($Id)
         }
         if ($script:AudioClipMediaElements.ContainsKey($Id)) {
             $entry = $script:AudioClipMediaElements[$Id]
@@ -4606,6 +4725,7 @@ try {
             }
         }
         foreach ($id in @($script:PipMediaElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
+        foreach ($id in @($script:ImageElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
         foreach ($id in @($script:AudioClipMediaElements.Keys)) { if (-not $liveIds.ContainsKey($id)) { Remove-TrimClipMediaElement -Id $id } }
     }
 
@@ -4613,12 +4733,27 @@ try {
     # fresh file's tracks are unrelated to whatever clips the previous one had loaded.
     function Clear-TrimClipMediaElementPools {
         foreach ($id in @($script:PipMediaElements.Keys)) { Remove-TrimClipMediaElement -Id $id }
+        foreach ($id in @($script:ImageElements.Keys)) { Remove-TrimClipMediaElement -Id $id }
         foreach ($id in @($script:AudioClipMediaElements.Keys)) { Remove-TrimClipMediaElement -Id $id }
     }
 
-    # One MediaElement per overlay video CLIP, built once and reused: inserted into
-    # PreviewCell's visual tree AFTER PreviewZoomHost and BEFORE CanvasCaptionOverlay, so
-    # the picture sits over the main preview but under the caption/PiP-box overlay.
+    # Both preview-element factories put their element in the SAME slot: PreviewCell's
+    # visual tree AFTER PreviewZoomHost (and after the black montage base) and BEFORE
+    # CanvasCaptionOverlay, so the picture sits over the main preview but under the
+    # caption/PiP-box overlay. Insert order among themselves is paint order, which
+    # Update-TrimPreviewStackOrder re-asserts on every structural rebuild.
+    function Add-TrimPreviewElement {
+        param($Element)
+        if ($null -eq $previewCell -or $null -eq $canvasCaptionOverlay) { return }
+        $idx = $previewCell.Children.IndexOf($canvasCaptionOverlay)
+        if ($idx -ge 0) { $previewCell.Children.Insert($idx, $Element) } else { $previewCell.Children.Add($Element) | Out-Null }
+    }
+
+    # One MediaElement per overlay video CLIP, built once and reused. The entry is
+    # @{ Element; InSpan } exactly like the audio pool's: InSpan is "this element was
+    # already showing its own footage last time we looked", which is what lets
+    # Update-PipPreview skip the Position write on the 19 ticks out of 20 that only move
+    # the playhead a few frames inside a span the element is already playing.
     function Get-PipMediaElement {
         param($Clip)
         $Track = $Clip
@@ -4627,18 +4762,103 @@ try {
             $el = New-Object System.Windows.Controls.MediaElement
             $el.LoadedBehavior = "Manual"
             $el.UnloadedBehavior = "Manual"
+            # Stretch is per-update now (Uniform full-frame, Fill boxed), not fixed here.
             $el.Stretch = "Fill"
             $el.IsHitTestVisible = $false
             $el.Volume = 0
             $el.Visibility = "Collapsed"
             try { $el.Source = New-Object System.Uri([string]$Track.Path) } catch {}
-            if ($null -ne $previewCell -and $null -ne $canvasCaptionOverlay) {
-                $idx = $previewCell.Children.IndexOf($canvasCaptionOverlay)
-                if ($idx -ge 0) { $previewCell.Children.Insert($idx, $el) } else { $previewCell.Children.Add($el) | Out-Null }
-            }
-            $script:PipMediaElements[$id] = $el
+            Add-TrimPreviewElement -Element $el
+            $script:PipMediaElements[$id] = @{ Element = $el; InSpan = $false }
         }
         return $script:PipMediaElements[$id]
+    }
+
+    # One Image per still CLIP, same pool shape and same slot. The BitmapImage is decoded
+    # ONCE (CacheOption OnLoad, so the file handle is released immediately and the decode
+    # never repeats on a later layout pass) and then cached with the element -- a still
+    # costs nothing per tick beyond a Visibility/geometry write.
+    function Get-PipImageElement {
+        param($Clip)
+        $id = [string]$Clip.Id
+        if (-not $script:ImageElements.ContainsKey($id)) {
+            $el = New-Object System.Windows.Controls.Image
+            $el.IsHitTestVisible = $false
+            $el.Visibility = "Collapsed"
+            $el.HorizontalAlignment = "Left"
+            $el.VerticalAlignment = "Top"
+            $el.Stretch = "Uniform"
+            try {
+                $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+                $bmp.BeginInit()
+                $bmp.UriSource = New-Object System.Uri([string]$Clip.Path)
+                $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+                $bmp.EndInit()
+                $el.Source = $bmp
+            } catch {}
+            Add-TrimPreviewElement -Element $el
+            $script:ImageElements[$id] = @{ Element = $el; InSpan = $false }
+        }
+        return $script:ImageElements[$id]
+    }
+
+    # Paint order. WPF paints a Panel's children in index order, so "later in Children" is
+    # "on top". The lane stack is drawn top row first, and the TOPMOST video row is the one
+    # that covers the others (spec 3.1) -- so walking the lanes BOTTOM-UP and re-inserting
+    # each element at the caption overlay's index leaves the topmost lane's element last,
+    # i.e. on top. Re-asserted on every structural rebuild because a lane reorder changes
+    # who covers whom without creating or destroying a single element.
+    function Update-TrimPreviewStackOrder {
+        if ($null -eq $previewCell -or $null -eq $canvasCaptionOverlay) { return }
+        $lanes = @($script:TrimLanes)
+        for ($i = $lanes.Count - 1; $i -ge 0; $i--) {
+            $lane = $lanes[$i]
+            if ($lane.Kind -ne "video") { continue }
+            foreach ($c in @($lane.Clips)) {
+                if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
+                $id = [string]$c.Id
+                $el = $null
+                if ($script:PipMediaElements.ContainsKey($id)) { $el = $script:PipMediaElements[$id].Element }
+                elseif ($script:ImageElements.ContainsKey($id)) { $el = $script:ImageElements[$id].Element }
+                if ($null -eq $el) { continue }
+                if ($previewCell.Children.Contains($el)) { $previewCell.Children.Remove($el) }
+                Add-TrimPreviewElement -Element $el
+            }
+        }
+    }
+
+    # The black montage base (spec 4.7). Past V1's own last frame the main MediaElement has
+    # no frame to give and simply keeps showing the last one it decoded -- which would sit
+    # under the montage clips as a frozen still instead of the black the export produces.
+    # One Rectangle the size of the preview box, inserted directly ABOVE PreviewZoomHost
+    # (so it covers that stale frame) and BELOW every clip element (so it never covers a
+    # clip), shown only while the playhead is out past V1's end.
+    function Update-TrimBlackBase {
+        if ($null -eq $previewCell -or $null -eq $previewZoomHost -or $null -eq $script:PreviewBox) { return }
+        if ($null -eq $script:TrimBlackBase) {
+            $rect = New-Object System.Windows.Shapes.Rectangle
+            $rect.Fill = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#FF000000")
+            $rect.IsHitTestVisible = $false
+            $rect.HorizontalAlignment = "Left"
+            $rect.VerticalAlignment = "Top"
+            $rect.Visibility = "Collapsed"
+            $script:TrimBlackBase = $rect
+        }
+        $base = $script:TrimBlackBase
+        if (-not $previewCell.Children.Contains($base)) {
+            # +1: directly after the host, which is below every clip element (those are
+            # inserted at the caption overlay's index, further down the list).
+            $hostIdx = $previewCell.Children.IndexOf($previewZoomHost)
+            if ($hostIdx -ge 0) { $previewCell.Children.Insert($hostIdx + 1, $base) }
+            else { $previewCell.Children.Add($base) | Out-Null }
+        }
+        $box = $script:PreviewBox
+        $base.Width = [double]$box.W
+        $base.Height = [double]$box.H
+        $base.Margin = New-Object System.Windows.Thickness([double]$box.X, [double]$box.Y, 0, 0)
+        $state = Get-TrimTimelineState
+        $show = ((Get-TrimTimelinePlayhead) -gt ([double]$state.TotalDuration + 0.01))
+        $base.Visibility = $(if ($show) { "Visible" } else { "Collapsed" })
     }
 
     # One MediaElement per audio-clip track, built once and reused -- but NEVER added to
@@ -4662,60 +4882,97 @@ try {
         return $script:AudioClipMediaElements[$id]
     }
 
-    # Positions/plays every overlay video clip's PiP MediaElement against the TIMELINE
-    # playhead (never source seconds -- a clip's Offset is a timeline position, exactly
-    # like a clip bar drag writes). Called from the same places Update-PreviewZoom is:
-    # the transport tick, every scrub, and the preview frame resize.
+    # Positions/plays every overlay clip's preview element against the TIMELINE playhead
+    # (never source seconds -- a clip's Offset is a timeline position, exactly like a clip
+    # bar drag writes). Called from the same places Update-PreviewZoom is: the transport
+    # tick, every scrub, and the preview frame resize.
     #
-    # Image clips and the true full-frame render belong to Task 12; until then a
-    # full-frame (Pip $null) video clip is previewed as a box at FULL SIZE, which is the
-    # same rectangle minus the aspect-fit letterboxing the export does.
+    # Two geometries, decided by Pip (spec 4.6):
+    #   full-frame (Pip $null) -- the element fills the WHOLE preview box with Stretch
+    #     Uniform, so a clip whose aspect differs from the frame's is aspect-fit and the
+    #     black bars come free: the black montage base (or the main picture) is what shows
+    #     through beside it, which is exactly what the export's own scale+pad produces.
+    #   boxed -- the Pip rectangle, Stretch Fill, unchanged from Task 8.
+    #
+    # -Seek is the difference between "the user jumped the playhead" and "50ms passed".
+    # A scrub passes -Seek $true and every element re-seeks; the 20x/sec tick does not, so
+    # an element that is already inside its own span is left alone to play (writing
+    # Position on a playing MediaElement restarts its decode and stutters the picture).
     function Update-PipPreview {
-        param([double]$SourceSeconds)
+        param([double]$SourceSeconds, [bool]$Seek = $false)
         if ($null -eq $previewCell -or $null -eq $script:PreviewBox) { return }
         $box = $script:PreviewBox
         $bw = [double]$box.W
         $bh = [double]$box.H
-        $state = Get-TrimTimelineState
-        $timelinePlayhead = Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
-        $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
+        # -SourceSeconds still decides the position while the playhead is inside the cut
+        # list (every caller passes $script:TrimPlayhead, but the parameter is the contract).
+        # Out in the montage region there is no source second to convert and the extension
+        # offset is the only thing that knows where the playhead is.
+        $timelinePlayhead = $(if (Test-TrimInExtension) { Get-TrimTimelinePlayhead } else {
+            $state = Get-TrimTimelineState
+            Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
+        })
+        $playing =($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
+        # BOTTOM-UP, the same order Update-TrimPreviewStackOrder inserts in: a newly built
+        # element is added to the tree here, on the pass that first needs it, and doing it
+        # in paint order means it lands on top of the lanes below it straight away rather
+        # than waiting for the next structural rebuild to sort the stack out.
+        #
         # Overlay clips only: the main lane's own video clip IS the main preview element.
         $overlays = @()
-        foreach ($lane in @($script:TrimLanes)) {
+        $lanes = @($script:TrimLanes)
+        for ($i = $lanes.Count - 1; $i -ge 0; $i--) {
+            $lane = $lanes[$i]
             if ($lane.Kind -ne "video") { continue }
             foreach ($c in @($lane.Clips)) {
                 if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
-                if ($c.Kind -ne "video") { continue }
+                if ($c.Kind -ne "video" -and $c.Kind -ne "image") { continue }
                 $overlays += ,@{ Lane = $lane; Clip = $c }
             }
         }
         foreach ($o in $overlays) {
             $t = $o.Clip
-            $el = Get-PipMediaElement -Clip $t
+            $isImage = ([string]$t.Kind -eq "image")
+            $entry = $(if ($isImage) { Get-PipImageElement -Clip $t } else { Get-PipMediaElement -Clip $t })
+            $el = $entry.Element
             $span = Get-TrimClipSpan -Clip $t -SourceDuration (Get-TrimClipSourceDuration -Lane $o.Lane -Clip $t)
             $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End)
+            # A row with the eye off (spec 3.2) renders nothing at all -- the same flag the
+            # export reads to leave the clip out of the overlay chain.
             if (-not $inSpan -or -not $t.Enabled -or $bw -le 0 -or $bh -le 0) {
                 $el.Visibility = "Collapsed"
-                try { $el.Pause() } catch {}
+                if (-not $isImage) { try { $el.Pause() } catch {} }
+                $entry.InSpan = $false
                 continue
             }
             $el.Visibility = "Visible"
-            # Task 12 replaces this substitute with a real aspect-fit full-frame render.
-            $pip = if ($null -ne $t.Pip) { $t.Pip } else { @{ X = 0.5; Y = 0.5; W = 1.0; H = 1.0 } }
-            $pw = [double]$pip.W * $bw
-            $ph = [double]$pip.H * $bh
-            $el.Width = $pw
-            $el.Height = $ph
             $el.HorizontalAlignment = "Left"
             $el.VerticalAlignment = "Top"
-            $marginX = [double]$box.X + (([double]$pip.X - ([double]$pip.W / 2.0)) * $bw)
-            $marginY = [double]$box.Y + (([double]$pip.Y - ([double]$pip.H / 2.0)) * $bh)
-            $el.Margin = New-Object System.Windows.Thickness($marginX, $marginY, 0, 0)
+            if ($null -eq $t.Pip) {
+                $el.Width = $bw
+                $el.Height = $bh
+                $el.Stretch = "Uniform"
+                $el.Margin = New-Object System.Windows.Thickness([double]$box.X, [double]$box.Y, 0, 0)
+            } else {
+                $pip = $t.Pip
+                $el.Width = [double]$pip.W * $bw
+                $el.Height = [double]$pip.H * $bh
+                $el.Stretch = "Fill"
+                $marginX = [double]$box.X + (([double]$pip.X - ([double]$pip.W / 2.0)) * $bw)
+                $marginY = [double]$box.Y + (([double]$pip.Y - ([double]$pip.H / 2.0)) * $bh)
+                $el.Margin = New-Object System.Windows.Thickness($marginX, $marginY, 0, 0)
+            }
+            # A still has no clock: geometry and visibility are all it has, so the whole
+            # transport half below is skipped for it (and its InSpan only tracks state).
+            if ($isImage) { $entry.InSpan = $true; continue }
             # PiP audio comes through only if the clip has a linked audio row --
             # this MediaElement is picture only.
             $el.Volume = 0
-            $pos = [math]::Max(0.0, ($timelinePlayhead - [double]$t.Offset + [double]$t.InStart))
-            try { $el.Position = [timespan]::FromSeconds($pos) } catch {}
+            if ($Seek -or -not $entry.InSpan) {
+                $pos = [math]::Max(0.0, ($timelinePlayhead - [double]$t.Offset + [double]$t.InStart))
+                try { $el.Position = [timespan]::FromSeconds($pos) } catch {}
+            }
+            $entry.InSpan = $true
             if ($playing) { try { $el.Play() } catch {} } else { try { $el.Pause() } catch {} }
         }
     }
@@ -4728,8 +4985,14 @@ try {
     # them, and playing them twice would double the source audio.
     function Update-TrimAudioClipPreview {
         param([double]$SourceSeconds, [bool]$Playing)
-        $state = Get-TrimTimelineState
-        $timelinePlayhead = Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
+        # Same extension-aware playhead as Update-PipPreview's: the span math here was
+        # already timeline-based, but a source->timeline convert caps out at V1's end, so
+        # without this an audio clip that plays over the montage region would go silent the
+        # moment the transport left the cut list.
+        $timelinePlayhead = $(if (Test-TrimInExtension) { Get-TrimTimelinePlayhead } else {
+            $state = Get-TrimTimelineState
+            Convert-TrimSourceToTimeline -SourceSeconds $SourceSeconds -TimelinePieces $state.TimelinePieces
+        })
         $clips = @()
         foreach ($lane in @($script:TrimLanes)) {
             foreach ($c in @($lane.Clips)) {
@@ -4920,6 +5183,7 @@ try {
         }
         Update-TrimLaneRows
         Update-PipPreview -SourceSeconds $script:TrimPlayhead
+        Update-TrimBlackBase
         Request-TrimProjectSave
     }
 
@@ -6582,9 +6846,11 @@ try {
     function Update-TrimPosition {
         # Timeline-space, matching the ruler and the drawn track: how far into the
         # assembled EXPORT the playhead is, not how far into the raw source file.
-        $state = Get-TrimTimelineState
-        $tl = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
-        $textTrimPosition.Text = "$(Format-TrimTime $tl) / $(Format-TrimTime $state.TotalDuration)"
+        # Denominator is the WHOLE timeline (spec 4.7), not just the cut list: with a clip
+        # running past V1's end the export is longer than V1 is, and a readout that stopped
+        # counting at V1's end would freeze at "1:00 / 1:00" for the whole montage.
+        $tl = Get-TrimTimelinePlayhead
+        $textTrimPosition.Text = "$(Format-TrimTime $tl) / $(Format-TrimTime (Get-TrimTimelineLengthCached))"
         # The lane stack's own playhead. Drawn here beside the readout rather than from a
         # row rebuild: the playhead moves on every timer tick while playing, and rebuilding
         # every row at 30fps is not a thing to do.
@@ -6969,6 +7235,8 @@ try {
             # box, so a resize leaves them stale in exactly the way it leaves the zoom
             # transform stale.
             Update-PipPreview -SourceSeconds $script:TrimPlayhead
+            # The base is sized from the same box the resize just recomputed.
+            Update-TrimBlackBase
             Update-PipBoxOverlay
         }
         if ($null -ne $previewCell) {
@@ -7015,29 +7283,94 @@ try {
             $warmup.Start()
         })
 
+        # ---- Transport stop / the montage extension clock (spec 4.7) ------------------
+        #
+        # Three ways the main MediaElement can run out of picture: it reaches the end of
+        # the file (MediaEnded), it runs off the end of the last surviving piece (the tick
+        # below), or the user scrubs past V1's end. In all three, if a clip on some lane
+        # still has footage out there, the transport must KEEP RUNNING -- there is simply
+        # nothing left for the main element to contribute, so it pauses (it is never asked
+        # to seek past its own duration) and the DispatcherTimer's wall clock drives the
+        # playhead the rest of the way.
+        function Stop-TrimTransport {
+            try { $mediaTrimPreview.Pause() } catch {}
+            if ($null -ne $buttonTrimPlay) { $buttonTrimPlay.Content = "Play" }
+            if ($null -ne $script:TrimTimer) { $script:TrimTimer.Stop() }
+            Set-TrimExtensionClockIdle
+            # Whatever the pools were playing has to stop with it.
+            Update-PipPreview -SourceSeconds $script:TrimPlayhead
+            Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+            Update-TrimBlackBase
+        }
+
+        # The clock keeps its stamp only while it is actually advancing something.
+        function Set-TrimExtensionClockIdle { $script:TrimExtensionClock = $null }
+
+        function Stop-TrimAtV1End {
+            $state = Get-TrimTimelineState
+            $len = Get-TrimTimelineLengthCached
+            $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
+            if ($playing -and $len -gt ([double]$state.TotalDuration + 0.01)) {
+                try { $mediaTrimPreview.Pause() } catch {}
+                # A hair past V1's end rather than exactly on it: the extension offset IS
+                # the "am I out there" flag, and 0.0 means "inside the cut list".
+                Set-TrimExtensionPosition -Seconds 0.001
+                return
+            }
+            Stop-TrimTransport
+        }
+
+        # One tick's worth of wall time, added to the playhead's position past V1's end.
+        function Step-TrimExtensionClock {
+            if (-not (Test-TrimInExtension)) { return }
+            $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
+            if (-not $playing) { Set-TrimExtensionClockIdle; return }
+            $now = [datetime]::UtcNow
+            $prev = $script:TrimExtensionClock
+            Reset-TrimExtensionClock
+            # First tick after entering the extension has nothing to measure from.
+            if ($null -eq $prev) { return }
+            $state = Get-TrimTimelineState
+            $len = Get-TrimTimelineLengthCached
+            $next = [double]$script:TrimExtensionOffset + ($now - $prev).TotalSeconds
+            $max = [math]::Max(0.0, $len - [double]$state.TotalDuration)
+            if ($next -ge $max) {
+                Set-TrimExtensionPosition -Seconds $max
+                Stop-TrimTransport
+                return
+            }
+            Set-TrimExtensionPosition -Seconds $next
+        }
+
         $script:TrimTimer = New-Object System.Windows.Threading.DispatcherTimer
         $script:TrimTimer.Interval = [timespan]::FromMilliseconds(50)
         $script:TrimTimer.Add_Tick({
-            $script:TrimPlayhead = $mediaTrimPreview.Position.TotalSeconds
+            if (Test-TrimInExtension) {
+                # Out past V1's end: MediaElement.Position is frozen on the last frame it
+                # decoded and says nothing about where the timeline is, so wall time does.
+                Step-TrimExtensionClock
+            } else {
+                $script:TrimPlayhead = $mediaTrimPreview.Position.TotalSeconds
 
-            # MediaElement plays the raw source file start to finish -- it has no idea
-            # a piece was deleted, so ordinary playback runs straight off the end of one
-            # surviving piece and into the deleted footage after it. Catch that here and
-            # jump to the next surviving piece (or stop, past the last one) so playback
-            # matches what Export will actually produce.
-            $state = Get-TrimTimelineState
-            $containing = @($state.TimelinePieces | Where-Object {
-                $script:TrimPlayhead -ge $_.SourceStart -and $script:TrimPlayhead -lt $_.SourceEnd
-            })
-            if ($containing.Count -eq 0 -and $state.TimelinePieces.Count -gt 0) {
-                $next = @($state.TimelinePieces | Where-Object { $_.SourceStart -gt $script:TrimPlayhead } | Select-Object -First 1)
-                if ($next.Count -gt 0) {
-                    $script:TrimPlayhead = $next[0].SourceStart
-                    $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
-                } else {
-                    $mediaTrimPreview.Pause()
-                    $buttonTrimPlay.Content = "Play"
-                    $script:TrimTimer.Stop()
+                # MediaElement plays the raw source file start to finish -- it has no idea
+                # a piece was deleted, so ordinary playback runs straight off the end of one
+                # surviving piece and into the deleted footage after it. Catch that here and
+                # jump to the next surviving piece (or stop, past the last one) so playback
+                # matches what Export will actually produce.
+                $state = Get-TrimTimelineState
+                $containing = @($state.TimelinePieces | Where-Object {
+                    $script:TrimPlayhead -ge $_.SourceStart -and $script:TrimPlayhead -lt $_.SourceEnd
+                })
+                if ($containing.Count -eq 0 -and $state.TimelinePieces.Count -gt 0) {
+                    $next = @($state.TimelinePieces | Where-Object { $_.SourceStart -gt $script:TrimPlayhead } | Select-Object -First 1)
+                    if ($next.Count -gt 0) {
+                        $script:TrimPlayhead = $next[0].SourceStart
+                        $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
+                    } else {
+                        # Past the last surviving piece: either the montage carries on out
+                        # there, or this is the end of the timeline and the transport stops.
+                        Stop-TrimAtV1End
+                    }
                 }
             }
 
@@ -7061,11 +7394,17 @@ try {
             # scrubbing never reaches them).
             Update-PipPreview -SourceSeconds $script:TrimPlayhead
             Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $true
+            Update-TrimBlackBase
         })
 
         $buttonTrimPlay.Add_Click({
             if ($buttonTrimPlay.Content -eq "Play") {
-                $mediaTrimPreview.Play()
+                # Play from inside the montage region does NOT start the main element: it
+                # has no frame out there, and playing it would run the source on under a
+                # timeline position it no longer matches. The extension clock takes over
+                # from the moment the timer starts (Test-/Reset- rather than a bare
+                # $script: read/write: this block IS a GetNewClosure'd one).
+                if (Test-TrimInExtension) { Reset-TrimExtensionClock } else { $mediaTrimPreview.Play() }
                 $buttonTrimPlay.Content = "Pause"
                 $script:TrimTimer.Start()
             } else {
@@ -7077,13 +7416,14 @@ try {
                 # point the visible transport stopped.
                 Update-PipPreview -SourceSeconds $script:TrimPlayhead
                 Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+                Update-TrimBlackBase
             }
         }.GetNewClosure())
 
+        # The source file itself ran out. Same fork as the tick's: the montage carries on
+        # if there is anything out past V1's end, otherwise the transport stops.
         $mediaTrimPreview.Add_MediaEnded({
-            $mediaTrimPreview.Pause()
-            $buttonTrimPlay.Content = "Play"
-            $script:TrimTimer.Stop()
+            Stop-TrimAtV1End
         }.GetNewClosure())
 
         # Scrubbing. A click on a piece bubbles down to here too, so one click both selects
@@ -7102,9 +7442,29 @@ try {
             $t = Convert-TrimXToTime -X $pos.X
             # 0.0, not 0 (trap #8): the int overload truncated every scrub click to a
             # whole second, so the playhead could never land between seconds.
-            $tClamped = [math]::Max(0.0, [math]::Min($state.TotalDuration, $t))
-            $script:TrimPlayhead = Convert-TrimTimelineToSource -TimelineSeconds $tClamped -TimelinePieces $state.TimelinePieces
+            #
+            # Clamped to the WHOLE timeline, not the cut list: past V1's end the click is
+            # landing in the montage region, which is a real part of the export.
+            $wasInExtension = Test-TrimInExtension
+            $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
+            $tClamped = [math]::Max(0.0, [math]::Min((Get-TrimTimelineLengthCached), $t))
+            $extra = $tClamped - [double]$state.TotalDuration
+            # The source position is clamped to the end of the last surviving piece either
+            # way -- the main element is never asked to seek past its own footage. Out in
+            # the extension it is also PAUSED and the black base covers the stale frame.
+            $script:TrimPlayhead = Convert-TrimTimelineToSource `
+                -TimelineSeconds ([math]::Min($tClamped, [double]$state.TotalDuration)) `
+                -TimelinePieces $state.TimelinePieces
             $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
+            if ($extra -gt 0) {
+                Set-TrimExtensionPosition -Seconds $extra
+                try { $mediaTrimPreview.Pause() } catch {}
+            } else {
+                Set-TrimExtensionPosition -Seconds 0.0
+                # Coming BACK from the extension while the transport is still running: the
+                # main element was paused out there and has to be handed the picture again.
+                if ($wasInExtension -and $playing) { try { $mediaTrimPreview.Play() } catch {} }
+            }
             Update-TrimPosition
             Update-TrimTimeline
             # Scrubbing into a fade shows the blended frame too, not just playback.
@@ -7117,8 +7477,9 @@ try {
             Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
             # Scrubbing repositions a PiP's video, but deliberately never seeks an
             # audio-clip (Update-TrimAudioClipPreview's own comment explains why).
-            Update-PipPreview -SourceSeconds $script:TrimPlayhead
+            Update-PipPreview -SourceSeconds $script:TrimPlayhead -Seek $true
             Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+            Update-TrimBlackBase
         })
 
         # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
@@ -7136,11 +7497,15 @@ try {
             $anchor = Convert-TrimXToTime -X ($e.GetPosition($canvasTrimTimeline)).X
             $factor = if ($e.Delta -gt 0) { 0.8 } else { 1.25 }
             # Floor of 0.5s: below that the pieces are narrower than their own borders.
-            $newSpan = [math]::Max(0.5, [math]::Min($state.TotalDuration, $script:TrimViewSpan * $factor))
+            # The whole timeline, not just the cut list: the montage region past V1's end
+            # is part of what this ruler measures, so the view window must be able to reach
+            # it (and to span it) or it could never be scrubbed into.
+            $timelineLength = Get-TrimTimelineLengthCached
+            $newSpan = [math]::Max(0.5, [math]::Min($timelineLength, $script:TrimViewSpan * $factor))
 
             $ratio = if ($script:TrimViewSpan -gt 0) { ($anchor - $script:TrimViewStart) / $script:TrimViewSpan } else { 0.5 }
             # Keep the window inside the clip.
-            $newStart = [math]::Max(0.0, [math]::Min($state.TotalDuration - $newSpan, $anchor - ($ratio * $newSpan)))
+            $newStart = [math]::Max(0.0, [math]::Min($timelineLength - $newSpan, $anchor - ($ratio * $newSpan)))
             Set-TrimView -Start $newStart -Span $newSpan
             Update-TrimTimeline
         })
@@ -7605,6 +7970,11 @@ try {
         Update-PreviewZoom -SourceSeconds 0.0
         $script:TrimSelected = -1
         $script:TrimPlayhead = 0.0
+        # A new file has no montage region until its own project restores one; leaving the
+        # previous file's extension offset set would put the playhead past an end that no
+        # longer exists.
+        Set-TrimExtensionPosition -Seconds 0.0
+        $script:TrimTimelineLengthCache = 0.0
         $script:TrimViewStart = 0.0
         $script:TrimViewSpan = $script:TrimDuration
         # Empty until the async read lands; Find-NearestKeyframe treats that as "no
@@ -7791,9 +8161,13 @@ try {
         # Nothing is selected in the new file, so the properties column must not be left
         # open over the previous file's caption.
         Hide-CaptionSidebar
-        Update-TrimPosition
         Update-TrimSelectionText
         Update-TrimTimeline
+        # AFTER Update-TrimTimeline, not before: the readout's denominator is the cached
+        # timeline length, and the load-path refresh of that cache is inside
+        # Update-TrimTimeline -- painted first, a montage project shows V1's length until
+        # the next repaint.
+        Update-TrimPosition
         # After the load, not just the reset above: a project whose first keyframe sits AT
         # 0:00 zoomed is zoomed from the very first frame, so leaving the preview at
         # identity until the first scrub would show a picture the model does not agree
@@ -7810,7 +8184,9 @@ try {
                     # Same reasoning as the zoom: PreviewBox has no size yet on the pass
                     # that makes the card visible, so a restored project's PiP tracks would
                     # otherwise sit invisible/mispositioned until the next tick or scrub.
-                    Update-PipPreview -SourceSeconds $script:TrimPlayhead
+                    Update-TrimPreviewStackOrder
+                    Update-PipPreview -SourceSeconds $script:TrimPlayhead -Seek $true
+                    Update-TrimBlackBase
                 }.GetNewClosure())) | Out-Null
         }
         Start-TrimKeyframeRead -Path $path
