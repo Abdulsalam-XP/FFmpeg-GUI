@@ -2373,6 +2373,9 @@ try {
             if ($script:TrimSelectedClip -eq $cid) { $script:TrimSelectedClip = $null }
         }
         Update-TrimLaneRows
+        # Same reasoning as Remove-TrimLaneRow's: deleting the main video clip is one of the
+        # ways the stack becomes audio-only, and the selection text is where that shows.
+        Update-TrimSelectionText
         Request-TrimProjectSave
     }
 
@@ -2388,6 +2391,10 @@ try {
         [void]$script:TrimLanes.Remove($lane)
         if ($script:TrimSelectedLane -eq $Id) { $script:TrimSelectedLane = $null }
         Update-TrimLaneRows
+        # Removing a row can flip the stack into (or out of) the audio-only state, which is
+        # only ever announced through the selection text -- so it is refreshed here rather
+        # than at each of the several call sites that can delete a row.
+        Update-TrimSelectionText
         Request-TrimProjectSave
     }
 
@@ -2782,6 +2789,9 @@ try {
         foreach ($ln in $ordered) {
             $thisLaneId = [string]$ln.Id
             $isVideoLane = ($ln.Kind -eq "video")
+            # Captured by the trash handler below: the main lane deletes ALONE (audio-only
+            # export), never as a group.
+            $isMainLane = [bool]$ln.IsMain
             $isSelectedLane = ([string]$ln.Id -eq [string]$script:TrimSelectedLane)
             $head = Get-TrimLaneHeadClip -Lane $ln
             # The row's headline state: an empty row reads as live and unmuted rather than
@@ -2863,11 +2873,19 @@ try {
             $delete.Foreground = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#8FA8C0")
             $delete.Cursor = [System.Windows.Input.Cursors]::Hand
             $delete.Margin = New-Object System.Windows.Thickness(8, 0, 0, 0)
-            # A video row's trash takes its grouped audio rows with it; an audio row's takes
-            # only itself.
+            # A video row's trash takes its grouped audio rows with it -- EXCEPT the main
+            # lane's. Get-TrimLaneStack links V1 and every source audio row on one shared
+            # LinkId, so the main lane's "group" is the whole stack; taking the group there
+            # would delete everything and hit the "Every track was deleted" refusal instead
+            # of producing the audio-only export that deleting the main video has always
+            # meant (v2's video-main delete, and Remove-TrimLaneRow's own contract).
             $delete.Add_Click({
                 Push-TrimUndo
-                if ($isVideoLane) { Remove-TrimLaneGroup -Id $thisLaneId } else { Remove-TrimLaneRow -Id $thisLaneId }
+                if ($isVideoLane -and -not $isMainLane) {
+                    Remove-TrimLaneGroup -Id $thisLaneId
+                } else {
+                    Remove-TrimLaneRow -Id $thisLaneId
+                }
             }.GetNewClosure())
             [void]$header.Children.Add($delete)
 
@@ -3062,6 +3080,9 @@ try {
                     GainDb  = $(if ($null -ne $head) { [double]$head.GainDb } else { 0.0 })
                     Muted   = $(if ($null -ne $head) { [bool]$head.Muted } else { $false })
                     IsVideo = ($lane.Kind -eq "video")
+                    # The Delete button needs this: the main lane deletes alone (audio-only
+                    # export), never as a group -- see the row trash's own comment.
+                    IsMain  = [bool]$lane.IsMain
                 }
             }
         }
@@ -6006,10 +6027,16 @@ try {
                 $t = Get-TrimPropsTarget
                 if ($null -eq $t) { return }
                 Push-TrimUndo
-                # A lane header's Delete takes the row (and, for a video lane, its grouped
-                # audio rows); a clip's Delete takes the clip and its linked peers (spec 4.4).
+                # A lane header's Delete takes the row (and, for a NON-main video lane, its
+                # grouped audio rows -- the main lane deletes alone, which is how an
+                # audio-only export is asked for); a clip's Delete takes the clip and its
+                # linked peers (spec 4.4).
                 if ($t.Scope -eq "lane") {
-                    Remove-TrimLaneGroup -Id $t.Id
+                    if ($t.IsVideo -and -not $t.IsMain) {
+                        Remove-TrimLaneGroup -Id $t.Id
+                    } else {
+                        Remove-TrimLaneRow -Id $t.Id
+                    }
                 } else {
                     Remove-TrimClipWithLinks -Id $t.Id
                 }
