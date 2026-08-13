@@ -1,4 +1,4 @@
-# Process-scope only: required because Launcher.exe hosts this script in a runspace
+﻿# Process-scope only: required because Launcher.exe hosts this script in a runspace
 # that inherits the machine policy (Restricted by default), which blocks Import-Module.
 try { Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force } catch {}
 
