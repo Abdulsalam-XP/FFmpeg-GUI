@@ -729,4 +729,69 @@ function Test-TrimLaneStackHasVideo {
     return $false
 }
 
-Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked, Test-TrimLaneStackTrivial, Test-TrimLaneStackHasAudio, Test-TrimLaneStackHasVideo, New-TrimLaneAudioMixPlan
+function Get-TrimOverlaySpans {
+    param([object[]]$Lanes = @(), [string]$MainPath = "", [hashtable]$ClipDurations = @{})
+    $spans = @()
+    $videoLanes = @(@($Lanes) | Where-Object { $_.Kind -eq "video" })
+    # Bottom-up: the lanes array is display top-to-bottom and the TOPMOST lane paints on
+    # top (spec 4.5), so painting starts from the last video lane in the array.
+    for ($li = $videoLanes.Count - 1; $li -ge 0; $li--) {
+        $lane = $videoLanes[$li]
+        foreach ($c in @($lane.Clips)) {
+            if (-not $c.Enabled) { continue }
+            if (Test-TrimClipIsMainVideo -Lane $lane -Clip $c) { continue }
+            $dur = if ($ClipDurations.ContainsKey([string]$c.Path)) { [double]$ClipDurations[[string]$c.Path] } else { 0.0 }
+            $span = Get-TrimClipSpan -Clip $c -SourceDuration $dur
+            if ([double]$span.End - [double]$span.Start -le 0.0005) { continue }
+            $spans += ,@{
+                Start = [double]$span.Start; End = [double]$span.End
+                Overlay = @{
+                    ClipId = [string]$c.Id; Path = [string]$c.Path; Kind = [string]$c.Kind
+                    InStart = [double]$c.InStart; Pip = $c.Pip
+                }
+            }
+        }
+    }
+    return ,@($spans)
+}
+
+function New-TrimOverlayChainV3 {
+    param([object[]]$Overlays = @(), [Parameter(Mandatory = $true)][int]$Width, [Parameter(Mandatory = $true)][int]$Height)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $parts = @()
+    $prev = "[0:v]"
+    for ($k = 0; $k -lt @($Overlays).Count; $k++) {
+        $o = $Overlays[$k]
+        $out = if ($k -eq @($Overlays).Count - 1) { "[vout]" } else { "[vo$k]" }
+        if ($null -eq $o.Pip) {
+            # Full-frame: aspect-fit into the whole output frame, black bars where the
+            # aspects differ (spec 4.6). The pad's (ow-iw)/2 expressions carry no commas,
+            # so no \, escaping is needed here.
+            $parts += ,("[{0}:v]scale={1}:{2}:force_original_aspect_ratio=decrease,pad={1}:{2}:(ow-iw)/2:(oh-ih)/2:color=black[ov{3}]" -f `
+                ([int]$o.InputIndex), $Width.ToString($inv), $Height.ToString($inv), $k)
+            $parts += ,("{0}[ov{1}]overlay=0:0{2}" -f $prev, $k, $out)
+        } else {
+            $pip = $o.Pip
+            $w = 2 * [int][math]::Round(([double]$pip.W * $Width) / 2.0)
+            $h = 2 * [int][math]::Round(([double]$pip.H * $Height) / 2.0)
+            $x = [int][math]::Round(([double]$pip.X - [double]$pip.W / 2.0) * $Width)
+            $y = [int][math]::Round(([double]$pip.Y - [double]$pip.H / 2.0) * $Height)
+            $parts += ,("[{0}:v]scale={1}:{2}[ov{3}]" -f ([int]$o.InputIndex), $w.ToString($inv), $h.ToString($inv), $k)
+            $parts += ,("{0}[ov{1}]overlay={2}:{3}{4}" -f $prev, $k, $x.ToString($inv), $y.ToString($inv), $out)
+        }
+        $prev = $out
+    }
+    return ($parts -join ";")
+}
+
+function Get-TrimExtensionSegments {
+    param([object[]]$Pieces = @(), [double[]]$FadeLengths = @(), [double]$TimelineLength = 0.0)
+    $outLen = Get-TrimOutputLength -Pieces $Pieces -FadeLengths $FadeLengths
+    if ($TimelineLength -le $outLen + 0.0005) { return ,@() }
+    # One ordinary segment: the splitter cuts it at overlay-span edges like any cut, the
+    # export encodes it from a color=black lavfi source, and the concat/progress/cancel
+    # plumbing never learns it is special.
+    return ,@(@{ Kind = "black"; Start = 0.0; Duration = ($TimelineLength - $outLen) })
+}
+
+Export-ModuleMember -Function New-TrimTrack, ConvertFrom-AudioStreamProbe, Get-DefaultTrackStack, Get-TrimTimelineStarts, Get-TrackTimelineSpan, Test-TrackStackTrivial, New-TrimAudioMixPlan, New-PipOverlayChain, Test-PipTransitionClash, New-TrimClip, New-TrimLane, Get-TrimLaneStack, Get-TrimClipById2, Get-TrimLinkedClipIds, Clear-TrimClipLinks, Get-TrimClipSpan, Get-TrimOutputLength, Test-TrimClipIsMainVideo, Get-TrimTimelineLength, Get-TrimSnapPoints, Resolve-TrimSnap, Get-TrimLinkGroupClips, Move-TrimClipLinked, Set-TrimClipInPointLinked, Set-TrimClipOutPointLinked, Test-TrimLaneStackTrivial, Test-TrimLaneStackHasAudio, Test-TrimLaneStackHasVideo, New-TrimLaneAudioMixPlan, Get-TrimOverlaySpans, New-TrimOverlayChainV3, Get-TrimExtensionSegments

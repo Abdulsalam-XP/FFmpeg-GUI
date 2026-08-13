@@ -584,3 +584,63 @@ Describe "New-TrimLaneAudioMixPlan" {
         } finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
     }
 }
+
+Describe "Get-TrimOverlaySpans" {
+    It "lists enabled non-main video/image clips bottom-up (topmost lane last = on top)" {
+        $lanes = Get-TrimLaneStack -Path "main.mp4" -AudioStreams @()
+        $top = New-TrimLane -Kind "video" -Label "V3" -Clips @((New-TrimClip -Kind "image" -Path "l.png" -Offset 2.0 -DurationOverride 4.0))
+        $mid = New-TrimLane -Kind "video" -Label "V2" -Clips @((New-TrimClip -Kind "video" -Path "c.mp4" -Offset 5.0 -Pip @{X=0.5;Y=0.5;W=0.3;H=0.3}))
+        # display order: top, mid, main -- so paint order must be main-overlays (none), mid, top
+        $all = @($top, $mid) + @($lanes)
+        $r = Get-TrimOverlaySpans -Lanes $all -MainPath "main.mp4" -ClipDurations @{ "c.mp4" = 8.0 }
+        $r.Count | Should Be 2
+        $r[0].Overlay.Path | Should Be "c.mp4"
+        $r[0].End | Should Be 13.0
+        $r[1].Overlay.Kind | Should Be "image"
+        $r[1].Overlay.Pip | Should Be $null
+    }
+    It "skips disabled clips and the V1 base clip, and returns empty not null" {
+        $lanes = Get-TrimLaneStack -Path "main.mp4" -AudioStreams @()
+        $r = Get-TrimOverlaySpans -Lanes $lanes -MainPath "main.mp4" -ClipDurations @{}
+        $r.Count | Should Be 0
+    }
+}
+
+Describe "New-TrimOverlayChainV3" {
+    It "emits the boxed math identically to New-PipOverlayChain" {
+        $ov = @(@{ InputIndex = 1; Kind = "video"; Pip = @{ X = 0.5; Y = 0.5; W = 0.35; H = 0.35 } })
+        $f = New-TrimOverlayChainV3 -Overlays $ov -Width 2560 -Height 1440
+        $f | Should Match ([regex]::Escape("[1:v]scale=896:504[ov0]"))
+        $f | Should Match ([regex]::Escape("[0:v][ov0]overlay=832:468[vout]"))
+    }
+    It "emits aspect-fit pad + overlay 0:0 for a full-frame overlay" {
+        $ov = @(@{ InputIndex = 1; Kind = "video"; Pip = $null })
+        $f = New-TrimOverlayChainV3 -Overlays $ov -Width 2560 -Height 1440
+        $f | Should Match ([regex]::Escape("[1:v]scale=2560:1440:force_original_aspect_ratio=decrease,pad=2560:1440:(ow-iw)/2:(oh-ih)/2:color=black[ov0]"))
+        $f | Should Match ([regex]::Escape("[0:v][ov0]overlay=0:0[vout]"))
+    }
+    It "stacks mixed overlays in list order, last on top" {
+        $ov = @(
+            @{ InputIndex = 1; Kind = "video"; Pip = $null },
+            @{ InputIndex = 2; Kind = "image"; Pip = @{ X = 0.75; Y = 0.75; W = 0.2; H = 0.2 } }
+        )
+        $f = New-TrimOverlayChainV3 -Overlays $ov -Width 2560 -Height 1440
+        $f.IndexOf("[1:v]") | Should BeLessThan $f.IndexOf("[2:v]")
+        $f | Should Match ([regex]::Escape("[vo0][ov1]overlay"))
+        $f | Should Match ([regex]::Escape("[vout]"))
+    }
+}
+
+Describe "Get-TrimExtensionSegments" {
+    $p = @([PSCustomObject]@{Start=0.0;End=20.0}, [PSCustomObject]@{Start=30.0;End=40.0})
+    It "returns one black segment covering the extension" {
+        $r = Get-TrimExtensionSegments -Pieces $p -FadeLengths @(0.5) -TimelineLength 45.0
+        $r.Count | Should Be 1
+        $r[0].Kind | Should Be "black"
+        $r[0].Duration | Should Be 15.5
+    }
+    It "returns empty (not null) when nothing extends" {
+        $r = Get-TrimExtensionSegments -Pieces $p -FadeLengths @() -TimelineLength 30.0
+        $r.Count | Should Be 0
+    }
+}
