@@ -504,20 +504,34 @@
                                  second row here is gone: audio lane rows carry their own waveforms
                                  now (spec 3.1), so this is a single full height row.
 
-                                 Margin 250 on this and on every other timeline space row below
-                                 (captions, zooms, ruler, fades): the lane rows put a 250px header
-                                 column in front of their bodies, and the mockup runs that same
-                                 column down the whole stack so one playhead line crosses every row
-                                 at the same x. Convert-TrimTimeToX measures CanvasTrimTimeline, so
-                                 all of these have to share the inset or they stop agreeing. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="90" Margin="250,0,0,0" ClipToBounds="True">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/>
-                                    </Grid.RowDefinitions>
-                                    <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Panel.ZIndex="1" Background="Transparent"/>
-                                </Grid>
-                            </Border>
+                                 The 250px column in front of this row and every other timeline
+                                 space row below (captions, zooms, ruler, fades) is the same header
+                                 column the lane rows use: the mockup runs it down the whole stack
+                                 so one playhead line crosses every row at the same x.
+                                 Convert-TrimTimeToX measures CanvasTrimTimeline, so all of these
+                                 have to share the inset or they stop agreeing. The ruler and fade
+                                 rows take it as a plain Margin (the mockup leaves the ruler gutter
+                                 empty); the three lanes with something to say fill it with a
+                                 header cell. -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource LaneHeaderStyle}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="7,0,7,0">
+                                        <TextBlock Text="SRC" Style="{StaticResource LaneNameStyle}" Margin="0,0,5,0"/>
+                                        <TextBlock Text="Source filmstrip" Style="{StaticResource LaneLabelStyle}"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource TimelineTrackStyle}" Height="90" ClipToBounds="True">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Panel.ZIndex="1" Background="Transparent"/>
+                                    </Grid>
+                                </Border>
+                            </Grid>
 
                             <!-- Track lanes: grouped NLE rows, code-built by Update-TrimLaneRows.
                                  CanvasTrimLaneOverlay carries the stack-spanning playhead line and
@@ -528,15 +542,37 @@
                             </Grid>
 
                             <!-- Caption lane: one block per caption, drag to move, edge drag to retime. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="54" Margin="250,4,0,0" ClipToBounds="True">
-                                <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
-                            </Border>
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource LaneHeaderStyle}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="7,0,7,0">
+                                        <TextBlock Text="CC" Style="{StaticResource LaneNameStyle}" Margin="0,0,5,0"/>
+                                        <TextBlock Text="Captions" Style="{StaticResource LaneLabelStyle}"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource TimelineTrackStyle}" Height="54" ClipToBounds="True">
+                                    <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
+                                </Border>
+                            </Grid>
 
                             <!-- Zoom keyframe lane: diamonds mark keyframes, ramps show the
                                  transition between them. Drawn from code. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="26" Margin="250,4,0,0" ClipToBounds="True">
-                                <Canvas x:Name="CanvasTrimZooms" Background="Transparent"/>
-                            </Border>
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource LaneHeaderStyle}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="7,0,7,0">
+                                        <TextBlock Text="Z" Style="{StaticResource LaneNameStyle}" Margin="0,0,5,0"/>
+                                        <TextBlock Text="Zoom" Style="{StaticResource LaneLabelStyle}"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource TimelineTrackStyle}" Height="26" ClipToBounds="True">
+                                    <Canvas x:Name="CanvasTrimZooms" Background="Transparent"/>
+                                </Border>
+                            </Grid>
 
                             <!-- 26, not 20: the ruler now also carries the playhead time
                                  badge, which sits below the ticks and is clipped at 20. -->

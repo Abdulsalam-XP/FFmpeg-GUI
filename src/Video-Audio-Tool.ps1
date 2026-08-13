@@ -2737,12 +2737,18 @@ try {
         $ordered = @()
         foreach ($g in @(Get-TrimLaneGroups)) {
             if ($null -ne $g.VideoLane) {
-                $ordered += ,@{ Lane = $g.VideoLane; Grouped = $false }
+                $ordered += ,@{ Lane = $g.VideoLane; Grouped = $false; MainGroup = [bool]$g.VideoLane.IsMain }
                 if (-not $script:TrimCollapsedLanes.ContainsKey([string]$g.VideoLane.Id)) {
-                    foreach ($a in @($g.AudioLanes)) { $ordered += ,@{ Lane = $a; Grouped = $true } }
+                    # MainGroup marks the rows that live in CUT-LIST space rather than raw
+                    # source space -- V1 and the source-audio rows still linked to it. An
+                    # unlinked row leaves the group (spec 4.2) and with it this flag, which
+                    # is exactly when its clips gain real Offset/InStart/InEnd freedom.
+                    foreach ($a in @($g.AudioLanes)) {
+                        $ordered += ,@{ Lane = $a; Grouped = $true; MainGroup = [bool]$g.VideoLane.IsMain }
+                    }
                 }
             } else {
-                foreach ($a in @($g.AudioLanes)) { $ordered += ,@{ Lane = $a; Grouped = $false } }
+                foreach ($a in @($g.AudioLanes)) { $ordered += ,@{ Lane = $a; Grouped = $false; MainGroup = $false } }
             }
         }
 
@@ -3130,133 +3136,183 @@ try {
             [void]$rowGrid.Children.Add($bodyBorder)
 
             $bodyWidth = $bodyCanvas.ActualWidth
-            if ($bodyWidth -le 0) { $bodyWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth - 250.0) }
+            # No -250 here: every timeline-space row now shares the 250px header inset
+            # (MainWindow.xaml), so CanvasTrimTimeline IS body width.
+            if ($bodyWidth -le 0) { $bodyWidth = [math]::Max(0.0, $canvasTrimTimeline.ActualWidth) }
             $clipHeight = $rowHeight - 6.0
+            $isMainGroupRow = [bool]$entry.MainGroup
 
             foreach ($clip in @($ln.Clips)) {
                 $thisClipId = [string]$clip.Id
                 $isMainClip = Test-TrimClipIsMainVideo -Lane $ln -Clip $clip
                 $isSelectedClip = ($thisClipId -eq [string]$script:TrimSelectedClip)
+                $isImageClip = ([string]$clip.Kind -eq "image")
+                $isAudioClip = ([string]$clip.Kind -eq "audio")
                 $sourceDuration = Get-TrimClipSourceDuration -Lane $ln -Clip $clip
-                if ($isMainClip) {
-                    # The main recording's own clip IS the piece list: it spans the cut
-                    # list, not its raw source length.
-                    $left = Convert-TrimTimeToX -Seconds 0.0
-                    $width = [math]::Max(2.0, (Convert-TrimTimeToX -Seconds $v1End) - $left)
-                    $clipInStart = 0.0
-                    $clipInEnd = [math]::Max(0.1, $v1End)
+
+                # CUT-LIST SPACE vs SOURCE SPACE. V1's own clip and the source-audio rows
+                # still linked to it are not free clips: what they show is the assembled
+                # cut list, the same pieces the ruler and the filmstrip above are drawn
+                # from. Laying them out from Get-TrimClipSpan (which knows only raw
+                # in/out) would run them past V1's end the moment anything is cut, and
+                # their media would cover deleted footage -- so the peaks would stop
+                # sitting under the frames they belong to. These rows are therefore drawn
+                # as ONE BODY PER TIMELINE PIECE, each piece placed at its timeline x and
+                # filled from its own source range. Every other clip keeps the single
+                # source-space body it always had.
+                $cutSpace = $isMainClip -or ($isAudioClip -and $isMainGroupRow -and
+                    [string]$clip.Path -eq [string]$script:TrimInputFile)
+
+                $segments = @()
+                if ($cutSpace) {
+                    $tps = @($state.TimelinePieces)
+                    $srcTotal = 0.0
+                    foreach ($q in $tps) { $srcTotal += ([double]$q.SourceEnd - [double]$q.SourceStart) }
+                    foreach ($q in $tps) {
+                        $sx1 = Convert-TrimTimeToX -Seconds ([double]$q.TimelineStart)
+                        $sx2 = Convert-TrimTimeToX -Seconds ([double]$q.TimelineEnd)
+                        $segLen = [double]$q.SourceEnd - [double]$q.SourceStart
+                        # The eight-frame budget is spread across the pieces by length
+                        # rather than spent per piece: twenty cuts would otherwise mean
+                        # 160 ffmpeg extractions for one row.
+                        $frames = 8
+                        if ($srcTotal -gt 0.0) {
+                            $frames = [int][math]::Round(8.0 * $segLen / $srcTotal)
+                        }
+                        $frames = [math]::Max(1, [math]::Min(8, $frames))
+                        $segments += ,@{
+                            Left = $sx1; Width = [math]::Max(2.0, $sx2 - $sx1)
+                            SrcStart = [double]$q.SourceStart; SrcEnd = [double]$q.SourceEnd; Frames = $frames
+                        }
+                    }
                 } else {
                     $bounds = Get-TrimClipBarBounds -Lane $ln -Clip $clip
-                    $left = [double]$bounds.Left
-                    $width = [double]$bounds.Width
-                    $clipInStart = [double]$clip.InStart
-                    $clipInEnd = $(if ([double]$clip.InEnd -gt 0.0) { [double]$clip.InEnd } else { $sourceDuration })
+                    $segments += ,@{
+                        Left = [double]$bounds.Left; Width = [double]$bounds.Width
+                        SrcStart = [double]$clip.InStart
+                        SrcEnd = $(if ([double]$clip.InEnd -gt 0.0) { [double]$clip.InEnd } else { $sourceDuration })
+                        Frames = 8
+                    }
                 }
 
-                $clipBorder = New-Object System.Windows.Controls.Border
-                $clipBorder.Height = $clipHeight
-                $clipBorder.Width = $width
-                $clipBorder.CornerRadius = New-Object System.Windows.CornerRadius(3)
-                $clipBorder.ClipToBounds = $true
-                $clipBorder.BorderThickness = New-Object System.Windows.Thickness($(if ($isSelectedClip) { 2 } else { 1 }))
-                $isImageClip = ([string]$clip.Kind -eq "image")
-                $clipBorder.BorderBrush = $(if ($isSelectedClip) { $goldBrush }
-                    elseif ($isImageClip) { $imageBorderBrush } else { $clipBorderBrush })
-                $clipBorder.Background = $(if ([string]$clip.Kind -eq "audio") { $audioBodyBrush } else { $placeholderBrush })
-                $clipBorder.Opacity = $(if ($rowDim -or -not $clip.Enabled) { 0.4 } else { 1.0 })
-                $clipBorder.Cursor = [System.Windows.Input.Cursors]::Hand
-                [System.Windows.Controls.Canvas]::SetLeft($clipBorder, $left)
-                [System.Windows.Controls.Canvas]::SetTop($clipBorder, 3)
+                $segIndex = 0
+                $segCount = @($segments).Count
+                foreach ($seg in $segments) {
+                    $isFirstSeg = ($segIndex -eq 0)
+                    $isLastSeg = ($segIndex -eq $segCount - 1)
+                    $segIndex++
 
-                $clipGrid = New-Object System.Windows.Controls.Grid
-                $clipBorder.Child = $clipGrid
+                    $clipBorder = New-Object System.Windows.Controls.Border
+                    $clipBorder.Height = $clipHeight
+                    $clipBorder.Width = [double]$seg.Width
+                    $clipBorder.CornerRadius = New-Object System.Windows.CornerRadius(3)
+                    $clipBorder.ClipToBounds = $true
+                    $clipBorder.BorderThickness = New-Object System.Windows.Thickness($(if ($isSelectedClip) { 2 } else { 1 }))
+                    $clipBorder.BorderBrush = $(if ($isSelectedClip) { $goldBrush }
+                        elseif ($isImageClip) { $imageBorderBrush } else { $clipBorderBrush })
+                    $clipBorder.Background = $(if ($isAudioClip) { $audioBodyBrush } else { $placeholderBrush })
+                    $clipBorder.Opacity = $(if ($rowDim -or -not $clip.Enabled) { 0.4 } else { 1.0 })
+                    $clipBorder.Cursor = [System.Windows.Input.Cursors]::Hand
+                    [System.Windows.Controls.Canvas]::SetLeft($clipBorder, [double]$seg.Left)
+                    [System.Windows.Controls.Canvas]::SetTop($clipBorder, 3)
 
-                if ([string]$clip.Kind -eq "audio") {
-                    $wave = Request-TrimRowWaveform -Path ([string]$clip.Path) -StreamIndex ([int]$clip.StreamIdx) `
-                        -InStart $clipInStart -Length ([math]::Max(0.0, $clipInEnd - $clipInStart)) -Width 1600 -Height 34
-                    if ($null -ne $wave) {
-                        $waveImage = New-Object System.Windows.Controls.Image
-                        $waveImage.Source = $wave
-                        $waveImage.Stretch = "Fill"
-                        $waveImage.Opacity = 0.85
-                        [void]$clipGrid.Children.Add($waveImage)
-                    }
-                } elseif ($isImageClip) {
-                    # An image clip is its own filmstrip: one stretched frame, no ffmpeg.
-                    $still = Get-TrimStripImage -FilePath ([string]$clip.Path)
-                    if ($null -ne $still) {
-                        $stillImage = New-Object System.Windows.Controls.Image
-                        $stillImage.Source = $still
-                        $stillImage.Stretch = "UniformToFill"
-                        [void]$clipGrid.Children.Add($stillImage)
-                    }
-                } else {
-                    $strip = Request-TrimClipStrip -Path ([string]$clip.Path) -InStart $clipInStart -EffInEnd $clipInEnd
-                    if ($null -ne $strip) {
-                        $stripPanel = New-Object System.Windows.Controls.Primitives.UniformGrid
-                        $stripPanel.Rows = 1
-                        $stripPanel.Columns = 8
-                        foreach ($frame in @($strip)) {
-                            $cell = New-Object System.Windows.Controls.Image
-                            $cell.Source = $frame
-                            $cell.Stretch = "UniformToFill"
-                            [void]$stripPanel.Children.Add($cell)
+                    $clipGrid = New-Object System.Windows.Controls.Grid
+                    $clipBorder.Child = $clipGrid
+
+                    if ($isAudioClip) {
+                        $wave = Request-TrimRowWaveform -Path ([string]$clip.Path) -StreamIndex ([int]$clip.StreamIdx) `
+                            -InStart ([double]$seg.SrcStart) -Length ([math]::Max(0.0, [double]$seg.SrcEnd - [double]$seg.SrcStart)) `
+                            -Width 1600 -Height 34
+                        if ($null -ne $wave) {
+                            $waveImage = New-Object System.Windows.Controls.Image
+                            $waveImage.Source = $wave
+                            $waveImage.Stretch = "Fill"
+                            $waveImage.Opacity = 0.85
+                            [void]$clipGrid.Children.Add($waveImage)
                         }
-                        [void]$clipGrid.Children.Add($stripPanel)
+                    } elseif ($isImageClip) {
+                        # An image clip is its own filmstrip: one stretched frame, no ffmpeg.
+                        $still = Get-TrimStripImage -FilePath ([string]$clip.Path)
+                        if ($null -ne $still) {
+                            $stillImage = New-Object System.Windows.Controls.Image
+                            $stillImage.Source = $still
+                            $stillImage.Stretch = "UniformToFill"
+                            [void]$clipGrid.Children.Add($stillImage)
+                        }
+                    } else {
+                        $strip = Request-TrimClipStrip -Path ([string]$clip.Path) -InStart ([double]$seg.SrcStart) `
+                            -EffInEnd ([double]$seg.SrcEnd) -Frames ([int]$seg.Frames)
+                        if ($null -ne $strip) {
+                            $stripPanel = New-Object System.Windows.Controls.Primitives.UniformGrid
+                            $stripPanel.Rows = 1
+                            $stripPanel.Columns = @($strip).Count
+                            foreach ($frame in @($strip)) {
+                                $cell = New-Object System.Windows.Controls.Image
+                                $cell.Source = $frame
+                                $cell.Stretch = "UniformToFill"
+                                [void]$stripPanel.Children.Add($cell)
+                            }
+                            [void]$clipGrid.Children.Add($stripPanel)
+                        }
                     }
+
+                    # Name plate and chip on the FIRST body only: a cut-space row is one
+                    # clip drawn in several pieces, not several clips.
+                    if ($isFirstSeg) {
+                        $linked = -not [string]::IsNullOrEmpty([string]$clip.LinkId)
+                        $plateText = [System.IO.Path]::GetFileName([string]$clip.Path)
+                        if ($isMainClip) { $plateText = "{0} - cut to {1}" -f $plateText, (Format-TrimTime $v1End) }
+                        if ($isImageClip) { $plateText = "{0} - {1:0.#}s" -f $plateText, [double]$clip.DurationOverride }
+                        if ($linked) { $plateText = "{0} {1}" -f $plateText, ([char]::ConvertFromUtf32(0x1F517)) }
+                        $plate = New-Object System.Windows.Controls.Border
+                        $plate.Background = $plateBrush
+                        $plate.HorizontalAlignment = "Left"
+                        $plate.VerticalAlignment = "Bottom"
+                        $plate.Padding = New-Object System.Windows.Thickness(3, 0, 3, 0)
+                        $plateBlock = New-Object System.Windows.Controls.TextBlock
+                        $plateBlock.Text = $plateText
+                        $plateBlock.FontSize = 8.5
+                        $plateBlock.Foreground = $plateTextBrush
+                        $plate.Child = $plateBlock
+                        [void]$clipGrid.Children.Add($plate)
+                    }
+
+                    # State chip on the LAST body, so it sits at the clip's right edge the
+                    # way the mockup draws it -- on a cut-space row the first body's right
+                    # edge is a cut, not the end of the clip.
+                    if (-not $isAudioClip -and $isLastSeg) {
+                        $chipText = $(if ($isImageClip) { "img" }
+                            elseif ($null -eq $clip.Pip) { [string][char]0x26F6 + " full" }
+                            else { "{0} {1:0}% pip" -f ([string][char]0x25F1), ([double]$clip.Pip.W * 100.0) })
+                        $chip = New-Object System.Windows.Controls.Border
+                        $chip.BorderThickness = New-Object System.Windows.Thickness(1)
+                        $chip.BorderBrush = $(if ($isImageClip) { $imageBorderBrush } else { $goldBrush })
+                        $chip.Background = $chipBackBrush
+                        $chip.CornerRadius = New-Object System.Windows.CornerRadius(3)
+                        $chip.Padding = New-Object System.Windows.Thickness(3, 0, 3, 0)
+                        $chip.HorizontalAlignment = "Right"
+                        $chip.VerticalAlignment = "Top"
+                        $chip.Margin = New-Object System.Windows.Thickness(0, 2, 2, 0)
+                        $chipBlock = New-Object System.Windows.Controls.TextBlock
+                        $chipBlock.Text = $chipText
+                        $chipBlock.FontSize = 8.5
+                        $chipBlock.Foreground = $(if ($isImageClip) { $imageBorderBrush } else { $goldBrush })
+                        $chip.Child = $chipBlock
+                        [void]$clipGrid.Children.Add($chip)
+                    }
+
+                    # Selection only: the clip DRAG is Task 10's. GetNewClosure over
+                    # $thisClipId, exactly as the caption blocks do -- without it every body
+                    # captures the loop's final clip and clicking any of them selects the last.
+                    $clipBorder.Add_MouseLeftButtonDown({
+                        param($eventSource, $e)
+                        Set-TrimSelectedClip -Id $thisClipId
+                        Update-TrimLaneRows
+                        $e.Handled = $true
+                    }.GetNewClosure())
+
+                    [void]$bodyCanvas.Children.Add($clipBorder)
                 }
-
-                # Name plate, bottom-left on a dark scrim (spec 3.3).
-                $linked = -not [string]::IsNullOrEmpty([string]$clip.LinkId)
-                $plateText = [System.IO.Path]::GetFileName([string]$clip.Path)
-                if ($isMainClip) { $plateText = "{0} - cut to {1}" -f $plateText, (Format-TrimTime $v1End) }
-                if ($isImageClip) { $plateText = "{0} - {1:0.#}s" -f $plateText, [double]$clip.DurationOverride }
-                if ($linked) { $plateText = "{0} {1}" -f $plateText, ([char]::ConvertFromUtf32(0x1F517)) }
-                $plate = New-Object System.Windows.Controls.Border
-                $plate.Background = $plateBrush
-                $plate.HorizontalAlignment = "Left"
-                $plate.VerticalAlignment = "Bottom"
-                $plate.Padding = New-Object System.Windows.Thickness(3, 0, 3, 0)
-                $plateBlock = New-Object System.Windows.Controls.TextBlock
-                $plateBlock.Text = $plateText
-                $plateBlock.FontSize = 8.5
-                $plateBlock.Foreground = $plateTextBrush
-                $plate.Child = $plateBlock
-                [void]$clipGrid.Children.Add($plate)
-
-                # State chip, top-right: full-frame / pip percentage / image.
-                if ([string]$clip.Kind -ne "audio") {
-                    $chipText = $(if ($isImageClip) { "img" }
-                        elseif ($null -eq $clip.Pip) { [string][char]0x26F6 + " full" }
-                        else { "{0} {1:0}% pip" -f ([string][char]0x25F1), ([double]$clip.Pip.W * 100.0) })
-                    $chip = New-Object System.Windows.Controls.Border
-                    $chip.BorderThickness = New-Object System.Windows.Thickness(1)
-                    $chip.BorderBrush = $(if ($isImageClip) { $imageBorderBrush } else { $goldBrush })
-                    $chip.Background = $chipBackBrush
-                    $chip.CornerRadius = New-Object System.Windows.CornerRadius(3)
-                    $chip.Padding = New-Object System.Windows.Thickness(3, 0, 3, 0)
-                    $chip.HorizontalAlignment = "Right"
-                    $chip.VerticalAlignment = "Top"
-                    $chip.Margin = New-Object System.Windows.Thickness(0, 2, 2, 0)
-                    $chipBlock = New-Object System.Windows.Controls.TextBlock
-                    $chipBlock.Text = $chipText
-                    $chipBlock.FontSize = 8.5
-                    $chipBlock.Foreground = $(if ($isImageClip) { $imageBorderBrush } else { $goldBrush })
-                    $chip.Child = $chipBlock
-                    [void]$clipGrid.Children.Add($chip)
-                }
-
-                # Selection only: the clip DRAG is Task 10's. GetNewClosure over
-                # $thisClipId, exactly as the caption blocks do -- without it every body
-                # captures the loop's final clip and clicking any of them selects the last.
-                $clipBorder.Add_MouseLeftButtonDown({
-                    param($eventSource, $e)
-                    Set-TrimSelectedClip -Id $thisClipId
-                    Update-TrimLaneRows
-                    $e.Handled = $true
-                }.GetNewClosure())
-
-                [void]$bodyCanvas.Children.Add($clipBorder)
             }
 
             # Ghosts (spec 3.3): the montage region past V1's end on the V1 row, and the
@@ -3280,7 +3336,15 @@ try {
                 $ghostRect = New-Object System.Windows.Shapes.Rectangle
                 $ghostRect.Stroke = $lineBrush
                 $ghostRect.StrokeThickness = 1
-                $ghostRect.StrokeDashArray = New-Object System.Windows.Media.DoubleCollection(@([double]3, [double]3))
+                # Built and filled, NOT New-Object with an array: PowerShell splats an
+                # array argument across the constructor's parameters, so
+                # `New-Object DoubleCollection(@(3, 3))` looks for a 2-argument overload
+                # and throws "Cannot find an overload ... argument count: 2" -- which
+                # took the whole window down the first time a ghost was drawn.
+                $dashes = New-Object System.Windows.Media.DoubleCollection
+                [void]$dashes.Add(3.0)
+                [void]$dashes.Add(3.0)
+                $ghostRect.StrokeDashArray = $dashes
                 $ghostRect.RadiusX = 3; $ghostRect.RadiusY = 3
                 [void]$ghost.Children.Add($ghostRect)
                 $ghostBlock = New-Object System.Windows.Controls.TextBlock
@@ -5946,8 +6010,11 @@ try {
     # key, so a completed edge-trim asks for a different eight frames and an undo lands
     # straight back on the cached set.
     function Get-TrimStripCacheDir {
-        param([string]$Path, [double]$InStart, [double]$EffInEnd)
-        $key = "{0}|{1}|{2:N1}|{3:N1}" -f $Path, (Get-TrimMediaStamp -Path $Path), $InStart, $EffInEnd
+        param([string]$Path, [double]$InStart, [double]$EffInEnd, [int]$Frames = 8)
+        # Frames is part of the key: a cut-space piece asks for fewer than eight frames,
+        # and a 3-frame set sharing a directory with an 8-frame set would read as a
+        # half-rendered strip forever.
+        $key = "{0}|{1}|{2:N1}|{3:N1}|f{4}" -f $Path, (Get-TrimMediaStamp -Path $Path), $InStart, $EffInEnd, $Frames
         return (Join-Path $env:LOCALAPPDATA ("FFmpegGUI\stripcache\" + (Get-TrimMediaHash -Text $key)))
     }
 
@@ -6061,12 +6128,13 @@ try {
     # first and last cells are frames of the clip rather than its boundaries. Returns the
     # eight bitmaps once they all exist, $null (having queued the missing ones) until then.
     function Request-TrimClipStrip {
-        param([string]$Path, [double]$InStart, [double]$EffInEnd)
+        param([string]$Path, [double]$InStart, [double]$EffInEnd, [int]$Frames = 8)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-        $dir = Get-TrimStripCacheDir -Path $Path -InStart $InStart -EffInEnd $EffInEnd
+        $n = [math]::Max(1, [math]::Min(8, $Frames))
+        $dir = Get-TrimStripCacheDir -Path $Path -InStart $InStart -EffInEnd $EffInEnd -Frames $n
         $files = @()
         $missing = @()
-        for ($k = 0; $k -lt 8; $k++) {
+        for ($k = 0; $k -lt $n; $k++) {
             $f = Join-Path $dir ("strip{0}.jpg" -f $k)
             $files += ,$f
             if (-not (Test-Path -LiteralPath $f)) { $missing += ,$k }
@@ -6080,12 +6148,12 @@ try {
             }
             return ,@($images)
         }
-        # 0.05 rather than 0: a degenerate span would ask ffmpeg for eight copies of the
+        # 0.05 rather than 0: a degenerate span would ask ffmpeg for n copies of the
         # same frame, which is harmless but pointless -- this keeps the times distinct.
         $effLen = [math]::Max(0.05, $EffInEnd - $InStart)
         try { if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null } } catch { return $null }
         foreach ($k in $missing) {
-            $t = $InStart + (([double]$k + 0.5) / 8.0) * $effLen
+            $t = $InStart + (([double]$k + 0.5) / [double]$n) * $effLen
             Add-TrimRowMediaJob -Job @{
                 Kind = "strip"; Key = ("strip|{0}|{1}" -f $dir, $k); OutFile = $files[$k]
                 Path = $Path; Seconds = $t
