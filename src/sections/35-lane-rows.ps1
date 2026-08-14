@@ -192,6 +192,15 @@
                 $spine.Background = $goldBrush
                 [System.Windows.Controls.DockPanel]::SetDock($spine, "Left")
                 [void]$headHost.Children.Add($spine)
+            } elseif ($isMainLane) {
+                # User pick (2026-08-15): the MAIN lane wears the gold accent so V1 reads
+                # as "the" track at a glance -- the same spine language its grouped audio
+                # rows already speak, one notch bolder.
+                $mainSpine = New-Object System.Windows.Controls.Border
+                $mainSpine.Width = 3
+                $mainSpine.Background = $goldBrush
+                [System.Windows.Controls.DockPanel]::SetDock($mainSpine, "Left")
+                [void]$headHost.Children.Add($mainSpine)
             }
             [System.Windows.Controls.Grid]::SetColumn($headHost, 0)
 

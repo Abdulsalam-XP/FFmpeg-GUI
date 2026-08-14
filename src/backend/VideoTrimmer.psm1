@@ -224,6 +224,89 @@ function ConvertTo-AssFilterPath {
 # 2026-07-31: it froze ~0.9s at every join and dropped 267 frames, because the pieces keep
 # their original timestamps and leave a gap. Extracting each piece first gives every one
 # zero-based timing, which is what makes the join clean. Do not "simplify" this back.
+# The whole step arithmetic of an export, PURE: which mode runs, how the piece list
+# splits into steps (fades -> captions -> zooms -> pips -> extension), whether the
+# audiomix/mux markers append as real steps, and how many progress steps that adds up
+# to. Extracted from Export-CutListAsync (2026-08-15) so the arithmetic is
+# unit-testable without a window or an ffmpeg -- the runner consumes this verbatim.
+# Every "return-shape trap" comment below survived the move on purpose: the splits
+# return ",@($segments)" and must be assigned directly, never @(...)-wrapped.
+function Get-TrimExportStepPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        [Parameter(Mandatory = $true)][object[]]$Pieces,
+        [double[]]$FadeLengths = @(),
+        [object[]]$Captions = @(),
+        [object[]]$Zooms = @(),
+        [object[]]$Tracks = @(),
+        [object[]]$PipSpans = @(),
+        [int]$SourceAudioStreamCount = -1,
+        [object[]]$Lanes = @(),
+        [object[]]$OverlaySpans = @(),
+        [double]$TimelineLength = 0.0
+    )
+    $mode = Get-TrimExportMode -Lanes $Lanes -MainPath $InputFile -SourceAudioStreamCount $SourceAudioStreamCount -Tracks $Tracks -PipSpans $PipSpans
+    # Muting every audio lane is NOT trivial (Test-TrackStackTrivial refuses any Muted
+    # track), so a fully-muted stack lands in "rebuild" same as a gained one -- but running
+    # the audio pass there would mix zero sources over New-TrimAudioMixPlan's silence base
+    # and mux in a SILENT AAC stream, which is a different artifact than the spec's
+    # video-only, no-audio-stream-at-all output. Checked only for rebuild mode: audio-only
+    # mode already requires an audio pass to have any output at all.
+    # SCALAR, direct assignment -- not @()-wrapped (trap #5 applies to arrays only).
+    $hasAudio = if (@($Lanes).Count -gt 0) { Test-TrimLaneStackHasAudio -Lanes $Lanes } else { Test-TrackStackHasAudio -Tracks $Tracks }
+
+    # $work is the segment plan, not the piece list: with no fades the two are the same
+    # thing (one copy step per piece), and with fades it also carries the transition
+    # steps, so the runner stays a flat "one ffmpeg per entry, then concat".
+    $work = Get-TrimSegmentPlan -Pieces $Pieces -FadeLengths $FadeLengths
+    # Captions split copy segments further: the stretches with text on screen become
+    # "burn" segments that re-encode with the .ass baked in, and everything else still
+    # stream-copies, so a two-second caption costs two seconds of encoding rather than
+    # the whole export.
+    $work = Split-TrimSegmentsForCaptions -Segments $work -Captions $Captions
+    # Zooms split what is left the same way: the stretches under a zoom span become "zoom"
+    # segments that re-encode with a crop/scale chain; a caption segment inside a span
+    # just gains a .Zoom key instead of being split again.
+    $work = Split-TrimSegmentsForZooms -Segments $work -Zooms $Zooms
+    # Pip spans split the segments further (a segment under a pip re-encodes with an
+    # overlay chain even if it would otherwise stream-copy), still before the counts are
+    # computed. audio-only mode has no video-main at all: $work becomes empty and the
+    # audio pass is the only step.
+    if ($mode -eq "rebuild") {
+        if (@($Lanes).Count -gt 0) {
+            # Lane content running past the last piece gets a black base segment to
+            # composite onto -- ordinary segments as far as the encoder/concat go.
+            $work = $work + (Get-TrimExtensionSegments -Pieces $Pieces -FadeLengths $FadeLengths -TimelineLength $TimelineLength)
+        }
+        # ARRAY (trap #5): outer @() around the whole if/else, or the else branch's
+        # one-element array unwraps to a bare hashtable and Split-TrimSegmentsForPips'
+        # @($PipSpans) Where-Object would iterate its properties instead of one span.
+        $effectiveSpans = @(if (@($Lanes).Count -gt 0) { @($OverlaySpans) } else { @($PipSpans) })
+        $work = Split-TrimSegmentsForPips -Segments $work -PipSpans $effectiveSpans
+    } elseif ($mode -eq "audio-only") {
+        $work = @()
+    }
+    # Captured before the audiomix/mux markers are appended -- the count of REAL video
+    # segments, which sizes the temp piece files and the mux step's concat list.
+    $segCount = $work.Count
+    # Whether audiomix/mux got appended as real $work entries -- true for every
+    # non-trivial mode EXCEPT a rebuild stack with no unmuted audio at all, which skips
+    # the audio pass and falls through to the same implicit trailing concat trivial mode
+    # uses (its pieces are already video-only, so plain -c copy of them is correct).
+    $appendsFinalSteps = ($mode -eq "rebuild" -and $hasAudio) -or ($mode -eq "audio-only")
+    if ($mode -eq "rebuild" -and $hasAudio) {
+        $work = $work + @(@{ Kind = "audiomix" }, @{ Kind = "mux" })
+    } elseif ($mode -eq "audio-only") {
+        $work = $work + @(@{ Kind = "audiomix" })
+    }
+    # "+1" counts the implicit trailing concat step; modes whose final steps are real
+    # $work entries have nothing after the last entry, so the +1 does not apply there.
+    $stepCount = $work.Count + 1
+    if ($appendsFinalSteps) { $stepCount = $work.Count }
+    return @{ Mode = $mode; HasAudio = $hasAudio; Work = $work; SegCount = $segCount
+              AppendsFinalSteps = $appendsFinalSteps; StepCount = $stepCount }
+}
+
 function Export-CutListAsync {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Context,
@@ -288,93 +371,24 @@ function Export-CutListAsync {
     # branch inside Get-TrimExportMode only activates when $Lanes is non-empty, so a legacy
     # caller (empty $Lanes, the default) reaches the exact same "trivial"/"rebuild"/
     # "audio-only" decision it always did.
-    $mode = Get-TrimExportMode -Lanes $Lanes -MainPath $InputFile -SourceAudioStreamCount $SourceAudioStreamCount -Tracks $Tracks -PipSpans $PipSpans
+    # The whole step plan -- mode, segment splits, audiomix/mux appends, step count --
+    # comes from ONE pure function (Get-TrimExportStepPlan above, extracted 2026-08-15)
+    # so the arithmetic is unit-tested; this runner consumes it verbatim.
+    $exportPlan = Get-TrimExportStepPlan -InputFile $InputFile -Pieces $Pieces -FadeLengths $FadeLengths `
+        -Captions $Captions -Zooms $Zooms -Tracks $Tracks -PipSpans $PipSpans `
+        -SourceAudioStreamCount $SourceAudioStreamCount -Lanes $Lanes -OverlaySpans $OverlaySpans `
+        -TimelineLength $TimelineLength
+    $mode = [string]$exportPlan.Mode
     # A deleted video-main means there is no video pipeline at all -- the audio pass IS the
     # export, and it writes an audio container rather than an mp4.
     if ($mode -eq "audio-only") {
         $outputFile = [System.IO.Path]::ChangeExtension($outputFile, ".m4a")
     }
-    # Muting every audio lane is NOT trivial (Test-TrackStackTrivial refuses any Muted
-    # track), so a fully-muted stack lands in "rebuild" same as a gained one -- but running
-    # the audio pass there would mix zero sources over New-TrimAudioMixPlan's silence base
-    # and mux in a SILENT AAC stream, which is a different artifact than the spec's
-    # video-only, no-audio-stream-at-all output. Checked only for rebuild mode: audio-only
-    # mode already requires an audio pass to have any output at all (a fully-muted,
-    # video-main-deleted stack is a degenerate empty project, out of scope here).
-    # SCALAR, direct assignment -- not @()-wrapped (trap #5 applies to arrays only).
-    $hasAudio = if (@($Lanes).Count -gt 0) { Test-TrimLaneStackHasAudio -Lanes $Lanes } else { Test-TrackStackHasAudio -Tracks $Tracks }
-
-    # $work is the segment plan, not the piece list: with no fades the two are the same
-    # thing (one copy step per piece), and with fades it also carries the transition
-    # steps, so the runner below stays a flat "one ffmpeg per entry, then concat".
-    # NOT @(Get-TrimSegmentPlan ...): the function returns ",@($segments)", which reaches
-    # the caller as one object that happens to be an array. Wrapping that in @() makes a
-    # one-element array holding the segment array, so $work.Count is 1 and the export
-    # runs a single step against a bogus segment -- with or without fades. Assigning the
-    # call directly is what keeps it a real list.
-    $work = Get-TrimSegmentPlan -Pieces $Pieces -FadeLengths $FadeLengths
-    # Captions split copy segments further: the stretches with text on screen become
-    # "burn" segments that re-encode with the .ass baked in, and everything else still
-    # stream-copies, so a two-second caption costs two seconds of encoding rather than
-    # the whole export. Same return-shape trap as above -- assigned directly, never
-    # @(...)-wrapped.
-    $work = Split-TrimSegmentsForCaptions -Segments $work -Captions $Captions
-    # Zooms split what is left the same way: the stretches under a zoom span become "zoom"
-    # segments that re-encode with a crop/scale chain, and a caption segment that happens
-    # to sit inside a span just gains a .Zoom key instead of being split again (its shape
-    # is already fixed by the caption). Same return-shape trap -- direct assignment.
-    # $stepCount is computed after the LAST split, because the splits are what decide how
-    # many ffmpeg runs there actually are.
-    $work = Split-TrimSegmentsForZooms -Segments $work -Zooms $Zooms
-    # Non-trivial video pipeline: pip spans split the segments further (a segment under a
-    # pip re-encodes with an overlay chain even if it would otherwise stream-copy), still
-    # before $stepCount is computed -- the splits are what decide how many ffmpeg runs
-    # there actually are. audio-only mode has no video-main at all, so the whole video
-    # pipeline is skipped: $work becomes empty and the audio pass is the only step.
-    if ($mode -eq "rebuild") {
-        if (@($Lanes).Count -gt 0) {
-            # Lane content running past the last piece (e.g. a pip clip that keeps going
-            # after V1 ends) gets a black base segment to composite onto -- ordinary
-            # segments as far as the splitter/encoder/concat are concerned.
-            $work = $work + (Get-TrimExtensionSegments -Pieces $Pieces -FadeLengths $FadeLengths -TimelineLength $TimelineLength)
-        }
-        # ARRAY (trap #5): outer @() around the whole if/else, or the else branch's
-        # one-element array unwraps to a bare hashtable and Split-TrimSegmentsForPips'
-        # @($PipSpans) Where-Object below would iterate its properties instead of one span.
-        $effectiveSpans = @(if (@($Lanes).Count -gt 0) { @($OverlaySpans) } else { @($PipSpans) })
-        $work = Split-TrimSegmentsForPips -Segments $work -PipSpans $effectiveSpans
-    } elseif ($mode -eq "audio-only") {
-        $work = @()
-    }
-    # Captured before the audiomix/mux markers are appended below -- this is the count of
-    # real video segments, used to size $tempFiles to actual piece files only (an audiomix
-    # or mux marker is never extracted to piece{i}.mp4) and to know how many of $tempFiles
-    # belong in the mux step's concat list.
-    $segCount = $work.Count
-    # Whether audiomix/mux got appended as real $work entries -- true for every
-    # non-trivial mode EXCEPT a rebuild stack with no unmuted audio at all. That last case
-    # skips the audio pass entirely and falls through to the SAME implicit "one step past
-    # the segment list" concat trivial mode uses (unchanged code, further down): the
-    # pieces are already video-only (every rebuild-mode segment encode carries -an), so a
-    # plain "-map 0 -c copy" of them is already the correct video-only output -- no mux,
-    # no .m4a, nothing left to append.
-    $appendsFinalSteps = ($mode -eq "rebuild" -and $hasAudio) -or ($mode -eq "audio-only")
-    if ($mode -eq "rebuild" -and $hasAudio) {
-        # Two more RunStep entries, reusing the same progress/cancel plumbing as every
-        # other step: mix the tracks' audio, then mux it onto the video-only concat.
-        $work = $work + @(@{ Kind = "audiomix" }, @{ Kind = "mux" })
-    } elseif ($mode -eq "audio-only") {
-        # No video at all -- the mix pass writes the final output directly.
-        $work = $work + @(@{ Kind = "audiomix" })
-    }
-    $stepCount = $work.Count + 1
-    # For modes where audiomix (and mux) are now real entries INSIDE $work -- unlike the
-    # trivial path's implicit "one step past the segment list is the concat", there is
-    # nothing left to do after the last entry in $work, so the "+1" above (which exists
-    # only to count that implicit trailing concat step) does not apply. A rebuild stack
-    # with no unmuted audio did NOT get those entries appended, so it keeps the "+1" and
-    # reaches the implicit concat step exactly like trivial mode does.
-    if ($appendsFinalSteps) { $stepCount = $work.Count }
+    $hasAudio = [bool]$exportPlan.HasAudio
+    $work = @($exportPlan.Work)
+    $segCount = [int]$exportPlan.SegCount
+    $appendsFinalSteps = [bool]$exportPlan.AppendsFinalSteps
+    $stepCount = [int]$exportPlan.StepCount
     $sourceProfile = Get-TrimSourceProfile -InputFile $InputFile
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-cut-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -1083,4 +1097,4 @@ function Test-TrackStackHasAudio {
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
     Export-TrimThumbnail, Export-TrimAudioStream, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
     ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimWaveformFilter, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
-    Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration
+    Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration, Get-TrimExportStepPlan

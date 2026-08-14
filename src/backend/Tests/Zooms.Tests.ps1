@@ -247,7 +247,9 @@ Describe "New-ZoomCropFilter" {
         # The rework restates everything from literal source dimensions instead.
         $f | Should Not Match "iw"
         $f | Should Not Match "ih"
-        $f | Should Match $([regex]::Escape("trunc(2560/(0.7+(-0.15)*t/3)/2)*2"))
+        # This glide's endpoint union is small enough that the 2026-08-15 pre-crop
+        # engages: the per-frame trunc() runs on the union's width, not the frame's.
+        $f | Should Match $([regex]::Escape("trunc(1800/(0.7+(-0.15)*t/3)/2)*2"))
     }
     It "backslash-escapes the commas inside a glide expression" {
         $f = New-ZoomCropFilter -Zoom @{W0=1.0;W1=0.5;H0=1.0;H1=0.5;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
@@ -297,5 +299,35 @@ Describe "New-ZoomCropFilter" {
     }
     It "throws when Duration is zero instead of emitting a broken t/0 expression" {
         { New-ZoomCropFilter -Zoom @{W0=1.0;W1=0.5;H0=1.0;H1=0.5;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 0 -Width 100 -Height 100 } | Should Throw
+    }
+}
+
+# Deep-glide fast path (2026-08-15): zoom-in glides statically crop to the endpoint
+# union first, so the per-frame upscale only touches pixels that can appear.
+Describe "New-ZoomCropFilter union pre-crop" {
+    It "pre-crops a deep glide to the endpoint union" {
+        $f = New-ZoomCropFilter -Zoom @{W0=0.5;W1=0.3;H0=0.5;H1=0.3;CX0=0.5;CX1=0.55;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
+        # union x: [0.25,0.75]*2560 = [640,1920] -> margin+even = crop 1288 wide at 636
+        # union y: [0.25,0.75]*1440 = [360,1080] -> margin+even = crop 728 tall at 356
+        $f | Should Match "^crop=1288:728:636:356,scale="
+        $f | Should Match $([regex]::Escape("trunc(1288/(0.5+(-0.2)*t/4)/2)*2"))
+        # centre rebased into the pre-cropped frame: -636 offset
+        $f | Should Match $([regex]::Escape("(-636+(0.5+(0.05)*t/4)*2560)"))
+    }
+    It "skips the pre-crop when a box hangs off the frame edge" {
+        # cx 0.05 at w 0.3: the window clamps inward mid-glide, so the endpoint union
+        # is NOT a safe bound and the full-frame chain must run.
+        $f = New-ZoomCropFilter -Zoom @{W0=0.3;W1=0.3;H0=0.5;H1=0.3;CX0=0.05;CX1=0.05;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
+        $f | Should Match "^scale="
+        $f | Should Match $([regex]::Escape("trunc(2560/"))
+    }
+    It "skips the pre-crop when the union is nearly the whole frame" {
+        $f = New-ZoomCropFilter -Zoom @{W0=1.0;W1=0.5;H0=1.0;H1=0.5;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
+        $f | Should Match "^scale="
+    }
+    It "never pre-crops a zoom-out (the pad path owns it)" {
+        $f = New-ZoomCropFilter -Zoom @{W0=1.0;W1=2.0;H0=1.0;H1=2.0;CX0=0.5;CX1=0.5;CY0=0.5;CY1=0.5} -Duration 4 -Width 2560 -Height 1440
+        $f | Should Match "^pad="
+        $f | Should Not Match "^crop="
     }
 }

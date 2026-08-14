@@ -377,6 +377,45 @@ function New-ZoomCropFilter {
     if ($maxW -gt 1.0001) { $cx0 = 0.5; $cx1 = 0.5 }
     if ($maxH -gt 1.0001) { $cy0 = 0.5; $cy1 = 0.5 }
 
+    # Deep-glide fast path (2026-08-15): a zoom-IN glide only ever shows the union of
+    # its per-frame crop windows, and with every coordinate linear in t that union's
+    # bounds sit at the ENDPOINTS -- so the chain can statically crop to the union
+    # first and run the expensive per-frame upscale on just those pixels (a 0.3x
+    # punch-in used to upscale the whole 1440p frame to ~8500px wide every frame).
+    # Guarded three ways: zoom-in only (zoom-out needs the black pad); the RAW union
+    # must sit fully inside the frame (if a box hangs off an edge, the window's
+    # clamped x/y SHIFTS it inward mid-glide and can show pixels outside the endpoint
+    # union -- linearity only makes the endpoint union exact when no clamping ever
+    # engages); and it must actually remove >10% of the pixels.
+    $preCrop = ""
+    $workW = $padW
+    $workH = $padH
+    $offX = 0
+    $offY = 0
+    if ($maxW -le 1.0001 -and $maxH -le 1.0001) {
+        $uL = [math]::Min($cx0 - $w0 / 2.0, $cx1 - $w1 / 2.0) * $Width
+        $uR = [math]::Max($cx0 + $w0 / 2.0, $cx1 + $w1 / 2.0) * $Width
+        $uT = [math]::Min($cy0 - $h0 / 2.0, $cy1 - $h1 / 2.0) * $Height
+        $uB = [math]::Max($cy0 + $h0 / 2.0, $cy1 + $h1 / 2.0) * $Height
+        if ($uL -ge 0.0 -and $uT -ge 0.0 -and $uR -le [double]$Width -and $uB -le [double]$Height) {
+            # +4 margin each side (same spirit as the pad's +8) so trunc-to-even in
+            # the scaled size can never pull the crop window outside the union.
+            $ux = [math]::Max(0, 2 * [int][math]::Floor(($uL - 4.0) / 2.0))
+            $uy = [math]::Max(0, 2 * [int][math]::Floor(($uT - 4.0) / 2.0))
+            $uxr = [math]::Min([int]$Width, 2 * [int][math]::Ceiling(($uR + 4.0) / 2.0))
+            $uyb = [math]::Min([int]$Height, 2 * [int][math]::Ceiling(($uB + 4.0) / 2.0))
+            $uw = $uxr - $ux
+            $uh = $uyb - $uy
+            if ($uw -ge 16 -and $uh -ge 16 -and ($uw * $uh) -lt (0.9 * $Width * $Height)) {
+                $preCrop = "crop={0}:{1}:{2}:{3}," -f $uw, $uh, $ux, $uy
+                $workW = $uw
+                $workH = $uh
+                $offX = $ux
+                $offY = $uy
+            }
+        }
+    }
+
     $dS = $Duration.ToString("0.####", $inv)
     $wT = "({0}+({1})*t/{2})" -f $w0.ToString("0.####", $inv), ($w1 - $w0).ToString("0.####", $inv), $dS
     $hT = "({0}+({1})*t/{2})" -f $h0.ToString("0.####", $inv), ($h1 - $h0).ToString("0.####", $inv), $dS
@@ -389,19 +428,21 @@ function New-ZoomCropFilter {
     # (measured live on the old uniform model: a 1.4x->1.8x glide stayed pinned to the
     # 1.4x width). Identical trunc() text in both places keeps scale and crop in exact
     # agreement, so the window can never fall outside the frame.
-    $swExpr = "trunc({0}/{1}/2)*2" -f $padW.ToString($inv), $wT
-    $shExpr = "trunc({0}/{1}/2)*2" -f $padH.ToString($inv), $hT
+    $swExpr = "trunc({0}/{1}/2)*2" -f $workW.ToString($inv), $wT
+    $shExpr = "trunc({0}/{1}/2)*2" -f $workH.ToString($inv), $hT
 
     # Window centre in scaled coordinates: the source-frame point (cx*Width) sits at
-    # (padX + cx*Width) in padded coordinates and is divided by W(t) when scaled.
-    $cxPad = "({0}+{1}*{2})/{3}" -f $padX.ToString($inv), $cxT, $Width.ToString($inv), $wT
-    $cyPad = "({0}+{1}*{2})/{3}" -f $padY.ToString($inv), $cyT, $Height.ToString($inv), $hT
+    # (padX + cx*Width) in padded coordinates -- or (cx*Width - offX) in pre-cropped
+    # ones (pad and pre-crop are mutually exclusive) -- and is divided by W(t) when
+    # scaled.
+    $cxPad = "({0}+{1}*{2})/{3}" -f ($padX - $offX).ToString($inv), $cxT, $Width.ToString($inv), $wT
+    $cyPad = "({0}+{1}*{2})/{3}" -f ($padY - $offY).ToString($inv), $cyT, $Height.ToString($inv), $hT
     $halfW = ($Width / 2.0).ToString("0.####", $inv)
     $halfH = ($Height / 2.0).ToString("0.####", $inv)
     $x = "min(max({0}-{1}\,0)\,{2}-{3})" -f $cxPad, $halfW, $swExpr, $Width.ToString($inv)
     $y = "min(max({0}-{1}\,0)\,{2}-{3})" -f $cyPad, $halfH, $shExpr, $Height.ToString($inv)
 
-    $chain = "scale=w={0}:h={1}:eval=frame,crop={2}:{3}:{4}:{5},setsar=1" -f $swExpr, $shExpr, $Width, $Height, $x, $y
+    $chain = "{0}scale=w={1}:h={2}:eval=frame,crop={3}:{4}:{5}:{6},setsar=1" -f $preCrop, $swExpr, $shExpr, $Width, $Height, $x, $y
     if ($padW -ne $Width -or $padH -ne $Height) {
         $chain = "pad={0}:{1}:{2}:{3}:black,{4}" -f $padW, $padH, $padX, $padY, $chain
     }

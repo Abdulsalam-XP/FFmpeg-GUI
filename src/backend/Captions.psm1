@@ -105,7 +105,38 @@ function Split-TrimSegmentsForCaptions {
         $overlapping = @($active | Where-Object { [double]$_.Start -lt $segEnd -and [double]$_.End -gt $segStart })
 
         if ($seg.Kind -ne "cut") {
-            if ($overlapping.Count -gt 0) { $seg.Captions = $overlapping }
+            $segCaps = @($overlapping)
+            # A transition plays TWO source windows at once: the outgoing tail
+            # [Start, Start+d] (which $overlapping already covered) and the incoming
+            # head [NextStart, NextStart+d]. A caption living in the INCOMING window
+            # used to be silently absent during the dissolve -- dropped outright if it
+            # ended inside it, arriving late otherwise. Attach it as a CLONE rebased
+            # into outgoing-window time: output time is (t - NextStart), the .ass
+            # writer shifts by -Start, so the clone's times carry (Start - NextStart).
+            # Clamped to the window; both-window captions render from both entries,
+            # which overlap into the identical text at the identical spot.
+            if ($seg.Kind -eq "transition" -and $null -ne $seg.NextStart) {
+                $inStart = [double]$seg.NextStart
+                $inEnd = $inStart + [double]$seg.Duration
+                $shift = $segStart - $inStart
+                foreach ($cap in @($active | Where-Object { [double]$_.Start -lt $inEnd -and [double]$_.End -gt $inStart })) {
+                    $cs = [math]::Max([double]$cap.Start, $inStart) + $shift
+                    $ce = [math]::Min([double]$cap.End, $inEnd) + $shift
+                    if (($ce - $cs) -lt 0.01) { continue }
+                    # Captions are PSCustomObjects (New-Caption), but a hashtable copy
+                    # surviving from some older path clones just as safely this way.
+                    $clone = [PSCustomObject]@{}
+                    if ($cap -is [hashtable]) {
+                        foreach ($k in $cap.Keys) { Add-Member -InputObject $clone -NotePropertyName ([string]$k) -NotePropertyValue $cap[$k] }
+                    } else {
+                        foreach ($prop in $cap.PSObject.Properties) { Add-Member -InputObject $clone -NotePropertyName $prop.Name -NotePropertyValue $prop.Value }
+                    }
+                    $clone.Start = $cs
+                    $clone.End = $ce
+                    $segCaps += ,$clone
+                }
+            }
+            if (@($segCaps).Count -gt 0) { $seg.Captions = @($segCaps) }
             $result += ,$seg
             continue
         }

@@ -378,3 +378,57 @@ Describe "Get-TrimWaveformFilter stream selection" {
         (Get-TrimWaveformFilter -StreamIndex 0).StartsWith("[0:0]") | Should Be $true
     }
 }
+
+# The export's whole step arithmetic, extracted pure (2026-08-15) exactly so these
+# tests can exist: mode, segment splits, audiomix/mux appends, progress step count.
+Describe "Get-TrimExportStepPlan" {
+    $pieces = @([PSCustomObject]@{ Start = 0.0; End = 30.0 })
+    It "trivial single piece: one copy step plus the implicit concat" {
+        $p = Get-TrimExportStepPlan -InputFile "a.mp4" -Pieces $pieces
+        $p.Mode | Should Be "trivial"
+        @($p.Work).Count | Should Be 1
+        $p.SegCount | Should Be 1
+        $p.AppendsFinalSteps | Should Be $false
+        $p.StepCount | Should Be 2
+    }
+    It "a fade adds a transition step between the copies" {
+        $two = @([PSCustomObject]@{ Start = 0.0; End = 10.0 }, [PSCustomObject]@{ Start = 20.0; End = 30.0 })
+        $p = Get-TrimExportStepPlan -InputFile "a.mp4" -Pieces $two -FadeLengths @(1.0)
+        @($p.Work).Count | Should Be 3
+        @($p.Work | Where-Object { $_.Kind -eq "transition" }).Count | Should Be 1
+        $p.StepCount | Should Be 4
+    }
+    It "a gained lane stack rebuilds: audiomix and mux append as real steps" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{ StreamIdx = 1; Label = "Game" })
+        $lanes[1].Clips[0].GainDb = 5.0
+        $p = Get-TrimExportStepPlan -InputFile "a.mp4" -Pieces $pieces -Lanes $lanes -SourceAudioStreamCount 1
+        $p.Mode | Should Be "rebuild"
+        $p.HasAudio | Should Be $true
+        $p.AppendsFinalSteps | Should Be $true
+        @($p.Work).Count | Should Be 3
+        $p.SegCount | Should Be 1
+        @($p.Work)[1].Kind | Should Be "audiomix"
+        @($p.Work)[2].Kind | Should Be "mux"
+        # No implicit trailing concat: the final steps are real entries.
+        $p.StepCount | Should Be 3
+    }
+    It "audio-only: no video segments at all, one mix step" {
+        $lanes = @((New-TrimLane -Kind "audio" -Clips @((New-TrimClip -Kind "audio" -Path "m.mp3"))))
+        $p = Get-TrimExportStepPlan -InputFile "a.mp4" -Pieces $pieces -Lanes $lanes -SourceAudioStreamCount 1
+        $p.Mode | Should Be "audio-only"
+        $p.SegCount | Should Be 0
+        @($p.Work).Count | Should Be 1
+        @($p.Work)[0].Kind | Should Be "audiomix"
+        $p.StepCount | Should Be 1
+    }
+    It "an overlay span splits the rebuild segments it covers" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams @(@{ StreamIdx = 1; Label = "Game" })
+        $lanes[1].Clips[0].GainDb = 5.0
+        $spans = @(@{ Start = 5.0; End = 8.0; Overlay = @{ ClipId = "c1"; Path = "c.mp4"; Pip = $null; Kind = "video"; InStart = 0.0 } })
+        $p = Get-TrimExportStepPlan -InputFile "a.mp4" -Pieces $pieces -Lanes $lanes -SourceAudioStreamCount 1 -OverlaySpans $spans
+        # 0-5 copy, 5-8 overlay, 8-30 copy, then audiomix + mux.
+        $p.SegCount | Should Be 3
+        @($p.Work).Count | Should Be 5
+        $p.StepCount | Should Be 5
+    }
+}

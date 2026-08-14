@@ -212,3 +212,45 @@ Describe "Split-TrimSegmentsForCaptions" {
         ($r | Where-Object { $_.Kind -eq "burn" }).Count | Should Be 2
     }
 }
+
+# A transition plays TWO source windows at once; captions in the INCOMING window used
+# to be silently absent during the dissolve (2026-08-15 fix: rebased clones).
+Describe "Split-TrimSegmentsForCaptions transition incoming window" {
+    It "attaches an incoming-window caption as a rebased clone" {
+        $segs = @(@{ Kind = "transition"; Start = 10.0; NextStart = 30.0; Duration = 1.0 })
+        $c = New-Caption -Start 30.2 -End 30.6 -Text "incoming"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c)
+        @($r[0].Captions).Count | Should Be 1
+        # shift = Start - NextStart = -20: the ass writer's -Start offset then lands it
+        # at output time 0.2..0.6, exactly when that footage shows in the dissolve.
+        [math]::Round([double]@($r[0].Captions)[0].Start, 6) | Should Be 10.2
+        [math]::Round([double]@($r[0].Captions)[0].End, 6) | Should Be 10.6
+    }
+    It "clamps a clone that outlives the incoming window" {
+        $segs = @(@{ Kind = "transition"; Start = 10.0; NextStart = 30.0; Duration = 1.0 })
+        $c = New-Caption -Start 30.5 -End 35.0 -Text "runs on"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c)
+        [double]@($r[0].Captions)[0].Start | Should Be 10.5
+        [double]@($r[0].Captions)[0].End | Should Be 11.0
+    }
+    It "never mutates the original caption object" {
+        $segs = @(@{ Kind = "transition"; Start = 10.0; NextStart = 30.0; Duration = 1.0 })
+        $c = New-Caption -Start 30.2 -End 30.6 -Text "incoming"
+        [void](Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c))
+        [double]$c.Start | Should Be 30.2
+        [double]$c.End | Should Be 30.6
+    }
+    It "collects both windows when each has its own caption" {
+        $segs = @(@{ Kind = "transition"; Start = 10.0; NextStart = 30.0; Duration = 1.0 })
+        $a = New-Caption -Start 10.1 -End 10.4 -Text "outgoing"
+        $b = New-Caption -Start 30.3 -End 30.8 -Text "incoming"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($a, $b)
+        @($r[0].Captions).Count | Should Be 2
+    }
+    It "ignores captions in neither window" {
+        $segs = @(@{ Kind = "transition"; Start = 10.0; NextStart = 30.0; Duration = 1.0 })
+        $c = New-Caption -Start 20.0 -End 21.0 -Text "elsewhere"
+        $r = Split-TrimSegmentsForCaptions -Segments $segs -Captions @($c)
+        $null -eq $r[0].Captions | Should Be $true
+    }
+}
