@@ -491,17 +491,42 @@ try {
             $stack = New-Object System.Windows.Controls.StackPanel
 
             $name = New-Object System.Windows.Controls.TextBlock
-            # A "Saved" row is a project save, not just a recently touched file -- say so
-            # (user ask 2026-08-14): opening it restores the saved edit.
             $recentLeaf = [System.IO.Path]::GetFileName($entry.Path)
-            $name.Text = $(if ([string]$entry.Job -eq "Saved") { "Saved file: " + $recentLeaf } else { $recentLeaf })
+            $name.Text = $recentLeaf
             $name.Foreground = $ctx.Window.FindResource("BrushTextPrimary")
             $name.FontFamily = $ctx.Window.FindResource("FontChrome")
             $name.FontSize = 12.5
             $name.FontWeight = "SemiBold"
             # A long filename must not push the MOST RECENT pill off the card.
             $name.TextTrimming = "CharacterEllipsis"
-            $stack.Children.Add($name) | Out-Null
+            if ([string]$entry.Job -eq "Saved") {
+                # A "Saved" row is a restorable edit, not just a recently touched file --
+                # the label is gold and GLOWS so it reads at a glance (user ask
+                # 2026-08-14: "more apparent, glowy"). DockPanel, not StackPanel: the
+                # filename keeps a finite width so its ellipsis still works.
+                $nameLine = New-Object System.Windows.Controls.DockPanel
+                $nameLine.LastChildFill = $true
+                $savedTag = New-Object System.Windows.Controls.TextBlock
+                $savedTag.Text = "Saved file:"
+                $savedTag.FontFamily = $ctx.Window.FindResource("FontChrome")
+                $savedTag.FontSize = 12.5
+                $savedTag.FontWeight = "Bold"
+                $savedTag.Foreground = $ctx.Window.FindResource("BrushGoldValue")
+                $savedTag.Margin = New-Object System.Windows.Thickness(0, 0, 5, 0)
+                $tagGlow = New-Object System.Windows.Media.Effects.DropShadowEffect
+                $tagGlow.ShadowDepth = 0
+                $tagGlow.BlurRadius = 9
+                $tagGlow.Opacity = 0.95
+                $goldBrushSaved = $ctx.Window.FindResource("BrushGoldValue")
+                if ($goldBrushSaved -is [System.Windows.Media.SolidColorBrush]) { $tagGlow.Color = $goldBrushSaved.Color }
+                $savedTag.Effect = $tagGlow
+                [System.Windows.Controls.DockPanel]::SetDock($savedTag, [System.Windows.Controls.Dock]::Left)
+                [void]$nameLine.Children.Add($savedTag)
+                [void]$nameLine.Children.Add($name)
+                $stack.Children.Add($nameLine) | Out-Null
+            } else {
+                $stack.Children.Add($name) | Out-Null
+            }
 
             # A When that will not parse (hand-edited settings.json) must not take the
             # whole list down with it -- the row is still useful without an age.
