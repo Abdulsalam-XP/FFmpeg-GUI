@@ -272,14 +272,6 @@ Test-ScriptUpdates
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-$errorBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0xE0, 0x6C, 0x6C))
-# Finished-successfully green. Distinct from both the error red and the muted grey every
-# other panel message uses, so "it worked, here is the file" is not just more grey text.
-$successBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x7A, 0xD9, 0xA5))
-# Amber for warnings that do not stop anything (missing font, and the like): red implies
-# the action failed, grey implies nothing happened -- neither is true for a heads-up.
-$warningBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0xE0, 0xB4, 0x5C))
-
 try {
     # The whole UI body lives in dot-sourced section files (sections\*.ps1). Dot-
     # sourcing runs each file IN THIS SCOPE, inside this try -- identical semantics
