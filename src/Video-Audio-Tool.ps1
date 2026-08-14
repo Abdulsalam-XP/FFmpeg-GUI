@@ -1510,6 +1510,14 @@ try {
     # Rebuilt from scratch on every change: a handful of pieces, so there is nothing to
     # gain from diffing and no stale-element state to get wrong.
     function Update-TrimTimeline {
+        # -TickOnly is the transport tick's path: while the clock is the only thing that
+        # moved, the lane rows' STRUCTURE cannot have changed, so the tail repositions the
+        # stack-spanning playhead line alone instead of rebuilding every row (headers,
+        # faders, filmstrip Images) 20x a second -- the full rebuild saturated the UI
+        # thread and dropped the tick rate to ~8/sec. Every edit-driven caller keeps the
+        # full rebuild: a split pressed MID-PLAYBACK still comes through Invoke-TrimSplit,
+        # which calls this without the switch.
+        param([switch]$TickOnly)
         if (-not $script:TrimEditorReady) { return }
         $canvasTrimTimeline.Children.Clear()
 
@@ -1769,7 +1777,11 @@ try {
         Update-TrimZoomLane
         # Same hook point, same reasoning: the track lanes' clip bars are positioned with
         # Convert-TrimTimeToX too, so they need the timeline pieces this pass just drew from.
-        Update-TrimLaneRows
+        if ($TickOnly) {
+            Update-TrimLaneOverlay
+        } else {
+            Update-TrimLaneRows
+        }
     }
 
     # Where waveform strips live on disk: the persistent per-source cache when it was
@@ -7375,7 +7387,7 @@ try {
             }
 
             Update-TrimPosition
-            Update-TrimTimeline
+            Update-TrimTimeline -TickOnly
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
             # After the fade overlay, not before: the fade owns the picture while it is up
             # and Update-CaptionOverlay reads the key it just set.
