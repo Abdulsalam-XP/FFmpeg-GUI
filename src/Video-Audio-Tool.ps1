@@ -1894,10 +1894,10 @@ try {
             $grip.Style = $ctx.Window.FindResource("TimelinePlayheadGripStyle")
             $points = New-Object System.Windows.Media.PointCollection
             $points.Add((New-Object System.Windows.Point(0, 0)))
-            $points.Add((New-Object System.Windows.Point(11, 0)))
-            $points.Add((New-Object System.Windows.Point(5.5, 7)))
+            $points.Add((New-Object System.Windows.Point(16, 0)))
+            $points.Add((New-Object System.Windows.Point(8, 10)))
             $grip.Points = $points
-            [System.Windows.Controls.Canvas]::SetLeft($grip, $playX - 5.5)
+            [System.Windows.Controls.Canvas]::SetLeft($grip, $playX - 8)
             [System.Windows.Controls.Canvas]::SetTop($grip, 0)
             $canvasTrimTimeline.Children.Add($grip) | Out-Null
         }
@@ -1979,10 +1979,10 @@ try {
                     $rulerGrip.Style = $ctx.Window.FindResource("TimelinePlayheadGripStyle")
                     $rulerGripPoints = New-Object System.Windows.Media.PointCollection
                     $rulerGripPoints.Add((New-Object System.Windows.Point(0, 0)))
-                    $rulerGripPoints.Add((New-Object System.Windows.Point(11, 0)))
-                    $rulerGripPoints.Add((New-Object System.Windows.Point(5.5, 7)))
+                    $rulerGripPoints.Add((New-Object System.Windows.Point(16, 0)))
+                    $rulerGripPoints.Add((New-Object System.Windows.Point(8, 10)))
                     $rulerGrip.Points = $rulerGripPoints
-                    [System.Windows.Controls.Canvas]::SetLeft($rulerGrip, $playX - 5.5)
+                    [System.Windows.Controls.Canvas]::SetLeft($rulerGrip, $playX - 8)
                     [System.Windows.Controls.Canvas]::SetTop($rulerGrip, 0)
                     $canvasTrimRuler.Children.Add($rulerGrip) | Out-Null
                 }
@@ -4227,11 +4227,11 @@ try {
         $wedge = New-Object System.Windows.Shapes.Polygon
         $wedgePoints = New-Object System.Windows.Media.PointCollection
         $wedgePoints.Add((New-Object System.Windows.Point(0, 0)))
-        $wedgePoints.Add((New-Object System.Windows.Point(11, 0)))
-        $wedgePoints.Add((New-Object System.Windows.Point(5.5, 7)))
+        $wedgePoints.Add((New-Object System.Windows.Point(16, 0)))
+        $wedgePoints.Add((New-Object System.Windows.Point(8, 10)))
         $wedge.Points = $wedgePoints
         $wedge.Fill = ((New-LookBrushConverter)).ConvertFromString("#E64A3C")
-        [System.Windows.Controls.Canvas]::SetLeft($wedge, $x - 5.5)
+        [System.Windows.Controls.Canvas]::SetLeft($wedge, $x - 8)
         [System.Windows.Controls.Canvas]::SetTop($wedge, 0)
         [void]$canvasTrimLaneOverlay.Children.Add($wedge)
     }
@@ -8137,7 +8137,7 @@ try {
         }
 
         # Grabbing the playhead LINE itself, anywhere it crosses the stack: a press within
-        # 6px of the line starts the same scrub drag the ruler runs. PREVIEW (tunneling)
+        # 10px of the line starts the same scrub drag the ruler runs. PREVIEW (tunneling)
         # handlers, so the grab wins over whatever sits under the line -- a clip body's
         # own press never fires when the user is visibly aiming for the playhead.
         $script:TrimPlayheadGrabHandler = {
@@ -8145,11 +8145,26 @@ try {
             if (-not $script:TrimInputFile) { return }
             $grabX = ($e.GetPosition($canvasTrimTimeline)).X
             $playheadX = Convert-TrimTimeToX -Seconds (Get-TrimTimelinePlayhead)
-            if ([math]::Abs($grabX - $playheadX) -gt 6.0) { return }
+            if ([math]::Abs($grabX - $playheadX) -gt 10.0) { return }
             Set-TrimScrubFromX -X $grabX
             $script:TrimScrubDrag = $true
             [void]$eventSource.CaptureMouse()
             $e.Handled = $true
+        }
+        # Hover affordance: the HAND cursor whenever the pointer is inside the grab
+        # tunnel (or a drag is live), the normal arrow everywhere else. Without it the
+        # line gives no sign it can be held at all.
+        $script:TrimPlayheadHoverHandler = {
+            param($eventSource, $e)
+            if (-not $script:TrimInputFile) { return }
+            if ($script:TrimScrubDrag) { $eventSource.Cursor = [System.Windows.Input.Cursors]::Hand; return }
+            $hoverX = ($e.GetPosition($canvasTrimTimeline)).X
+            $playheadX = Convert-TrimTimeToX -Seconds (Get-TrimTimelinePlayhead)
+            if ([math]::Abs($hoverX - $playheadX) -le 10.0) {
+                $eventSource.Cursor = [System.Windows.Input.Cursors]::Hand
+            } elseif ($null -ne $eventSource.Cursor) {
+                $eventSource.Cursor = $null
+            }
         }
         foreach ($grabSurface in @($panelTrimLanes, $canvasTrimCaptions, $canvasTrimZooms, $canvasTrimFades)) {
             if ($null -eq $grabSurface) { continue }
@@ -8157,8 +8172,11 @@ try {
             # The capture from the grab routes the rest of the gesture to this surface, so
             # it needs the shared move/up handlers too (both no-op unless a scrub is live).
             $grabSurface.Add_MouseMove($script:TrimScrubMoveHandler)
+            $grabSurface.Add_MouseMove($script:TrimPlayheadHoverHandler)
             $grabSurface.Add_MouseLeftButtonUp($script:TrimScrubUpHandler)
         }
+        # The ruler scrubs from ANY x, so the whole strip advertises it with the hand.
+        if ($null -ne $canvasTrimRuler) { $canvasTrimRuler.Cursor = [System.Windows.Input.Cursors]::Hand }
 
         # Files dropped on the OPEN lane area (between/below the rows -- the rows mark
         # their own drops Handled) create a NEW track of the file's kind at the drop
