@@ -1106,8 +1106,8 @@ try {
     $script:TrimSourceStreamPending = @{}    # idx -> $true while ffmpeg runs
     $script:TrimSourceStreamOrder = @()      # probed stream indices, file order
     $script:TrimSourceStreamQueue = @()      # @{ Idx; Gain } jobs waiting for extraction
-    $script:TrimSourceStreamBoost = @{}      # idx -> dB BAKED into the registered file
-    $script:TrimSourceStreamBase = @{}       # idx -> the un-boosted file (kept for instant reset)
+    $script:TrimSourceStreamBoost = @{}      # retired (headroom extraction); kept for the probe dump
+    $script:TrimSourceStreamBase = @{}       # retired (headroom extraction)
     # Throttle stamp for the DRAG-scrub's media seeks (see Set-TrimScrubFromX).
     $script:TrimScrubLastSeek = $null
     # True while Update-TrimTimeline itself writes the view scrollbar's Value.
@@ -3668,9 +3668,9 @@ try {
                 $badge.VerticalAlignment = "Center"
                 $badge.Opacity = $(if ($rowMuted) { 0.4 } else { 1.0 })
                 $badge.Text = "{0:+0.0;-0.0;0}" -f $rowGain
-                # A source row whose boost is still being BAKED (Sync-TrimSourceStreamBoosts
-                # re-extraction in flight) shows an ellipsis: without it the fader looks
-                # done while the loudness is still seconds away.
+                # A source row whose stream is still EXTRACTING (the one-time headroom
+                # decode after load) shows an ellipsis: without it the fader looks done
+                # while the stream is still seconds from being audible.
                 if ($null -ne $head -and [string]$head.Path -eq [string]$script:TrimInputFile -and
                     $script:TrimSourceStreamPending.ContainsKey([string]([int]$head.StreamIdx))) {
                     $badge.Text = $badge.Text + [string][char]0x2026
@@ -4280,10 +4280,9 @@ try {
     function Update-TrimClipProps {
         # "Selection ticks": every row rebuild (load, undo/redo, mute/gain/delete, unlink)
         # ends up here, so this is also the one place that keeps the preview volume caught
-        # up with the model without a second call at each of those sites -- and the one
-        # place that notices a row's BOOST changed and queues its baked re-extraction.
+        # up with the model without a second call at each of those sites. Gain changes are
+        # pure element-volume math now (headroom extraction), so volume IS the whole sync.
         Update-TrimPreviewVolume
-        Sync-TrimSourceStreamBoosts
         if ($null -eq $panelTrimTrackProps) { return }
         $ref = $null
         if ($null -ne $script:TrimSelectedClip) { $ref = Get-TrimClipRef -Id $script:TrimSelectedClip }
@@ -5385,25 +5384,22 @@ try {
     # the watcher tick is a GetNewClosure block, where a bare $script: write would land
     # in the closure's own module.
     function Request-TrimSourceStreamAudio {
-        param([int]$StreamIdx, [double]$GainDb = 0.0)
+        param([int]$StreamIdx)
         $skey = [string]$StreamIdx
         if ($script:TrimSourceStreamPending.ContainsKey($skey)) { return }
         $script:TrimSourceStreamPending[$skey] = $true
-        # Distinct name per boost level so a re-extraction never overwrites the file the
-        # element is CURRENTLY playing from.
-        $outName = if ([math]::Abs($GainDb) -gt 0.05) {
-            "srcaudio{0}-b{1}.m4a" -f $StreamIdx, [int][math]::Round($GainDb * 10.0)
-        } else {
-            "srcaudio{0}.m4a" -f $StreamIdx
-        }
-        $outFile = Join-Path $script:TrimThumbDir $outName
+        # ONE file per stream, extracted ONCE: float PCM with the fader's whole +30dB
+        # range pre-applied (see Export-TrimAudioStream -HeadroomDb). Float cannot
+        # clip, so every gain the fader can ask for -- boosts included -- is reached by
+        # pure element-volume attenuation, instantly. No re-extraction ever again.
+        $outFile = Join-Path $script:TrimThumbDir ("srcaudio{0}.wav" -f $StreamIdx)
         $srcFile = [string]$script:TrimInputFile
         $ps = [powershell]::Create()
         $ps.AddScript({
-            param($modulePath, $file, $idx, $outFile, $gain)
+            param($modulePath, $file, $idx, $outFile)
             Import-Module $modulePath -Force
-            Export-TrimAudioStream -InputFile $file -StreamIndex $idx -OutputFile $outFile -GainDb $gain
-        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($srcFile).AddArgument($StreamIdx).AddArgument($outFile).AddArgument($GainDb) | Out-Null
+            Export-TrimAudioStream -InputFile $file -StreamIndex $idx -OutputFile $outFile -HeadroomDb 30.0
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($srcFile).AddArgument($StreamIdx).AddArgument($outFile) | Out-Null
         $handle = $ps.BeginInvoke()
         $watcher = New-Object System.Windows.Threading.DispatcherTimer
         $watcher.Interval = [timespan]::FromMilliseconds(500)
@@ -5412,13 +5408,13 @@ try {
             $watcher.Stop()
             try { $ps.EndInvoke($handle) | Out-Null } catch { }
             $ps.Dispose()
-            Set-TrimSourceStreamAudio -StreamIdx $StreamIdx -Path $outFile -ForFile $srcFile -GainDb $GainDb
+            Set-TrimSourceStreamAudio -StreamIdx $StreamIdx -Path $outFile -ForFile $srcFile
         }.GetNewClosure())
         $watcher.Start()
     }
 
     function Set-TrimSourceStreamAudio {
-        param([int]$StreamIdx, [string]$Path, [string]$ForFile, [double]$GainDb = 0.0)
+        param([int]$StreamIdx, [string]$Path, [string]$ForFile)
         $skey = [string]$StreamIdx
         $script:TrimSourceStreamPending.Remove($skey)
         # The load that asked can be gone by the time ffmpeg finishes -- a different file
@@ -5426,19 +5422,15 @@ try {
         if ([string]$script:TrimInputFile -ne $ForFile) { return }
         if (Test-Path -LiteralPath $Path) {
             $script:TrimSourceStreamAudio[$skey] = $Path
-            $script:TrimSourceStreamBoost[$skey] = $GainDb
-            if ([math]::Abs($GainDb) -le 0.05) { $script:TrimSourceStreamBase[$skey] = $Path }
         }
         # One extraction at a time (they all read the same multi-GB recording; two ffmpegs
         # seeking it in parallel thrash the disk the preview is decoding from) -- the next
         # queued job starts only when the previous one lands.
         Start-TrimSourceStreamQueue
-        # A boost wish that arrived while this job was running gets queued now.
-        Sync-TrimSourceStreamBoosts
         # If the transport is already running, hand the freshly extracted stream its
         # element right away instead of waiting for the next tick.
         Update-TrimPreviewVolume
-        # And clear the fader badge's "baking..." ellipsis (a rebuild repaints it; the
+        # And clear the fader badge's extracting ellipsis (a rebuild repaints it; the
         # rebuild self-guards against live drags).
         Update-TrimLaneRows
     }
@@ -5446,41 +5438,9 @@ try {
     function Start-TrimSourceStreamQueue {
         if (@($script:TrimSourceStreamQueue).Count -eq 0) { return }
         if (@($script:TrimSourceStreamPending.Keys).Count -gt 0) { return }
-        $next = $script:TrimSourceStreamQueue[0]
+        $next = [int]$script:TrimSourceStreamQueue[0]
         $script:TrimSourceStreamQueue = @($script:TrimSourceStreamQueue | Select-Object -Skip 1)
-        Request-TrimSourceStreamAudio -StreamIdx ([int]$next.Idx) -GainDb ([double]$next.Gain)
-    }
-
-    # Keeps the extracted files in step with the rows' BOOSTS. A cut (negative gain) is
-    # just element volume; a boost has to be baked into the samples (MediaElement cannot
-    # amplify), so a row sitting above 0 dB gets its stream re-extracted with the gain in
-    # it. Runs from every row rebuild (fader release, keyboard commit, undo, load) --
-    # cheap when nothing changed, and never during a live drag (rebuilds bail then).
-    function Sync-TrimSourceStreamBoosts {
-        if (-not $script:TrimInputFile) { return }
-        $queued = $false
-        foreach ($lane in @($script:TrimLanes)) {
-            foreach ($c in @($lane.Clips)) {
-                if ($c.Kind -ne "audio") { continue }
-                if ([string]$c.Path -ne [string]$script:TrimInputFile) { continue }
-                $idx = [int]$c.StreamIdx
-                $skey = [string]$idx
-                $want = [math]::Round([math]::Max(0.0, [double]$c.GainDb), 1)
-                $have = $(if ($script:TrimSourceStreamBoost.ContainsKey($skey)) { [double]$script:TrimSourceStreamBoost[$skey] } else { 0.0 })
-                if ([math]::Abs($want - $have) -le 0.25) { continue }
-                if ($want -eq 0.0 -and $script:TrimSourceStreamBase.ContainsKey($skey)) {
-                    # The un-boosted file is still on disk: switch back instantly.
-                    $script:TrimSourceStreamAudio[$skey] = $script:TrimSourceStreamBase[$skey]
-                    $script:TrimSourceStreamBoost[$skey] = 0.0
-                    continue
-                }
-                $queuedIdx = @(@($script:TrimSourceStreamQueue) | ForEach-Object { [int]$_.Idx })
-                if ($queuedIdx -contains $idx -or $script:TrimSourceStreamPending.ContainsKey($skey)) { continue }
-                $script:TrimSourceStreamQueue = @($script:TrimSourceStreamQueue) + ,@{ Idx = $idx; Gain = $want }
-                $queued = $true
-            }
-        }
-        if ($queued) { Start-TrimSourceStreamQueue }
+        Request-TrimSourceStreamAudio -StreamIdx $next
     }
 
     # Element per extracted stream, off-tree like the audio-clip pool -- $null until the
@@ -5568,13 +5528,15 @@ try {
                 $entry.Path = $registered
                 $entry.Playing = $false
             }
-            # Element volume carries only the RESIDUAL gain: whatever boost is already
-            # baked into the registered file is subtracted, cuts stay pure volume-scale.
-            $baked = $(if ($script:TrimSourceStreamBoost.ContainsKey($skey)) { [double]$script:TrimSourceStreamBoost[$skey] } else { 0.0 })
+            # The extracted file carries +30dB of headroom (float PCM, cannot clip), so
+            # element volume = 10^((dB-30)/20): the fader's whole -30..+30 range maps
+            # into [0..1] and EVERY gain change -- boosts included -- is instant. This is
+            # what real editors do: decode once, apply gain at output time, never
+            # re-encode on a slider move.
             $vol = 0.0
             if ($rows.ContainsKey($skey)) {
                 $r = $rows[$skey]
-                if (-not [bool]$r.Muted) { $vol = [math]::Min(1.0, [math]::Pow(10.0, ([double]$r.GainDb - $baked) / 20.0)) }
+                if (-not [bool]$r.Muted) { $vol = [math]::Min(1.0, [math]::Pow(10.0, ([double]$r.GainDb - 30.0) / 20.0)) }
             }
             $el.Volume = $vol
             if ($mainPlaying -and $vol -gt 0.0) {
@@ -8872,11 +8834,8 @@ try {
         # the first stream needs its own element too, because which stream the main
         # element decodes is not reliable). Sequential on purpose: parallel ffmpegs
         # reading the same multi-GB recording thrash the disk playback decodes from.
-        $script:TrimSourceStreamQueue = @(@($script:TrimSourceStreamOrder) | ForEach-Object { @{ Idx = [int]$_; Gain = 0.0 } })
+        $script:TrimSourceStreamQueue = @(@($script:TrimSourceStreamOrder) | ForEach-Object { [int]$_ })
         Start-TrimSourceStreamQueue
-        # Restored rows can already carry boosts; queue their baked variants behind the
-        # base extractions.
-        Sync-TrimSourceStreamBoosts
         # Waveform strips get a PERSISTENT on-disk cache, unlike the thumbnails: they
         # took a visible couple of seconds to re-render on every single file open, and
         # a waveform never changes for a given source file. Keyed by path + size +

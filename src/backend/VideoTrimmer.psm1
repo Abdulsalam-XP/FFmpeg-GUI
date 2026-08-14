@@ -894,16 +894,19 @@ function Export-TrimAudioStream {
         # ABSOLUTE ffprobe stream index, the same meaning StreamIdx has everywhere.
         [Parameter(Mandatory = $true)][int]$StreamIndex,
         [Parameter(Mandatory = $true)][string]$OutputFile,
-        # Non-zero bakes the gain INTO the file (an encode, not a stream copy): the
-        # preview's MediaElement cannot amplify past 1.0, so a BOOSTED row is only
-        # audible if the boost is already in the samples it decodes.
-        [double]$GainDb = 0.0
+        # Non-zero decodes to 32-bit FLOAT PCM (.wav) with this many dB of gain
+        # pre-applied. Float samples cannot clip, so once the file exists EVERY fader
+        # value up to the headroom becomes a pure element-volume attenuation at
+        # playback time -- the editor trick: decode once, never re-encode on a gain
+        # change. No encoder runs (PCM is a raw write), so this is also faster than
+        # the old AAC bake ever was.
+        [double]$HeadroomDb = 0.0
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
-    # IDLE process priority: this runs right after a file load, exactly when the preview
-    # starts playing THE SAME multi-GB file -- at normal priority the extraction visibly
-    # stuttered playback until it finished.
-    $runIdle = {
+    # Reduced process priority: this runs right after a file load, exactly when the
+    # preview starts playing THE SAME multi-GB file -- at normal priority the
+    # extraction visibly stuttered playback until it finished.
+    $runAt = {
         param($exe, $arguments, $priority)
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $exe
@@ -915,23 +918,22 @@ function Export-TrimAudioStream {
         $proc.WaitForExit()
         return $proc.ExitCode
     }
-    $idle = [System.Diagnostics.ProcessPriorityClass]::Idle
-    if ([math]::Abs($GainDb) -gt 0.05) {
+    if ($HeadroomDb -gt 0.05) {
         # InvariantCulture: a comma decimal in the filter string splits the ffmpeg option.
         $inv = [System.Globalization.CultureInfo]::InvariantCulture
-        $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -af volume={2}dB -c:a aac -b:a 192k "{3}"' -f `
-            $InputFile, $StreamIndex, $GainDb.ToString("0.#", $inv), $OutputFile
-        # BelowNormal, not Idle: a boost bake happens while the user is WAITING to hear
-        # it, so it deserves more CPU than the load-time base extraction -- at Idle it
-        # could sit starved for tens of seconds behind a 120fps preview decode.
-        & $runIdle $ffmpeg $mapArgs ([System.Diagnostics.ProcessPriorityClass]::BelowNormal) | Out-Null
+        $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -af volume={2}dB -c:a pcm_f32le "{3}"' -f `
+            $InputFile, $StreamIndex, $HeadroomDb.ToString("0.#", $inv), $OutputFile
+        # BelowNormal, not Idle: the user cannot hear this stream at all until the
+        # file lands, and with no encoder in the chain it is over in seconds.
+        & $runAt $ffmpeg $mapArgs ([System.Diagnostics.ProcessPriorityClass]::BelowNormal) | Out-Null
         return [bool](Test-Path -LiteralPath $OutputFile)
     }
+    $idle = [System.Diagnostics.ProcessPriorityClass]::Idle
     $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a copy "{2}"' -f $InputFile, $StreamIndex, $OutputFile
-    $code = & $runIdle $ffmpeg $mapArgs $idle
+    $code = & $runAt $ffmpeg $mapArgs $idle
     if ($code -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
         $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a aac -b:a 192k "{2}"' -f $InputFile, $StreamIndex, $OutputFile
-        & $runIdle $ffmpeg $mapArgs $idle | Out-Null
+        & $runAt $ffmpeg $mapArgs $idle | Out-Null
     }
     return [bool](Test-Path -LiteralPath $OutputFile)
 }
