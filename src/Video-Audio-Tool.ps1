@@ -106,6 +106,20 @@ foreach ($mod in $requiredModules) {
 
 Import-Config
 
+# A BrushConverter that speaks the active Look: every code-built color goes through
+# Convert-LookColorText (UI-WPF.psm1), so the Petalfall hue map covers the dynamic UI
+# exactly as it covers the XAML. Same ConvertFromString shape as the real converter --
+# the dozens of call sites did not have to change, only the allocations.
+function New-LookBrushConverter {
+    $wrapper = New-Object PSObject
+    $wrapper | Add-Member -MemberType NoteProperty -Name Inner -Value (New-Object "System.Windows.Media.BrushConverter")
+    $wrapper | Add-Member -MemberType ScriptMethod -Name ConvertFromString -Value {
+        param([string]$Hex)
+        return $this.Inner.ConvertFromString((Convert-LookColorText -Text $Hex))
+    }
+    return $wrapper
+}
+
 # Left behind by a previous update: a replaced exe cannot be deleted while the old
 # process still holds it, so cleanup happens on the next launch instead.
 Clear-StaleToolFiles -BinFolder (Join-Path $scriptRoot "bin")
@@ -1098,6 +1112,9 @@ try {
     $script:TrimScrubLastSeek = $null
     # True while Update-TrimTimeline itself writes the view scrollbar's Value.
     $script:TrimViewScrollSync = $false
+    # Petalfall's petal list: a real empty array even when the look is off -- @($null)
+    # has Count 1 (trap #5's cousin), so anything counting petals would misread null.
+    $script:LookPetals = @()
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
     # (Invoke-TrimAddClip) for every overlay clip so the magnet-locked resize drag can read
     # it without shelling out to ffprobe on every mouse-move.
@@ -1190,7 +1207,7 @@ try {
     function Show-TrimSavePrompt {
         param([string]$Leaf)
         $script:TrimSavePromptResult = "Cancel"
-        $bc = New-Object System.Windows.Media.BrushConverter
+        $bc = (New-LookBrushConverter)
 
         $dlg = New-Object System.Windows.Window
         $dlg.WindowStyle = "None"
@@ -2939,7 +2956,7 @@ try {
     function Update-TrimSnapButton {
         if ($null -eq $buttonTrimSnap) { return }
         if ($script:TrimSnapEnabled) {
-            $accent = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+            $accent = ((New-LookBrushConverter)).ConvertFromString("#3E9B84")
             $buttonTrimSnap.BorderBrush = $accent
             if ($null -ne $textTrimSnapGlyph) { $textTrimSnapGlyph.Foreground = $accent }
         } else {
@@ -3176,7 +3193,7 @@ try {
         $drag = $script:TrimClipDrag
         if ($null -ne $drag -and $null -ne $drag.Border) {
             if ($snapped) {
-                $drag.Border.BorderBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+                $drag.Border.BorderBrush = ((New-LookBrushConverter)).ConvertFromString("#3E9B84")
             } elseif ($null -ne $drag.OrigBrush) {
                 $drag.Border.BorderBrush = $drag.OrigBrush
             }
@@ -3195,7 +3212,7 @@ try {
         # Same 4000 as the playhead: taller than any realistic stack, cropped by the
         # overlay canvas's own ClipToBounds.
         $line.Y2 = 4000
-        $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#3E9B84")
+        $line.Stroke = ((New-LookBrushConverter)).ConvertFromString("#3E9B84")
         $line.StrokeThickness = 2
         $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
         $glow.Color = [System.Windows.Media.Color]([System.Windows.Media.ColorConverter]::ConvertFromString("#3E9B84"))
@@ -3298,7 +3315,7 @@ try {
         $panelTrimLanes.Visibility = "Visible"
         if ($null -ne $panelTrimAddTracks) { $panelTrimAddTracks.Visibility = "Visible" }
 
-        $bc = New-Object System.Windows.Media.BrushConverter
+        $bc = (New-LookBrushConverter)
         $goldBrush        = $bc.ConvertFromString("#E0C48F")
         $lineBrush        = $bc.ConvertFromString("#2A3B52")
         $dimBrush         = $bc.ConvertFromString("#44506A")
@@ -4201,7 +4218,7 @@ try {
         # WPF crops the overhang rather than this having to know the panel's height (which
         # is 0 during the very layout pass that adds the rows).
         $line.Y2 = 4000
-        $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E64A3C")
+        $line.Stroke = ((New-LookBrushConverter)).ConvertFromString("#E64A3C")
         $line.StrokeThickness = 2
         [void]$canvasTrimLaneOverlay.Children.Add($line)
         # A grab wedge at the top of the line, matching the ruler's: the line is
@@ -4213,7 +4230,7 @@ try {
         $wedgePoints.Add((New-Object System.Windows.Point(11, 0)))
         $wedgePoints.Add((New-Object System.Windows.Point(5.5, 7)))
         $wedge.Points = $wedgePoints
-        $wedge.Fill = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E64A3C")
+        $wedge.Fill = ((New-LookBrushConverter)).ConvertFromString("#E64A3C")
         [System.Windows.Controls.Canvas]::SetLeft($wedge, $x - 5.5)
         [System.Windows.Controls.Canvas]::SetTop($wedge, 0)
         [void]$canvasTrimLaneOverlay.Children.Add($wedge)
@@ -4472,7 +4489,7 @@ try {
         $line = New-Object System.Windows.Shapes.Line
         $line.X1 = 0; $line.X2 = $w
         $line.Y1 = $Y; $line.Y2 = $Y
-        $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E0C48F")
+        $line.Stroke = ((New-LookBrushConverter)).ConvertFromString("#E0C48F")
         $line.StrokeThickness = 2
         [void]$canvasTrimLaneOverlay.Children.Add($line)
         $script:TrimLaneReorderLine = $line
@@ -4702,8 +4719,8 @@ try {
         if ($null -ne $Thumb) { [System.Windows.Controls.Canvas]::SetLeft($Thumb, ($frac * $Width) - 2.0) }
         if ($null -ne $Ticks) {
             $Ticks.Children.Clear()
-            $major = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#5A7EA8")
-            $minor = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#2A3B52")
+            $major = ((New-LookBrushConverter)).ConvertFromString("#5A7EA8")
+            $minor = ((New-LookBrushConverter)).ConvertFromString("#2A3B52")
             # Majors at -30/-15/0/+15/+30 dB, minors halfway between each pair.
             foreach ($t in @(
                 @{ F = 0.0;   M = $true }, @{ F = 0.125; M = $false }, @{ F = 0.25;  M = $true },
@@ -5175,7 +5192,7 @@ try {
         if ($null -eq $previewCell -or $null -eq $previewZoomHost -or $null -eq $script:PreviewBox) { return }
         if ($null -eq $script:TrimBlackBase) {
             $rect = New-Object System.Windows.Shapes.Rectangle
-            $rect.Fill = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#FF000000")
+            $rect.Fill = ((New-LookBrushConverter)).ConvertFromString("#FF000000")
             $rect.IsHitTestVisible = $false
             $rect.HorizontalAlignment = "Left"
             $rect.VerticalAlignment = "Top"
@@ -6035,8 +6052,8 @@ try {
     # down on every tick. Fall back rather than throw.
     function Get-CaptionBrush {
         param([string]$Hex, [string]$Fallback)
-        try { return (New-Object System.Windows.Media.BrushConverter).ConvertFromString($Hex) }
-        catch { return (New-Object System.Windows.Media.BrushConverter).ConvertFromString($Fallback) }
+        try { return ((New-LookBrushConverter)).ConvertFromString($Hex) }
+        catch { return ((New-LookBrushConverter)).ConvertFromString($Fallback) }
     }
 
     function Get-CaptionColor {
@@ -7624,14 +7641,15 @@ try {
         $modulePath = Join-Path $scriptRoot "backend\VideoTrimmer.psm1"
         $ps = [powershell]::Create()
         if ([string]$Job.Kind -eq "wave") {
+            $waveJobColor = $(if ($Job.ContainsKey("Color")) { [string]$Job.Color } else { "#3E9B84" })
             $ps.AddScript({
-                param($modulePath, $file, $streamIndex, $start, $duration, $width, $height, $outFile)
+                param($modulePath, $file, $streamIndex, $start, $duration, $width, $height, $outFile, $color)
                 Import-Module $modulePath -Force
                 Export-TrimWaveform -InputFile $file -StreamIndex $streamIndex -StartSeconds $start `
-                    -DurationSeconds $duration -Width $width -Height $height -OutputFile $outFile
+                    -DurationSeconds $duration -Width $width -Height $height -OutputFile $outFile -Color $color
             }).AddArgument($modulePath).AddArgument([string]$Job.Path).AddArgument([int]$Job.StreamIndex).
               AddArgument([double]$Job.Start).AddArgument([double]$Job.Duration).AddArgument([int]$Job.Width).
-              AddArgument([int]$Job.Height).AddArgument([string]$Job.OutFile) | Out-Null
+              AddArgument([int]$Job.Height).AddArgument([string]$Job.OutFile).AddArgument($waveJobColor) | Out-Null
         } else {
             $ps.AddScript({
                 param($modulePath, $file, $seconds, $outFile)
@@ -7722,7 +7740,10 @@ try {
         param([string]$Path, [int]$StreamIndex, [double]$InStart, [double]$Length, [int]$Width, [int]$Height)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
         if ($Length -le 0.01) { return $null }
-        $key = "{0}|{1}|{2}|{3}x{4}|{5:N1}|{6:N1}" -f $Path, $StreamIndex, (Get-TrimMediaStamp -Path $Path), $Width, $Height, $InStart, $Length
+        # The Look's waveform hue is PART OF THE KEY: the color is baked into the rendered
+        # PNG, so a cached teal strip must never serve a Petalfall session (or vice versa).
+        $waveColor = Convert-LookColorText -Text "#3E9B84"
+        $key = "{0}|{1}|{2}|{3}x{4}|{5:N1}|{6:N1}|{7}" -f $Path, $StreamIndex, (Get-TrimMediaStamp -Path $Path), $Width, $Height, $InStart, $Length, $waveColor
         if ($script:TrimWaveCache.ContainsKey($key)) { return $script:TrimWaveCache[$key] }
         $outFile = Join-Path (Get-TrimWaveDir) ("row_{0}.png" -f (Get-TrimMediaHash -Text $key))
         # Hydrate from the disk cache before deciding this row is missing: any earlier
@@ -7733,7 +7754,7 @@ try {
         }
         Add-TrimRowMediaJob -Job @{
             Kind = "wave"; Key = $key; OutFile = $outFile; Path = $Path; StreamIndex = $StreamIndex
-            Start = $InStart; Duration = $Length; Width = $Width; Height = $Height
+            Start = $InStart; Duration = $Length; Width = $Width; Height = $Height; Color = $waveColor
         }
         return $null
     }
@@ -9261,6 +9282,115 @@ try {
         $global:ShowAnimations = [bool]$checkAnimations.IsChecked
         Save-Settings
     }.GetNewClosure())
+
+    # The Look picker. Selection paints the ACTIVE button gold; a change saves and tells
+    # the user the app reopens with the new look -- StaticResource resolves at parse
+    # time, so a live re-theme is not possible without rebuilding the window.
+    $buttonLookGold = $panelSettings.FindName("ButtonLookGold")
+    $buttonLookPetalfall = $panelSettings.FindName("ButtonLookPetalfall")
+    $textLookHint = $panelSettings.FindName("TextLookHint")
+    function Update-LookButtons {
+        if ($null -eq $buttonLookGold -or $null -eq $buttonLookPetalfall) { return }
+        $goldBrushLook = ((New-LookBrushConverter)).ConvertFromString("#D3A24C")
+        $lineBrushLook = ((New-LookBrushConverter)).ConvertFromString("#2A3B52")
+        if ([string]$global:AppLook -eq "Petalfall") {
+            $buttonLookPetalfall.BorderBrush = $goldBrushLook
+            $buttonLookGold.BorderBrush = $lineBrushLook
+        } else {
+            $buttonLookGold.BorderBrush = $goldBrushLook
+            $buttonLookPetalfall.BorderBrush = $lineBrushLook
+        }
+    }
+    function Set-AppLook {
+        param([string]$Look)
+        if ([string]$global:AppLook -eq $Look) { return }
+        $global:AppLook = $Look
+        Save-Settings
+        Update-LookButtons
+        if ($null -ne $textLookHint) { $textLookHint.Text = "Saved -- reopen the app to see the new look." }
+    }
+    if ($null -ne $buttonLookGold) { $buttonLookGold.Add_Click({ Set-AppLook -Look "MidnightGold" }) }
+    if ($null -ne $buttonLookPetalfall) { $buttonLookPetalfall.Add_Click({ Set-AppLook -Look "Petalfall" }) }
+    Update-LookButtons
+
+    # ---- Petalfall: the falling petals ------------------------------------------------
+    # ~26 Path elements on the shell-level canvas (above the glows, below every panel),
+    # repositioned ~60x/sec by one DispatcherTimer. Cheap by construction: transform and
+    # Canvas position writes only, no layout passes; petals recycle at the edges; the
+    # layer only exists when the look AND animations are both on.
+    function Start-LookPetals {
+        if ([string]$global:AppLook -ne "Petalfall" -or -not $global:ShowAnimations) { return }
+        $canvas = $ctx.Window.FindName("CanvasLookPetals")
+        if ($null -eq $canvas) { return }
+        $script:LookPetalCanvas = $canvas
+        $script:LookPetalRand = New-Object System.Random
+        $script:LookPetals = New-Object System.Collections.ArrayList
+        # Petals keep their own reds -- a plain converter, never the look-mapped one.
+        $petalBc = New-Object "System.Windows.Media.BrushConverter"
+        $petalColors = @("#C22F2F", "#A82531", "#D8434F", "#8E1F26")
+        $geoText = "M 0,-6 Q 5.4,-1.5 0,6 Q -5.4,-1.5 0,-6 Z"
+        for ($i = 0; $i -lt 26; $i++) {
+            $depth = 0.35 + $script:LookPetalRand.NextDouble() * 0.65
+            $path = New-Object System.Windows.Shapes.Path
+            $path.Data = [System.Windows.Media.Geometry]::Parse($geoText)
+            $path.Fill = $petalBc.ConvertFromString($petalColors[$script:LookPetalRand.Next($petalColors.Count)])
+            $path.Opacity = 0.30 + $depth * 0.5
+            $scaleT = New-Object System.Windows.Media.ScaleTransform((0.7 + $depth), 1.0)
+            $rotT = New-Object System.Windows.Media.RotateTransform($script:LookPetalRand.NextDouble() * 360.0)
+            $tg = New-Object System.Windows.Media.TransformGroup
+            [void]$tg.Children.Add($scaleT)
+            [void]$tg.Children.Add($rotT)
+            $path.RenderTransform = $tg
+            [void]$canvas.Children.Add($path)
+            [void]$script:LookPetals.Add(@{
+                El = $path; Scale = $scaleT; Rot = $rotT
+                X = $script:LookPetalRand.NextDouble() * 2600.0
+                Y = $script:LookPetalRand.NextDouble() * 1400.0
+                Spin = ($script:LookPetalRand.NextDouble() - 0.5) * 140.0
+                SwayPhase = $script:LookPetalRand.NextDouble() * 6.283
+                SwaySpeed = 0.6 + $script:LookPetalRand.NextDouble() * 0.9
+                SwayAmp = 14.0 + $script:LookPetalRand.NextDouble() * 26.0
+                Fall = (26.0 + $script:LookPetalRand.NextDouble() * 34.0) * (0.5 + $depth * 0.8)
+                Drift = 8.0 + $script:LookPetalRand.NextDouble() * 26.0
+                Flutter = 0.55 + $script:LookPetalRand.NextDouble() * 0.45
+            })
+        }
+        $script:LookPetalClock = 0.0
+        $script:LookPetalStamp = [datetime]::UtcNow
+        $script:LookPetalTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:LookPetalTimer.Interval = [timespan]::FromMilliseconds(16)
+        $script:LookPetalTimer.Add_Tick({ Update-LookPetals })
+        $script:LookPetalTimer.Start()
+    }
+
+    function Update-LookPetals {
+        $now = [datetime]::UtcNow
+        $dt = ($now - $script:LookPetalStamp).TotalSeconds
+        $script:LookPetalStamp = $now
+        # A resume from sleep (or a long UI stall) hands one huge dt; skipping the frame
+        # beats teleporting every petal off screen at once.
+        if ($dt -le 0 -or $dt -gt 0.25) { return }
+        if ($ctx.Window.WindowState -eq [System.Windows.WindowState]::Minimized) { return }
+        $W = [double]$ctx.Window.ActualWidth
+        $H = [double]$ctx.Window.ActualHeight
+        if ($W -le 0 -or $H -le 0) { return }
+        $script:LookPetalClock = $script:LookPetalClock + $dt
+        $t = $script:LookPetalClock
+        foreach ($p in $script:LookPetals) {
+            $p.Y = $p.Y + $p.Fall * $dt
+            $p.X = $p.X + ($p.Drift + [math]::Cos($t * $p.SwaySpeed + $p.SwayPhase) * $p.SwayAmp) * $dt
+            $p.Rot.Angle = $p.Rot.Angle + $p.Spin * $dt
+            # flutter: the petal turns edge-on as it rocks, exactly like the mockup
+            $p.Scale.ScaleY = 0.35 + [math]::Abs([math]::Sin($t * $p.SwaySpeed * 1.3 + $p.SwayPhase)) * $p.Flutter
+            if ($p.Y -gt $H + 30.0 -or $p.X -gt $W + 80.0) {
+                $p.X = $script:LookPetalRand.NextDouble() * ($W + 120.0) - 60.0
+                $p.Y = -20.0 - $script:LookPetalRand.NextDouble() * 80.0
+            }
+            [System.Windows.Controls.Canvas]::SetLeft($p.El, $p.X)
+            [System.Windows.Controls.Canvas]::SetTop($p.El, $p.Y)
+        }
+    }
+    Start-LookPetals
 
     $toolRows = @{
         ffmpeg    = @{ Version = $panelSettings.FindName("TextToolVersionFfmpeg")

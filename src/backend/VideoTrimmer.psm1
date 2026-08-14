@@ -949,9 +949,11 @@ function Export-TrimAudioStream {
 # an ABSOLUTE stream index (what Get-TrimAudioStreams reports and what a lane clip's
 # StreamIdx carries), hence "[0:N]" and not "[0:a:N]".
 function Get-TrimWaveformFilter {
-    param([int]$StreamIndex = -1, [int]$Width = 1600, [int]$Height = 96)
+    # -Color: the app passes the active Look's waveform hue; the default keeps every
+    # pre-existing caller (and the filter test) byte-identical.
+    param([int]$StreamIndex = -1, [int]$Width = 1600, [int]$Height = 96, [string]$Color = "#3E9B84")
     $label = if ($StreamIndex -ge 0) { "[0:$StreamIndex]" } else { "[0:a:0]" }
-    return "${label}aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84:scale=sqrt:draw=full:filter=peak"
+    return "${label}aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=${Color}:scale=sqrt:draw=full:filter=peak"
 }
 
 function Export-TrimWaveform {
@@ -962,12 +964,13 @@ function Export-TrimWaveform {
         [Parameter(Mandatory = $true)][string]$OutputFile,
         [int]$Width = 1600,
         [int]$Height = 96,
-        [int]$StreamIndex = -1
+        [int]$StreamIndex = -1,
+        [string]$Color = "#3E9B84"
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     & $ffmpeg -y -hide_banner -loglevel error `
         -ss $StartSeconds -t $DurationSeconds -i $InputFile `
-        -filter_complex (Get-TrimWaveformFilter -StreamIndex $StreamIndex -Width $Width -Height $Height) `
+        -filter_complex (Get-TrimWaveformFilter -StreamIndex $StreamIndex -Width $Width -Height $Height -Color $Color) `
         -frames:v 1 $OutputFile 2>&1 | Out-Null
 }
 

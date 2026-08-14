@@ -1,6 +1,49 @@
 # src/frontend/UI-WPF.psm1
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
+# ---- The "Petalfall" look (Ghost of Tsushima-inspired ink wash, user-picked variant
+# "Sumi-e, brightened", 2026-08-14). One hue map, applied at the TEXT level to the raw
+# XAML before parsing and to every code-built color through Convert-LookColorText:
+# StaticResource resolves at parse time inside Theme.xaml itself, so no amount of
+# post-merge dictionary overriding can restyle it -- the colors have to change before
+# the parser sees them. Keys are the LAST six hex digits, so every alpha-prefixed
+# variant of a color follows its base automatically. Caption swatches and the
+# semantic greens/reds (success, delete, error) are deliberately NOT mapped.
+$script:PetalfallColorMap = @{
+    # gold -> crimson
+    "D3A24C" = "C22F2F"; "E0C48F" = "DBA0A0"; "F0C87A" = "D8434F"; "FFF8EC" = "F7F5F0"
+    "6B5320" = "5A2E2E"
+    # navy shell -> ink and smoke (brightened per the user's "a bit more white")
+    "090D1A" = "16171A"; "0D1526" = "17181C"; "0A1120" = "16171B"; "0A0E1A" = "141519"
+    "06121F" = "101114"; "101B30" = "1E1F24"; "0E1626" = "191A1F"; "101828" = "1A1B20"
+    "12161C" = "191A1E"; "1A2436" = "24252B"; "16324E" = "26282E"; "18264A" = "2A2B31"
+    "1F3F7A" = "3A3C42"; "2A3B52" = "33353A"; "44506A" = "55575C"; "4A4F68" = "56585E"
+    "5A7EA8" = "7A7D83"; "5A82B8" = "8A8D93"; "8FA8C0" = "A5A29B"; "C9D6E4" = "D9D6CF"
+    "DDE7F2" = "EDEBE5"; "070B14" = "121316"; "060914" = "111215"; "04070E" = "0F1013"
+    # background glows: gold (top-left) already went crimson above; the top-right navy
+    # goes grey smoke, and BOTH bottom glows go near-white -- the poster's pampas mist
+    # rising from the bottom of the frame is the look's signature.
+    "2B4D95" = "8A8D93"; "5A3568" = "E8E5DE"; "16224A" = "E8E5DE"
+    # cyan (zoom/caption accents) and purple (clip lanes) -> pale smoke / dusty red
+    "6FD8FF" = "DFDCD5"; "B08CFF" = "B98F8F"; "D8C7FF" = "E3C7C7"; "8CC7FF" = "CFC9C0"
+    # teal (waveforms, snap) -> smoke sage
+    "3E9B84" = "A9AFA9"
+}
+
+# Remaps every #AARRGGBB / #RRGGBB in a string when the Petalfall look is on. Also the
+# single-color helper for code-built brushes -- one code path for both.
+function Convert-LookColorText {
+    param([string]$Text)
+    if ([string]$global:AppLook -ne "Petalfall" -or [string]::IsNullOrEmpty($Text)) { return $Text }
+    $map = $script:PetalfallColorMap
+    return [regex]::Replace($Text, '#([0-9A-Fa-f]{2})?([0-9A-Fa-f]{6})\b', {
+        param($m)
+        $base = $m.Groups[2].Value.ToUpperInvariant()
+        if ($map.ContainsKey($base)) { return ("#" + $m.Groups[1].Value + $map[$base]) }
+        return $m.Value
+    })
+}
+
 function Initialize-MainWindow {
     param([Parameter(Mandatory = $true)][string]$ScriptRoot)
 
@@ -17,7 +60,7 @@ function Initialize-MainWindow {
     # -Encoding UTF8 is required: Windows PowerShell 5.1's Get-Content defaults to the
     # system ANSI codepage for files without a BOM, which mangles every non-ASCII glyph
     # in the markup (en-dash, middot, ellipsis) into mojibake before the XAML is parsed.
-    [xml]$themeXaml = Get-Content -Path $themePath -Raw -Encoding UTF8
+    [xml]$themeXaml = (Convert-LookColorText -Text (Get-Content -Path $themePath -Raw -Encoding UTF8))
     $themeReader = New-Object System.Xml.XmlNodeReader $themeXaml
     $themeDict = [System.Windows.Markup.XamlReader]::Load($themeReader)
 
@@ -35,7 +78,7 @@ function Initialize-MainWindow {
         [System.Windows.Application]::Current.Resources.MergedDictionaries.Add($themeDict)
     }
 
-    [xml]$xaml = Get-Content -Path $xamlPath -Raw -Encoding UTF8
+    [xml]$xaml = (Convert-LookColorText -Text (Get-Content -Path $xamlPath -Raw -Encoding UTF8))
     $reader = New-Object System.Xml.XmlNodeReader $xaml
     $window = [System.Windows.Markup.XamlReader]::Load($reader)
 
@@ -399,4 +442,4 @@ function Set-CancelButtonTarget {
     }
 }
 
-Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess, Enable-NavHoverMagnify, Set-CancelButtonTarget
+Export-ModuleMember -Function Initialize-MainWindow, Show-Panel, Start-TrackedProcess, Enable-NavHoverMagnify, Set-CancelButtonTarget, Convert-LookColorText

@@ -42,12 +42,19 @@ function Import-Config {
             } else {
                 $global:TrimSnapEnabled = $true
             }
+
+            # The visual theme ("Look"). Absent in every settings.json written before
+            # 2026-08-14 -- null means "the original Midnight Gold", never a fault.
+            $global:AppLook = if ("MidnightGold", "Petalfall" -contains [string]$config.AppLook) {
+                [string]$config.AppLook
+            } else { "MidnightGold" }
         }
         catch {
             $global:ShowAnimations = $true
             $global:ToolCheckCache = $null
             $global:RecentFiles = @()
             $global:TrimSnapEnabled = $true
+            $global:AppLook = "MidnightGold"
             Save-Settings
         }
     } else {
@@ -55,6 +62,7 @@ function Import-Config {
         $global:ToolCheckCache = $null
         $global:RecentFiles = @()
         $global:TrimSnapEnabled = $true
+        $global:AppLook = "MidnightGold"
         Save-Settings
     }
 }
@@ -70,6 +78,7 @@ function Save-Settings {
             ToolCheckCache = $global:ToolCheckCache
             RecentFiles    = $global:RecentFiles
             TrimSnapEnabled = $global:TrimSnapEnabled
+            AppLook        = $global:AppLook
         }
         # Depth 6 because the cache is nested three levels and ConvertTo-Json truncates at
         # depth 2 by default -- without this the cache round-trips as the literal string

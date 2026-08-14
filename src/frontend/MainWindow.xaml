@@ -35,6 +35,12 @@
             </Ellipse>
         </Grid>
 
+        <!-- Petalfall look only: falling petals, drawn from code onto this layer. ZIndex
+             puts them OVER the whole window; the approved mockup drifts petals across
+             panels and preview alike, and hit-testing stays off so they never eat a click. -->
+        <Canvas x:Name="CanvasLookPetals" Grid.ColumnSpan="2" Panel.ZIndex="50"
+                IsHitTestVisible="False" ClipToBounds="True"/>
+
         <!-- Sidebar -->
         <Grid Grid.Column="0" Background="#8C060914">
             <Border BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="0,0,1,0" Opacity="0.5"
@@ -817,6 +823,26 @@
                             </StackPanel>
                             <CheckBox x:Name="CheckShowAnimations" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitchStyle}"
                                       VerticalAlignment="Center" IsChecked="True"/>
+                        </DockPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="False">
+                            <StackPanel DockPanel.Dock="Left">
+                                <TextBlock Text="Look" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="Midnight Gold is the original. Petalfall is ink, smoke and falling red petals."
+                                           FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                           FontFamily="{StaticResource FontChrome}" Margin="0,5,0,0" TextWrapping="Wrap" MaxWidth="480"
+                                           HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextLookHint" Text="" FontSize="11.5"
+                                           Foreground="{StaticResource BrushGoldValue}" FontFamily="{StaticResource FontChrome}"
+                                           Margin="0,6,0,0" TextWrapping="Wrap" HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="ButtonLookGold" Content="Midnight Gold" Style="{StaticResource PresetButtonStyle}" Width="130"/>
+                                <Button x:Name="ButtonLookPetalfall" Content="Petalfall" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="10,0,0,0"/>
+                            </StackPanel>
                         </DockPanel>
                     </Border>
 
