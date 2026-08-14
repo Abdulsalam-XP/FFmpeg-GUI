@@ -337,7 +337,7 @@
             Add-RecentFile -Path $script:TrimInputFile -Job "Saved"
             Update-AllRecentLists
             if (-not $Quiet) {
-                Show-PanelMessage -Block $textTrimMeta -Text "Saved -- reopening this video restores this edit."
+                Show-PanelMessage -Block $textTrimMeta -IsSuccess -Text "Saved -- reopening this video restores this edit."
             }
         } elseif (-not $Quiet) {
             Show-PanelMessage -Block $textTrimMeta -IsError -Text "Couldn't write the project file."

@@ -50,12 +50,20 @@
 
     $mutedBrush = $ctx.Window.FindResource("BrushTextMuted")
     $errorBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0xE0, 0x6C, 0x6C))
-    # Finished-successfully green. Distinct from both the error red and the muted grey every
-    # other panel message uses, so "it worked, here is the file" is not just more grey text.
-    $successBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x7A, 0xD9, 0xA5))
+    # Finished-successfully green -- brightened (was 7AD9A5) and worn with a glow below
+    # (user, 2026-08-15: the done message was "not THAT visible"). "It worked, here is
+    # the file" is the one message worth celebrating.
+    $successBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0x6E, 0xF0, 0xA8))
     # Amber for warnings that do not stop anything (missing font, and the like): red implies
     # the action failed, grey implies nothing happened -- neither is true for a heads-up.
     $warningBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(0xE0, 0xB4, 0x5C))
+    # Built once, shared: a zero-depth shadow is a pure glow, same treatment as the
+    # recents' "Saved file:" label.
+    $successGlow = New-Object System.Windows.Media.Effects.DropShadowEffect
+    $successGlow.ShadowDepth = 0
+    $successGlow.BlurRadius = 12
+    $successGlow.Opacity = 0.95
+    $successGlow.Color = [System.Windows.Media.Color]::FromRgb(0x4E, 0xE8, 0x8E)
 
     function Show-PanelMessage {
         param($Block, [string]$Text, [switch]$IsError, [switch]$IsSuccess, [switch]$IsWarning)
@@ -64,6 +72,19 @@
         # is worse than a redundant red. Warning is for "heads up, still proceeding":
         # red on a message that says the export continues reads as a failed export.
         $Block.Foreground = if ($IsError) { $errorBrush } elseif ($IsWarning) { $warningBrush } elseif ($IsSuccess) { $successBrush } else { $mutedBrush }
+        # Success gets bold + bigger + a green glow so "done" is unmissable; every other
+        # kind RESETS all three, because the same block cycles through all four kinds and
+        # a grey "No file selected" must not inherit the celebration. ClearValue, not a
+        # hardcoded reset: it restores whatever the block's own XAML declared.
+        if ($IsSuccess -and -not $IsError) {
+            $Block.FontWeight = "Bold"
+            $Block.FontSize = 14.5
+            $Block.Effect = $successGlow
+        } else {
+            $Block.ClearValue([System.Windows.Controls.TextBlock]::FontWeightProperty)
+            $Block.ClearValue([System.Windows.Controls.TextBlock]::FontSizeProperty)
+            $Block.ClearValue([System.Windows.UIElement]::EffectProperty)
+        }
         # Output paths are long and the meta blocks are single-line by default, so a
         # finished-job message would otherwise be silently truncated at the card edge --
         # cutting off the very thing the message exists to show.
