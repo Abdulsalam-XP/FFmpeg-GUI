@@ -7831,12 +7831,13 @@ try {
             if ($null -eq $previewCell) { return }
             $cellW = [double]$previewCell.ActualWidth
             if ($cellW -le 0) { return }
-            # A PROPORTION of the window, not "window minus a fixed budget": with the old
-            # `height - 660` a taller screen gave every extra pixel to the preview and the
-            # timeline stayed cramped against the bottom edge. 38% keeps the preview
-            # comfortably readable while the track area -- where the actual editing
-            # happens -- gets the larger share of a maximized window.
-            $availH = [double]$ctx.Window.ActualHeight * 0.38
+            # Window height minus what the editor below ACTUALLY needs (transport, the
+            # default lane stack, caption/zoom strips, ruler+scrollbar, toolbar, progress
+            # card, chrome) -- the rows are fixed-height, so a percentage split (the
+            # previous 38%) just parked dead space beside the preview AND under the
+            # timeline. The remainder goes to the picture; extra lanes past the default
+            # stack scroll, which is what the panel's ScrollViewer is for.
+            $availH = [double]$ctx.Window.ActualHeight - 760.0
             if ($availH -lt 320.0) { $availH = 320.0 }
             $w = [math]::Min($cellW, $availH * 16.0 / 9.0)
             $h = $w * 9.0 / 16.0
@@ -9304,10 +9305,20 @@ try {
     function Set-AppLook {
         param([string]$Look)
         if ([string]$global:AppLook -eq $Look) { return }
+        # Unsaved edit? Same Yes/No/Cancel as closing -- Cancel keeps the current look.
+        if (-not (Confirm-TrimUnsavedWork)) { return }
         $global:AppLook = $Look
         Save-Settings
         Update-LookButtons
-        if ($null -ne $textLookHint) { $textLookHint.Text = "Saved -- reopen the app to see the new look." }
+        if ($null -ne $textLookHint) { $textLookHint.Text = "Switching look..." }
+        # One click switches the theme: StaticResource resolves at parse time, so the
+        # window cannot re-skin itself -- instead the app RELAUNCHES itself (2-3s) and
+        # this instance closes once the new one is on its way up.
+        Start-Process powershell -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $scriptRoot "Video-Audio-Tool.ps1")
+        ) -WindowStyle Hidden | Out-Null
+        $ctx.Window.Close()
     }
     if ($null -ne $buttonLookGold) { $buttonLookGold.Add_Click({ Set-AppLook -Look "MidnightGold" }) }
     if ($null -ne $buttonLookPetalfall) { $buttonLookPetalfall.Add_Click({ Set-AppLook -Look "Petalfall" }) }

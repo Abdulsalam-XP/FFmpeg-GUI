@@ -26,6 +26,11 @@ $script:PetalfallColorMap = @{
     "2B4D95" = "8A8D93"; "5A3568" = "E8E5DE"; "16224A" = "E8E5DE"
     # cyan (zoom/caption accents) and purple (clip lanes) -> pale smoke / dusty red
     "6FD8FF" = "DFDCD5"; "B08CFF" = "B98F8F"; "D8C7FF" = "E3C7C7"; "8CC7FF" = "CFC9C0"
+    # the second sweep (2026-08-14): card gradients and slate-blue text the first pass
+    # missed -- these were the "still carries a bit of blue" spots
+    "0A0F1C" = "15161A"; "0C1626" = "191A1F"; "0F1830" = "1D1E23"; "152C61" = "2E3037"
+    "1B2E47" = "26272D"; "27435F" = "3C3E45"; "565C78" = "5D5F66"; "8890B0" = "9B9893"
+    "AEB6D4" = "C3C0B9"; "95E4FF" = "E6E3DC"; "9FE6FF" = "EAE7E0"; "FFE9C4" = "F5F2EC"
     # teal (waveforms, snap) -> smoke sage
     "3E9B84" = "A9AFA9"
 }
