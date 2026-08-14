@@ -1154,6 +1154,11 @@ try {
     # Update-PipPreview's -Seek plumbing); the audio pool has worked this way since Task 8.
     $script:PipMediaElements = @{}
     $script:AudioClipMediaElements = @{}
+    # External audio files (music drops) get the same headroom treatment as the source
+    # streams: one float-PCM wav per PATH with +30dB pre-applied, extracted in the
+    # background; until it lands the pool element plays the original with boosts capped.
+    $script:TrimExtAudioWav = @{}          # lowercased path -> extracted wav
+    $script:TrimExtAudioPending = @{}      # lowercased path -> $true while extracting
     # Stills get an Image element rather than a MediaElement (same pool shape, same
     # clip-Id key, same visual-tree slot): a BitmapImage is decoded once at OnLoad and
     # then costs nothing per tick, where a MediaElement on a .png would not play at all.
@@ -4308,6 +4313,9 @@ try {
         # up with the model without a second call at each of those sites. Gain changes are
         # pure element-volume math now (headroom extraction), so volume IS the whole sync.
         Update-TrimPreviewVolume
+        # New EXTERNAL audio clips (a drop, an undo, a restored project) start their
+        # one-time headroom extraction here.
+        Sync-TrimExtAudioWavs
         if ($null -eq $panelTrimTrackProps) { return }
         $ref = $null
         if ($null -ne $script:TrimSelectedClip) { $ref = Get-TrimClipRef -Id $script:TrimSelectedClip }
@@ -5256,9 +5264,71 @@ try {
             $el.LoadedBehavior = "Manual"
             $el.UnloadedBehavior = "Manual"
             try { $el.Source = New-Object System.Uri([string]$Track.Path) } catch {}
-            $script:AudioClipMediaElements[$id] = @{ Element = $el; InSpan = $false }
+            $script:AudioClipMediaElements[$id] = @{ Element = $el; InSpan = $false; Path = [string]$Track.Path }
         }
         return $script:AudioClipMediaElements[$id]
+    }
+
+    # ---- Instant gain for EXTERNAL audio clips --------------------------------------
+    # Same trick as the source streams (see Request-TrimSourceStreamAudio): decode once
+    # to float PCM with the fader's whole +30dB range pre-applied, then every gain the
+    # fader can ask for is pure element-volume attenuation. Keyed by PATH, so two clips
+    # of the same song share one extraction.
+    function Get-TrimExtAudioKey {
+        param([string]$Path)
+        return $Path.ToLowerInvariant()
+    }
+
+    function Request-TrimExtAudioWav {
+        param([string]$Path)
+        if (-not $script:TrimThumbDir) { return }
+        $key = Get-TrimExtAudioKey -Path $Path
+        if ($script:TrimExtAudioWav.ContainsKey($key) -or $script:TrimExtAudioPending.ContainsKey($key)) { return }
+        $script:TrimExtAudioPending[$key] = $true
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $hash = -join ($md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($key)) | ForEach-Object { $_.ToString("x2") })
+        $outFile = Join-Path $script:TrimThumbDir ("extaudio-" + $hash.Substring(0, 8) + ".wav")
+        $srcFile = [string]$script:TrimInputFile
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $file, $outFile)
+            Import-Module $modulePath -Force
+            Export-TrimAudioStream -InputFile $file -StreamIndex -1 -OutputFile $outFile -HeadroomDb 30.0
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($Path).AddArgument($outFile) | Out-Null
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(500)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            try { $ps.EndInvoke($handle) | Out-Null } catch { }
+            $ps.Dispose()
+            Set-TrimExtAudioWav -Key $key -Path $outFile -ForFile $srcFile
+        }.GetNewClosure())
+        $watcher.Start()
+    }
+
+    function Set-TrimExtAudioWav {
+        param([string]$Key, [string]$Path, [string]$ForFile)
+        $script:TrimExtAudioPending.Remove($Key)
+        # A different file may have switched in while ffmpeg ran; its load already wiped
+        # the thumb dir this wav lived in.
+        if ([string]$script:TrimInputFile -ne $ForFile) { return }
+        if (Test-Path -LiteralPath $Path) { $script:TrimExtAudioWav[$Key] = $Path }
+    }
+
+    # Queues an extraction for every external audio clip on the timeline. Called from
+    # Update-TrimClipProps (every row rebuild ends there: load, drop, undo, restore) --
+    # cheap when nothing is new thanks to the ContainsKey guards.
+    function Sync-TrimExtAudioWavs {
+        if (-not $script:TrimInputFile -or -not $script:TrimThumbDir) { return }
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                if ($c.Kind -ne "audio") { continue }
+                if ([string]$c.Path -eq [string]$script:TrimInputFile) { continue }
+                Request-TrimExtAudioWav -Path ([string]$c.Path)
+            }
+        }
     }
 
     # Positions/plays every overlay clip's preview element against the TIMELINE playhead
@@ -5384,9 +5454,25 @@ try {
             $t = $entryRef.Clip
             $entry = Get-AudioClipMediaElement -Clip $t
             $el = $entry.Element
+            # The moment the headroom wav's extraction lands, swap the element onto it:
+            # boosts above 0dB are only reachable through the pre-gained file. The play
+            # branch below reseeds Position because InSpan resets.
+            $extKey = Get-TrimExtAudioKey -Path ([string]$t.Path)
+            $extWav = $(if ($script:TrimExtAudioWav.ContainsKey($extKey)) { [string]$script:TrimExtAudioWav[$extKey] } else { $null })
+            $wantSrc = $(if ($extWav) { $extWav } else { [string]$t.Path })
+            if ([string]$entry.Path -ne $wantSrc) {
+                try { $el.Pause() } catch {}
+                try { $el.Source = New-Object System.Uri($wantSrc) } catch {}
+                $entry.Path = $wantSrc
+                $entry.InSpan = $false
+            }
             $span = Get-TrimClipSpan -Clip $t -SourceDuration (Get-TrimClipSourceDuration -Lane $entryRef.Lane -Clip $t)
             $inSpan = ($timelinePlayhead -ge [double]$span.Start -and $timelinePlayhead -lt [double]$span.End -and [bool]$t.Enabled)
-            $vol = if ($t.Muted) { 0.0 } else { [math]::Min(1.0, [math]::Pow(10.0, [double]$t.GainDb / 20.0)) }
+            # With the wav: volume = 10^((dB-30)/20), the whole -30..+30 fader instant.
+            # Without it yet: the old direct-file math, boosts capped at 1.0.
+            $vol = if ($t.Muted) { 0.0 } `
+                   elseif ($extWav) { [math]::Min(1.0, [math]::Pow(10.0, ([double]$t.GainDb - 30.0) / 20.0)) } `
+                   else { [math]::Min(1.0, [math]::Pow(10.0, [double]$t.GainDb / 20.0)) }
             $el.Volume = $vol
             if ($Playing -and $inSpan) {
                 if (-not $entry.InSpan) {
@@ -5497,6 +5583,8 @@ try {
         $script:TrimSourceStreamQueue = @()
         $script:TrimSourceStreamBoost = @{}
         $script:TrimSourceStreamBase = @{}
+        $script:TrimExtAudioWav = @{}
+        $script:TrimExtAudioPending = @{}
     }
 
     # Preview volumes for the SOURCE audio rows plus playback of the extracted extras:
@@ -8877,6 +8965,9 @@ try {
         # the first stream needs its own element too, because which stream the main
         # element decodes is not reliable). Sequential on purpose: parallel ffmpegs
         # reading the same multi-GB recording thrash the disk playback decodes from.
+        # The old file's extracted wavs died with its thumb dir above.
+        $script:TrimExtAudioWav = @{}
+        $script:TrimExtAudioPending = @{}
         $script:TrimSourceStreamQueue = @(@($script:TrimSourceStreamOrder) | ForEach-Object { [int]$_ })
         Start-TrimSourceStreamQueue
         # Waveform strips get a PERSISTENT on-disk cache, unlike the thumbnails: they

@@ -903,6 +903,9 @@ function Export-TrimAudioStream {
         [double]$HeadroomDb = 0.0
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    # -1 = "the first audio stream, whatever its absolute index": what an external
+    # audio clip's StreamIdx -1 means everywhere else (the export mix maps [n:a] too).
+    $mapSpec = $(if ($StreamIndex -ge 0) { "0:{0}" -f $StreamIndex } else { "0:a:0" })
     # Reduced process priority: this runs right after a file load, exactly when the
     # preview starts playing THE SAME multi-GB file -- at normal priority the
     # extraction visibly stuttered playback until it finished.
@@ -921,18 +924,18 @@ function Export-TrimAudioStream {
     if ($HeadroomDb -gt 0.05) {
         # InvariantCulture: a comma decimal in the filter string splits the ffmpeg option.
         $inv = [System.Globalization.CultureInfo]::InvariantCulture
-        $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -af volume={2}dB -c:a pcm_f32le "{3}"' -f `
-            $InputFile, $StreamIndex, $HeadroomDb.ToString("0.#", $inv), $OutputFile
+        $mapArgs = '-hide_banner -y -i "{0}" -map {1} -vn -af volume={2}dB -c:a pcm_f32le "{3}"' -f `
+            $InputFile, $mapSpec, $HeadroomDb.ToString("0.#", $inv), $OutputFile
         # BelowNormal, not Idle: the user cannot hear this stream at all until the
         # file lands, and with no encoder in the chain it is over in seconds.
         & $runAt $ffmpeg $mapArgs ([System.Diagnostics.ProcessPriorityClass]::BelowNormal) | Out-Null
         return [bool](Test-Path -LiteralPath $OutputFile)
     }
     $idle = [System.Diagnostics.ProcessPriorityClass]::Idle
-    $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a copy "{2}"' -f $InputFile, $StreamIndex, $OutputFile
+    $mapArgs = '-hide_banner -y -i "{0}" -map {1} -vn -c:a copy "{2}"' -f $InputFile, $mapSpec, $OutputFile
     $code = & $runAt $ffmpeg $mapArgs $idle
     if ($code -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
-        $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a aac -b:a 192k "{2}"' -f $InputFile, $StreamIndex, $OutputFile
+        $mapArgs = '-hide_banner -y -i "{0}" -map {1} -vn -c:a aac -b:a 192k "{2}"' -f $InputFile, $mapSpec, $OutputFile
         & $runAt $ffmpeg $mapArgs $idle | Out-Null
     }
     return [bool](Test-Path -LiteralPath $OutputFile)
