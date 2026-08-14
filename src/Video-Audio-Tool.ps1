@@ -2,7 +2,7 @@
 # that inherits the machine policy (Restricted by default), which blocks Import-Module.
 try { Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force } catch {}
 
-$scriptVersion = "3.0.0"
+$scriptVersion = "3.0.1"
 $repoOwner = "Abdulsalam-XP"
 $repoName = "FFmpeg-GUI"
 $scriptName = "src/Video-Audio-Tool.ps1"

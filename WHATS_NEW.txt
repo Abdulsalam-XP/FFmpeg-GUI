@@ -1,49 +1,32 @@
 What's New in This Update:
 
-Version 3.0 - the Video Editor grows into a real multi-track editor, the app
-gets a second look, and audio in the preview finally behaves.
+Version 3.0.1 - a polish pass over the new editor: undo covers more, exports of
+deep zooms are twice as fast, and "done" finally looks like done.
 
-The editor:
+Improved:
 
-- Real tracks, like an editor: video and audio lanes, linked pairs, drag clips
-  along the timeline and between rows, snap to edges (toggleable), reorder
-  lanes, delete or mute whole rows.
-- Drop extra videos, music files or images straight onto the timeline - a new
-  track is created for you. Montage past the end of your clip over black works
-  too.
-- Per-track volume faders that you can actually hear: every change - boosts
-  included - applies to the preview instantly, and both audio tracks of a
-  recording (game + microphone) play together correctly.
-- The playhead is draggable (grab the line or click anywhere on the strip),
-  the timeline scrolls sideways with room past your clip, and zooming with
-  Ctrl+wheel is smooth.
-- Your work saves properly now: Ctrl+S, a save prompt when you close, and
-  saved edits listed in recents as "Saved file:" - reopening one restores the
-  whole timeline. Project files live inside the app, not next to your videos.
-- Captions, keyframe zooms, fades, cut-list trimming and export all still work
-  exactly as before, now on top of the tracks.
-
-The look:
-
-- A second theme: "Petalfall" - an ink-and-white look with falling red petals,
-  next to the reworked "Midnight Gold", whose background is now a living
-  nebula sky with drifting clouds, twinkling stars and the occasional
-  shooting star. Switch between them in Settings with one click.
-
-Also new since 2.0:
-
-- Settings shows the version of ffmpeg, ffprobe and yt-dlp you actually have
-  and offers a one-click Update when a newer build is out. Keeping yt-dlp
-  current is the single best fix for "YouTube links stopped working".
-- The video you pick shows as a card with a thumbnail, resolution, frame
-  rate, length and size.
-- Recent files on every screen, so you rarely need the file picker at all.
+- "Done" messages are unmissable now: when a compression, merge, download or
+  save finishes, the confirmation is big, bold, bright green and glowing -
+  no more squinting to check whether it worked. Saving with Ctrl+S gets the
+  same treatment (it used to be plain grey text).
+- Exporting a video with a deep zoom glide is about 2x faster. The encoder
+  now only processes the part of the frame your zoom can actually show,
+  instead of blowing the whole frame up first.
+- Undo now covers fades: turning a dissolve on or off, or changing its
+  length, is a proper undo step, and Ctrl+Z restores your fades exactly.
+- The main video track's header wears a gold edge, so V1 reads as "the"
+  track at a glance next to overlay tracks.
 
 Fixed:
 
-- Cancel works every time, not just for the first job of a session.
-- Starting a job while another runs is blocked instead of corrupting both.
-- Some recordings played the microphone twice in the preview while the game
-  audio stayed silent - the preview now plays every audio stream correctly.
-- Updating a tool in Settings no longer keeps offering the same update after
-  it already installed.
+- Right after splitting a clip, the "+ FADE" button at the new cut was
+  unclickable (the playhead sitting exactly there swallowed the click).
+- A caption timed to the incoming side of a crossfade did not appear during
+  the dissolve - it either showed up late or not at all. It now fades in
+  with its footage, mid-dissolve included.
+- A zoom keyframe at the very start of the timeline drew as a clipped
+  half-diamond.
+- The zoom badge could read "2,5x" instead of "2.5x" on systems using a
+  comma decimal.
+- A hand-edited or corrupted project file could ask the export for a
+  zero-size picture-in-picture; it is now clamped to something sane on load.
