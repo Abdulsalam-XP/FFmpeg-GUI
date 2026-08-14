@@ -43,6 +43,20 @@ function Initialize-MainWindow {
     # dictionary up via $window.Resources without depending on Application.Current.
     $window.Resources.MergedDictionaries.Add($themeDict)
 
+    # Title-bar/taskbar icon. Set from code, not XAML: XamlReader.Load has no baseUri, so
+    # a relative Icon="..." in the markup cannot resolve, and the window would otherwise
+    # inherit the PowerShell host's icon. Missing file -> keep the host icon (an updated
+    # script can land before its asset does; same tolerance as every FindName guard).
+    $iconPath = Join-Path $ScriptRoot "assets\Icon.ico"
+    if (Test-Path $iconPath) {
+        try {
+            $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create(
+                (New-Object System.Uri $iconPath),
+                [System.Windows.Media.Imaging.BitmapCreateOptions]::None,
+                [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad)
+        } catch {}
+    }
+
     $panelNames = @("Compress", "MergeAudio", "Trim", "YouTubeMP3", "YouTubeMP4", "Settings")
     $panels = @{}
     $navButtons = @{}

@@ -1187,6 +1187,42 @@
             </Setter.Value>
         </Setter>
     </Style>
+    <!-- The "add a lane" ghost buttons under the track stack: quiet chrome that reads as
+         part of the lane area, not as a toolbar action. -->
+    <Style x:Key="LaneAddButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="#8FA8C0"/>
+        <Setter Property="FontFamily" Value="{StaticResource FontChrome}"/>
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="BorderBrush" Value="#2A3B52"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="12,4"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Chrome" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="Background" Value="#101828"/>
+                            <Setter TargetName="Chrome" Property="BorderBrush" Value="#E0C48F"/>
+                            <Setter Property="Foreground" Value="#E0C48F"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.35"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
     <!-- Collapse caret on a video lane header: a glyph, not a button box. -->
     <Style x:Key="LaneCaretButtonStyle" TargetType="Button">
         <Setter Property="Width" Value="12"/>

@@ -854,6 +854,7 @@ try {
     $canvasTrimCaptions  = $panelTrim.FindName("CanvasTrimCaptions")
     $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
     $panelTrimLanes      = $panelTrim.FindName("PanelTrimTracks")
+    $panelTrimAddTracks  = $panelTrim.FindName("PanelTrimAddTracks")
     $canvasTrimLaneOverlay = $panelTrim.FindName("CanvasTrimLaneOverlay")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $previewCell         = $panelTrim.FindName("PreviewCell")
@@ -1034,6 +1035,9 @@ try {
     # The green snap flash Line (spec 4.8) while a drag is on a lock, else $null. Held so
     # it can be removed again without clearing the overlay canvas the playhead shares.
     $script:TrimSnapFlashLine = $null
+    # True while the playhead is being DRAGGED on the timeline canvas (mouse held after a
+    # press): every mouse move keeps scrubbing until release.
+    $script:TrimScrubDrag = $false
     # Live lane-reorder (⋮⋮) drag state. Same $null-when-idle convention; the rows it moves
     # are whole group blocks, see Move-TrimLaneTo.
     $script:TrimLaneReorderDrag = $null
@@ -1143,6 +1147,22 @@ try {
                 -Text "Couldn't save the project file next to the video. Edits won't survive closing the app."
         }
     })
+
+    # Zoom-gesture refinement: each Ctrl+wheel notch repaints through the cheap -TickOnly
+    # path (no lane-row rebuild), and this timer runs ONE full Update-TrimTimeline shortly
+    # after the last notch so the lane rows and thumbnails land at the FINAL zoom instead
+    # of being rebuilt on every intermediate step -- rebuilding them per notch is what made
+    # zooming feel like it "waits for the frames to render" between notches.
+    $script:ZoomRefineTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:ZoomRefineTimer.Interval = [timespan]::FromMilliseconds(200)
+    $script:ZoomRefineTimer.Add_Tick({
+        $script:ZoomRefineTimer.Stop()
+        Update-TrimTimeline
+    })
+    function Request-TrimZoomRefine {
+        $script:ZoomRefineTimer.Stop()
+        $script:ZoomRefineTimer.Start()
+    }
 
     # Called at the end of every mutating action. A top-level function for the usual
     # reason: several of those actions live inside .GetNewClosure()'d handlers, where a
@@ -3039,12 +3059,16 @@ try {
         Clear-TrimClipElements
         if (-not $script:TrimInputFile -or @($script:TrimLanes).Count -eq 0) {
             $panelTrimLanes.Visibility = "Collapsed"
+            # Null-guarded like every FindName control: a stale MainWindow.xaml from an
+            # in-place update can predate the add-track row.
+            if ($null -ne $panelTrimAddTracks) { $panelTrimAddTracks.Visibility = "Collapsed" }
             Update-TrimLaneOverlay
             return
         }
         # Always visible now: spec 4.1 makes the source audio rows part of the ordinary
         # single-file session (no U toggle needed to see them).
         $panelTrimLanes.Visibility = "Visible"
+        if ($null -ne $panelTrimAddTracks) { $panelTrimAddTracks.Visibility = "Visible" }
 
         $bc = New-Object System.Windows.Media.BrushConverter
         $goldBrush        = $bc.ConvertFromString("#E0C48F")
@@ -3136,6 +3160,36 @@ try {
             $rowGrid = New-Object System.Windows.Controls.Grid
             $rowGrid.Height = $rowHeight
             $rowGrid.Margin = New-Object System.Windows.Thickness(0, 0, 0, 4)
+            # A row is transparent to hit-testing where nothing painted; without a real
+            # Background the drop events only fire over the header and clip bodies.
+            $rowGrid.Background = [System.Windows.Media.Brushes]::Transparent
+
+            # Files dropped straight onto a row land in THIS lane, at the drop position --
+            # the identical Add-TrimMediaFromPath flow the header's "Add media..." dialog
+            # uses, so kind refusals (audio file on a video lane, adds to V1) and the
+            # on-demand audio rows behave exactly the same. GetNewClosure for $thisId,
+            # like every other per-row handler.
+            $rowGrid.AllowDrop = $true
+            $rowGrid.Add_PreviewDragOver({
+                param($eventSource, $e)
+                if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
+                    $e.Effects = [System.Windows.DragDropEffects]::Copy
+                    $e.Handled = $true
+                }
+            })
+            $rowGrid.Add_Drop({
+                param($eventSource, $e)
+                if (-not $e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { return }
+                $files = @($e.Data.GetData([System.Windows.DataFormats]::FileDrop))
+                if ($files.Count -eq 0) { return }
+                # The shared timeline canvas is the x-reference for every strip, so the
+                # drop position converts with the same mapping the playhead uses.
+                $t = Convert-TrimXToTime -X ($e.GetPosition($canvasTrimTimeline)).X
+                foreach ($f in $files) {
+                    Add-TrimMediaFromPath -Path ([string]$f) -TargetLaneId $thisId -AtTimeline ([math]::Max(0.0, $t))
+                }
+                $e.Handled = $true
+            }.GetNewClosure())
             $c0 = New-Object System.Windows.Controls.ColumnDefinition
             $c0.Width = New-Object System.Windows.GridLength(250)
             $c1 = New-Object System.Windows.Controls.ColumnDefinition
@@ -5101,13 +5155,29 @@ try {
     # The media add. The OpenFileDialog cannot be exercised by the UIA harness (it hangs on
     # the native Open dialog), so this is verified by code-path review plus scripted checks
     # that craft a project file directly -- see the Task 10 report.
+    # The dialog half of adding media; the work lives in Add-TrimMediaFromPath so a file
+    # DROPPED onto a lane row takes the identical path (kind routing, refusals, caches,
+    # undo, on-demand audio rows) without ever opening the dialog.
     function Invoke-TrimAddClip {
         param([string]$TargetLaneId = "")
         if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
         $dlg = New-Object Microsoft.Win32.OpenFileDialog
         $dlg.Filter = "Media|*.mp4;*.mkv;*.mov;*.mp3;*.m4a;*.wav;*.flac;*.png;*.jpg;*.jpeg;*.bmp;*.webp|All files|*.*"
         if ($dlg.ShowDialog() -ne $true) { return }
-        $path = $dlg.FileName
+        Add-TrimMediaFromPath -Path $dlg.FileName -TargetLaneId $TargetLaneId
+    }
+
+    function Add-TrimMediaFromPath {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [string]$TargetLaneId = "",
+            # Timeline seconds to place the clip's START at; negative means "at the
+            # playhead" (the dialog flow). A drop passes the drop position instead.
+            [double]$AtTimeline = -1.0
+        )
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $path = $Path
         $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
         # Routing by extension: anything that is not a known still or a known audio-only
         # container is treated as video, exactly as the "All files" half of the filter implies.
@@ -5140,7 +5210,12 @@ try {
         }
 
         $state = Get-TrimTimelineState
-        $timelineOffset = Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+        $timelineOffset = if ($AtTimeline -ge 0.0) {
+            # 0.0 floor only -- a drop past V1's end is a legitimate montage add.
+            [math]::Max(0.0, $AtTimeline)
+        } else {
+            Convert-TrimSourceToTimeline -SourceSeconds $script:TrimPlayhead -TimelinePieces $state.TimelinePieces
+        }
 
         Push-TrimUndo
         $lane = Get-TrimAddTargetLane -Kind $laneKind -TargetLaneId $TargetLaneId
@@ -7217,8 +7292,13 @@ try {
             if ($null -eq $previewCell) { return }
             $cellW = [double]$previewCell.ActualWidth
             if ($cellW -le 0) { return }
-            $availH = [double]$ctx.Window.ActualHeight - 660.0
-            if ($availH -lt 360.0) { $availH = 360.0 }
+            # A PROPORTION of the window, not "window minus a fixed budget": with the old
+            # `height - 660` a taller screen gave every extra pixel to the preview and the
+            # timeline stayed cramped against the bottom edge. 38% keeps the preview
+            # comfortably readable while the track area -- where the actual editing
+            # happens -- gets the larger share of a maximized window.
+            $availH = [double]$ctx.Window.ActualHeight * 0.38
+            if ($availH -lt 320.0) { $availH = 320.0 }
             $w = [math]::Min($cellW, $availH * 16.0 / 9.0)
             $h = $w * 9.0 / 16.0
             foreach ($el in @($previewZoomHost, $canvasCaptionOverlay)) {
@@ -7438,25 +7518,23 @@ try {
             Stop-TrimAtV1End
         }.GetNewClosure())
 
-        # Scrubbing. A click on a piece bubbles down to here too, so one click both selects
-        # that piece and moves the playhead -- see the note on the piece handler.
-        #
-        # No GetNewClosure() on these two, same reason as the timer tick above: they write
-        # $script: state, which a closure would rebind into its own private module. Nothing
-        # here needs capture -- they are defined at the top-level try scope.
-        $canvasTrimTimeline.Add_MouseLeftButtonDown({
-            param($eventSource, $e)
+        # Scrubbing: one shared seek used by the click AND by the playhead drag. -Light is
+        # the per-mouse-move variant: it takes the tick's cheap timeline path (no lane-row
+        # rebuild) and skips the PiP -Seek, whose per-move MediaElement.Position writes
+        # would stutter the drag -- the full pass on release catches the pools up.
+        # A top-level function so its bare $script: writes land in the real script scope.
+        function Set-TrimScrubFromX {
+            param([double]$X, [switch]$Light)
             if (-not $script:TrimInputFile) { return }
             $state = Get-TrimTimelineState
-            $pos = $e.GetPosition($canvasTrimTimeline)
-            # The click lands in timeline (compacted) space; convert to a real source
-            # second before seeking, so a click can never target deleted footage.
-            $t = Convert-TrimXToTime -X $pos.X
+            # The position lands in timeline (compacted) space; convert to a real source
+            # second before seeking, so a scrub can never target deleted footage.
+            $t = Convert-TrimXToTime -X $X
             # 0.0, not 0 (trap #8): the int overload truncated every scrub click to a
             # whole second, so the playhead could never land between seconds.
             #
-            # Clamped to the WHOLE timeline, not the cut list: past V1's end the click is
-            # landing in the montage region, which is a real part of the export.
+            # Clamped to the WHOLE timeline, not the cut list: past V1's end the position
+            # is in the montage region, which is a real part of the export.
             $wasInExtension = Test-TrimInExtension
             $playing = ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
             $tClamped = [math]::Max(0.0, [math]::Min((Get-TrimTimelineLengthCached), $t))
@@ -7478,7 +7556,7 @@ try {
                 if ($wasInExtension -and $playing) { try { $mediaTrimPreview.Play() } catch {} }
             }
             Update-TrimPosition
-            Update-TrimTimeline
+            if ($Light) { Update-TrimTimeline -TickOnly } else { Update-TrimTimeline }
             # Scrubbing into a fade shows the blended frame too, not just playback.
             Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
             # Scrubbing across a caption's window shows it appear and disappear on time.
@@ -7487,11 +7565,43 @@ try {
             Update-PipBoxOverlay
             # And scrubbing across a glide shows the picture move with it, paused.
             Update-PreviewZoom -SourceSeconds $script:TrimPlayhead
-            # Scrubbing repositions a PiP's video, but deliberately never seeks an
-            # audio-clip (Update-TrimAudioClipPreview's own comment explains why).
-            Update-PipPreview -SourceSeconds $script:TrimPlayhead -Seek $true
-            Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+            if (-not $Light) {
+                # Scrubbing repositions a PiP's video, but deliberately never seeks an
+                # audio-clip (Update-TrimAudioClipPreview's own comment explains why).
+                Update-PipPreview -SourceSeconds $script:TrimPlayhead -Seek $true
+                Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+            }
             Update-TrimBlackBase
+        }
+
+        # A click on a piece bubbles down to here too, so one click both selects that
+        # piece and moves the playhead -- see the note on the piece handler. The press
+        # also CAPTURES the canvas so the playhead can be DRAGGED: every move until
+        # release keeps scrubbing, exactly like holding the seek bar in an NLE.
+        #
+        # No GetNewClosure() on these, same reason as the timer tick above: they write
+        # $script: state, which a closure would rebind into its own private module.
+        $canvasTrimTimeline.Add_MouseLeftButtonDown({
+            param($eventSource, $e)
+            if (-not $script:TrimInputFile) { return }
+            Set-TrimScrubFromX -X ($e.GetPosition($canvasTrimTimeline)).X
+            $script:TrimScrubDrag = $true
+            [void]$canvasTrimTimeline.CaptureMouse()
+        })
+
+        $canvasTrimTimeline.Add_MouseMove({
+            param($eventSource, $e)
+            if (-not $script:TrimScrubDrag) { return }
+            Set-TrimScrubFromX -X ($e.GetPosition($canvasTrimTimeline)).X -Light
+        })
+
+        $canvasTrimTimeline.Add_MouseLeftButtonUp({
+            param($eventSource, $e)
+            if (-not $script:TrimScrubDrag) { return }
+            $script:TrimScrubDrag = $false
+            $canvasTrimTimeline.ReleaseMouseCapture()
+            # The full pass: lane rows recatch the final position and the PiP pools seek.
+            Set-TrimScrubFromX -X ($e.GetPosition($canvasTrimTimeline)).X
         })
 
         # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
@@ -7519,7 +7629,10 @@ try {
             # Keep the window inside the clip.
             $newStart = [math]::Max(0.0, [math]::Min($timelineLength - $newSpan, $anchor - ($ratio * $newSpan)))
             Set-TrimView -Start $newStart -Span $newSpan
-            Update-TrimTimeline
+            # Cheap path per notch, full rebuild once the wheel goes quiet -- see the
+            # comment on $script:ZoomRefineTimer.
+            Update-TrimTimeline -TickOnly
+            Request-TrimZoomRefine
         })
 
         # The canvas has no width until it is laid out, so the first paint must wait for it,

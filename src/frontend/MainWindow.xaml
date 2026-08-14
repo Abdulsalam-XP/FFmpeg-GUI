@@ -2,6 +2,7 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="FFmpeg GUI" Height="1300" Width="1860" MinHeight="640" MinWidth="980"
+        WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BrushShellBase}">
 
@@ -535,9 +536,17 @@
 
                             <!-- Track lanes: grouped NLE rows, code-built by Update-TrimLaneRows.
                                  CanvasTrimLaneOverlay carries the stack-spanning playhead line and
-                                 the green snap flash, above every row. -->
+                                 the green snap flash, above every row. The add-track buttons sit
+                                 UNDER the stack, aligned with the header column, where new lanes
+                                 actually appear (moved out of the toolbar on the user's ask). -->
                             <Grid Margin="0,4,0,0">
-                                <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed"/>
+                                <StackPanel>
+                                    <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed"/>
+                                    <StackPanel x:Name="PanelTrimAddTracks" Orientation="Horizontal" Visibility="Collapsed" Margin="0,2,0,4">
+                                        <Button x:Name="ButtonTrimAddVideoTrack" Content="＋ Video track" Style="{StaticResource LaneAddButtonStyle}"/>
+                                        <Button x:Name="ButtonTrimAddAudioTrack" Content="＋ Audio track" Style="{StaticResource LaneAddButtonStyle}" Margin="8,0,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
                                 <Canvas x:Name="CanvasTrimLaneOverlay" IsHitTestVisible="False" ClipToBounds="True"/>
                             </Grid>
 
@@ -633,63 +642,64 @@
                                 <Button x:Name="ButtonTrackDelete" Content="Delete clip" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
                             </StackPanel>
 
-                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                                <Button x:Name="ButtonTrimAddCaption" Style="{StaticResource PresetButtonStyle}" Width="120">
+                            <!-- DockPanel, not a StackPanel: Export is declared FIRST and docked
+                                 Right, so it claims its space before the editing verbs do and can
+                                 never be pushed off the card at narrow widths (the old fixed-width
+                                 StackPanel clipped it). The add-track buttons live beside the lane
+                                 stack now, not here. -->
+                            <DockPanel Margin="0,16,0,0" LastChildFill="False">
+                                <Button x:Name="ButtonTrimExport" DockPanel.Dock="Right" Content="Export Video"
+                                        Style="{StaticResource HeroButtonStyle}"
+                                        Width="170" Margin="40,0,0,0" IsEnabled="False"/>
+                                <Button x:Name="ButtonTrimAddCaption" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="120">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="＋ Caption"/>
                                         <TextBlock Text="C" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimAddZoom" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimAddZoom" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="＋ Zoom"/>
                                         <TextBlock Text="Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimSnap" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimSnap" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock x:Name="TextTrimSnapGlyph" Text="🧲 Snap"/>
                                         <TextBlock Text="N" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimAddVideoTrack" Content="＋ Video track" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0"/>
-                                <Button x:Name="ButtonTrimAddAudioTrack" Content="＋ Audio track" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0"/>
-                                <Button x:Name="ButtonTrimUnlink" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimUnlink" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="🔗 Unlink"/>
                                         <TextBlock Text="U" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimSplit" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Split"/>
                                         <TextBlock Text="S" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimDelete" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="12,0,0,0" IsEnabled="False">
+                                <Button x:Name="ButtonTrimDelete" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="12,0,0,0" IsEnabled="False">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Delete"/>
                                         <TextBlock Text="DEL" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimUndo" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
+                                <Button x:Name="ButtonTrimUndo" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Undo"/>
                                         <TextBlock Text="Ctrl+Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimRedo" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
+                                <Button x:Name="ButtonTrimRedo" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Redo"/>
                                         <TextBlock Text="Ctrl+Y" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <!-- Pushed to the right edge rather than sitting flush against
-                                     Undo: the editing verbs are one group, the action that
-                                     writes a file is not part of it. -->
-                                <Button x:Name="ButtonTrimExport" Content="Export Video" Style="{StaticResource HeroButtonStyle}"
-                                        Width="170" Margin="40,0,0,0" IsEnabled="False"/>
-                            </StackPanel>
+                            </DockPanel>
                         </StackPanel>
                     </Border>
 
