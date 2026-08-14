@@ -10034,9 +10034,10 @@ try {
                 $toolsCancel.Visibility = "Collapsed"
                 $toolsCancel.IsEnabled = $false
                 Show-PanelMessage -Block $toolsStatus -Text $message -IsError:(-not $success)
-                # Re-reads the exe from disk, so the version shown is what actually
-                # landed rather than what was expected to land.
-                Update-ToolsCard
+                # -Force is what actually re-reads the exe from disk: without it the
+                # session-cached installed version is compared against latest, and the
+                # row keeps offering the update that just finished installing.
+                Update-ToolsCard -Force
             }
     }
 
