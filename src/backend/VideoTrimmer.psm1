@@ -896,9 +896,26 @@ function Export-TrimAudioStream {
         [Parameter(Mandatory = $true)][string]$OutputFile
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
-    & $ffmpeg -hide_banner -y -i $InputFile -map "0:$StreamIndex" -vn -c:a copy $OutputFile 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
-        & $ffmpeg -hide_banner -y -i $InputFile -map "0:$StreamIndex" -vn -c:a aac -b:a 192k $OutputFile 2>&1 | Out-Null
+    # IDLE process priority: this runs right after a file load, exactly when the preview
+    # starts playing THE SAME multi-GB file -- at normal priority the extraction visibly
+    # stuttered playback until it finished.
+    $runIdle = {
+        param($exe, $arguments)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = $arguments
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
+        $proc.WaitForExit()
+        return $proc.ExitCode
+    }
+    $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a copy "{2}"' -f $InputFile, $StreamIndex, $OutputFile
+    $code = & $runIdle $ffmpeg $mapArgs
+    if ($code -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
+        $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a aac -b:a 192k "{2}"' -f $InputFile, $StreamIndex, $OutputFile
+        & $runIdle $ffmpeg $mapArgs | Out-Null
     }
     return [bool](Test-Path -LiteralPath $OutputFile)
 }

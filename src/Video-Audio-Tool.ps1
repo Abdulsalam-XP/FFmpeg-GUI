@@ -1083,9 +1083,12 @@ try {
     # so streams 2..N are extracted to their own files in the background and played by
     # off-tree elements synced to the main one. Keyed by ABSOLUTE stream index.
     $script:TrimSourceStreamAudio = @{}      # idx -> extracted file path (ready to play)
-    $script:TrimSourceStreamElements = @{}   # idx -> @{ Element; Playing }
+    $script:TrimSourceStreamElements = @{}   # idx -> @{ Element; Playing; StartedAt }
     $script:TrimSourceStreamPending = @{}    # idx -> $true while ffmpeg runs
     $script:TrimSourceStreamOrder = @()      # probed stream indices, file order
+    $script:TrimSourceStreamQueue = @()      # indices still waiting for extraction
+    # Throttle stamp for the DRAG-scrub's media seeks (see Set-TrimScrubFromX).
+    $script:TrimScrubLastSeek = $null
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
     # (Invoke-TrimAddClip) for every overlay clip so the magnet-locked resize drag can read
     # it without shelling out to ffprobe on every mouse-move.
@@ -2468,6 +2471,44 @@ try {
     # video clip is the exception: it shares its LinkId with every source audio row, and
     # deleting it means "audio-only export" (exactly what deleting v2's video-main did),
     # never "delete all the audio too".
+    function Test-TrimStackHasAnyClip {
+        foreach ($lane in @($script:TrimLanes)) {
+            if (@($lane.Clips).Count -gt 0) { return $true }
+        }
+        return $false
+    }
+
+    # Deleting the LAST content closes the file: an editor showing (and playing!) a video
+    # whose every track was deleted is a lie, and the dropzone is what "nothing loaded"
+    # looks like (user ask, 2026-08-14). The lanes are wiped to a truly empty list before the
+    # flush-save so the sidecar records "no lanes" -- the reader then rebuilds the DEFAULT
+    # stack on the next load instead of restoring emptiness.
+    function Reset-TrimEditorToDropzone {
+        if (-not $script:TrimInputFile) { return }
+        Set-TrimLanes -Lanes @()
+        if ($script:ProjectSaveTimer) { $script:ProjectSaveTimer.Stop() }
+        Save-TrimProject -VideoPath $script:TrimInputFile `
+            -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions) `
+            -Zooms @($script:TrimZooms) -Lanes @() | Out-Null
+        if ($null -ne $script:TrimTimer) { $script:TrimTimer.Stop() }
+        try { $mediaTrimPreview.Stop() } catch {}
+        try { $mediaTrimPreview.Source = $null } catch {}
+        if ($null -ne $buttonTrimPlay) { $buttonTrimPlay.Content = "Play" }
+        Clear-TrimClipMediaElementPools
+        Clear-TrimSourceStreamAudio
+        # A cleared editor has no history to walk back into -- undo would restore lanes
+        # against a file that is no longer open.
+        if ($null -ne $script:TrimUndoStack) { $script:TrimUndoStack.Clear() }
+        if ($null -ne $script:TrimRedoStack) { $script:TrimRedoStack.Clear() }
+        if ($null -ne $buttonTrimUndo) { $buttonTrimUndo.IsEnabled = $false }
+        if ($null -ne $buttonTrimRedo) { $buttonTrimRedo.IsEnabled = $false }
+        $script:TrimInputFile = $null
+        if ($null -ne $cardTrimEditor) { $cardTrimEditor.Visibility = "Collapsed" }
+        if ($null -ne $buttonTrimBrowse) { $buttonTrimBrowse.Visibility = "Visible" }
+        if ($null -ne $cardRecentTrim) { $cardRecentTrim.Visibility = "Visible" }
+        if ($null -ne $buttonTrimOpenAnother) { $buttonTrimOpenAnother.Visibility = "Collapsed" }
+    }
+
     function Remove-TrimClipWithLinks {
         param([Parameter(Mandatory = $true)][string]$Id)
         $ref = Get-TrimClipRef -Id $Id
@@ -2493,6 +2534,7 @@ try {
         # ways the stack becomes audio-only, and the selection text is where that shows.
         Update-TrimSelectionText
         Request-TrimProjectSave
+        if (-not (Test-TrimStackHasAnyClip)) { Reset-TrimEditorToDropzone }
     }
 
     # One row's trash: the lane and everything on it. Deleting the MAIN video lane is how a
@@ -2512,6 +2554,7 @@ try {
         # than at each of the several call sites that can delete a row.
         Update-TrimSelectionText
         Request-TrimProjectSave
+        if (-not (Test-TrimStackHasAnyClip)) { Reset-TrimEditorToDropzone }
     }
 
     # The video lane header's trash: the lane AND every audio lane grouped under it, since
@@ -5184,6 +5227,21 @@ try {
         # switched in. Registering the stale result would play the OLD file's audio.
         if ([string]$script:TrimInputFile -ne $ForFile) { return }
         if (Test-Path -LiteralPath $Path) { $script:TrimSourceStreamAudio[$skey] = $Path }
+        # One extraction at a time (they all read the same multi-GB recording; two ffmpegs
+        # seeking it in parallel thrash the disk the preview is decoding from) -- the next
+        # queued stream starts only when the previous one lands.
+        Start-TrimSourceStreamQueue
+        # If the transport is already running, hand the freshly extracted stream its
+        # element right away instead of waiting for the next tick.
+        Update-TrimPreviewVolume
+    }
+
+    function Start-TrimSourceStreamQueue {
+        if (@($script:TrimSourceStreamQueue).Count -eq 0) { return }
+        if (@($script:TrimSourceStreamPending.Keys).Count -gt 0) { return }
+        $next = [int]$script:TrimSourceStreamQueue[0]
+        $script:TrimSourceStreamQueue = @($script:TrimSourceStreamQueue | Select-Object -Skip 1)
+        Request-TrimSourceStreamAudio -StreamIdx $next
     }
 
     # Element per extracted stream, off-tree like the audio-clip pool -- $null until the
@@ -5197,7 +5255,7 @@ try {
             $el.LoadedBehavior = "Manual"
             $el.UnloadedBehavior = "Manual"
             try { $el.Source = New-Object System.Uri([string]$script:TrimSourceStreamAudio[$skey]) } catch {}
-            $script:TrimSourceStreamElements[$skey] = @{ Element = $el; Playing = $false }
+            $script:TrimSourceStreamElements[$skey] = @{ Element = $el; Playing = $false; StartedAt = $null }
         }
         return $script:TrimSourceStreamElements[$skey]
     }
@@ -5211,6 +5269,7 @@ try {
         $script:TrimSourceStreamAudio = @{}
         $script:TrimSourceStreamPending = @{}
         $script:TrimSourceStreamOrder = @()
+        $script:TrimSourceStreamQueue = @()
     }
 
     # Preview volumes for the SOURCE audio rows plus playback of the extracted extras:
@@ -5234,16 +5293,24 @@ try {
         }
         $order = @($script:TrimSourceStreamOrder)
         if ($order.Count -eq 0) { return }
+        # EVERY stream -- the first included -- plays through its own extracted element.
+        # Both streams of these recordings are flagged default:1, so which one the main
+        # element decodes is Media Foundation's coin flip: on some files it picked the mic
+        # stream, and the preview then played the mic TWICE while the system audio stayed
+        # silent. Until the first stream's extraction lands, the main element carries its
+        # (ambiguous) audio as a stopgap; from then on it is picture-only.
         $firstKey = [string]([int]$order[0])
+        $firstReady = $script:TrimSourceStreamAudio.ContainsKey($firstKey)
         $mainVol = 0.0
-        if ($rows.ContainsKey($firstKey)) {
+        if (-not $firstReady -and $rows.ContainsKey($firstKey)) {
             $r = $rows[$firstKey]
             if (-not [bool]$r.Muted) { $mainVol = [math]::Min(1.0, [math]::Pow(10.0, [double]$r.GainDb / 20.0)) }
         }
         $mediaTrimPreview.Volume = $mainVol
         $mainPlaying = ($Playing -and -not (Test-TrimInExtension))
         $mainPos = $mediaTrimPreview.Position
-        for ($si = 1; $si -lt $order.Count; $si++) {
+        $nowStamp = [datetime]::UtcNow
+        for ($si = 0; $si -lt $order.Count; $si++) {
             $idx = [int]$order[$si]
             $entry = Get-TrimSourceStreamElement -StreamIdx $idx
             if ($null -eq $entry) { continue }
@@ -5260,12 +5327,24 @@ try {
                     try { $el.Position = $mainPos } catch {}
                     try { $el.Play() } catch {}
                     $entry.Playing = $true
+                    $entry.StartedAt = $nowStamp
                 } elseif ($Seek) {
                     try { $el.Position = $mainPos } catch {}
+                    $entry.StartedAt = $nowStamp
                 } else {
-                    try {
-                        if ([math]::Abs($el.Position.TotalSeconds - $mainPos.TotalSeconds) -gt 0.35) { $el.Position = $mainPos }
-                    } catch {}
+                    # Drift guard with a start-up grace: right after Play() the element's
+                    # Position lags while its decoder spins up, and correcting during that
+                    # window re-seeked it every tick -- the burst of restarts WAS the
+                    # "stutters for a while, then fixes itself".
+                    $inGrace = ($null -ne $entry.StartedAt -and ($nowStamp - $entry.StartedAt).TotalSeconds -lt 1.5)
+                    if (-not $inGrace) {
+                        try {
+                            if ([math]::Abs($el.Position.TotalSeconds - $mainPos.TotalSeconds) -gt 0.6) {
+                                $el.Position = $mainPos
+                                $entry.StartedAt = $nowStamp
+                            }
+                        } catch {}
+                    }
                 }
             } else {
                 if ($entry.Playing) { try { $el.Pause() } catch {} }
@@ -7737,7 +7816,23 @@ try {
             $script:TrimPlayhead = Convert-TrimTimelineToSource `
                 -TimelineSeconds ([math]::Min($tClamped, [double]$state.TotalDuration)) `
                 -TimelinePieces $state.TimelinePieces
-            $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead)
+            # Media seeks are THROTTLED on the light (per-mouse-move) path: a drag fires
+            # dozens of moves a second, and MediaElement queues every Position write --
+            # the decoder then visibly "fast-forwards" through the backlog for seconds
+            # after the drag. The playhead/readout still track every move; the media
+            # catches up at most ~6x/sec, and the full pass (click, release) always seeks.
+            $seekNow = $true
+            if ($Light) {
+                $seekStamp = [datetime]::UtcNow
+                if ($null -ne $script:TrimScrubLastSeek -and ($seekStamp - $script:TrimScrubLastSeek).TotalMilliseconds -lt 150) {
+                    $seekNow = $false
+                } else {
+                    $script:TrimScrubLastSeek = $seekStamp
+                }
+            } else {
+                $script:TrimScrubLastSeek = $null
+            }
+            if ($seekNow) { $mediaTrimPreview.Position = [timespan]::FromSeconds($script:TrimPlayhead) }
             if ($extra -gt 0) {
                 Set-TrimExtensionPosition -Seconds $extra
                 try { $mediaTrimPreview.Pause() } catch {}
@@ -8467,11 +8562,13 @@ try {
         New-Item -ItemType Directory -Path $script:TrimThumbDir -Force | Out-Null
         $script:TrimThumbCache = @{}
         $script:TrimThumbPending = @{}
-        # Now that the per-file temp dir exists: start pulling the extra source audio
-        # streams out for the preview (see $script:TrimSourceStreamOrder above).
-        for ($sn = 1; $sn -lt @($script:TrimSourceStreamOrder).Count; $sn++) {
-            Request-TrimSourceStreamAudio -StreamIdx ([int]$script:TrimSourceStreamOrder[$sn])
-        }
+        # Now that the per-file temp dir exists: queue EVERY source audio stream for
+        # extraction (see $script:TrimSourceStreamOrder / Update-TrimSourceAudioPreview --
+        # the first stream needs its own element too, because which stream the main
+        # element decodes is not reliable). Sequential on purpose: parallel ffmpegs
+        # reading the same multi-GB recording thrash the disk playback decodes from.
+        $script:TrimSourceStreamQueue = @(@($script:TrimSourceStreamOrder) | ForEach-Object { [int]$_ })
+        Start-TrimSourceStreamQueue
         # Waveform strips get a PERSISTENT on-disk cache, unlike the thumbnails: they
         # took a visible couple of seconds to re-render on every single file open, and
         # a waveform never changes for a given source file. Keyed by path + size +
