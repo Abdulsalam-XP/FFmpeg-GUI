@@ -748,6 +748,50 @@
         </Setter>
     </Style>
 
+    <!-- Horizontal twin of the implicit (vertical-only) ScrollBar skin below, for the
+         timeline view bar: the implicit style pins Width=10 and a vertical track, which
+         renders a horizontal instance as a 10px sliver. -->
+    <Style x:Key="TimelineScrollBarStyle" TargetType="ScrollBar">
+        <Setter Property="Height" Value="12"/>
+        <Setter Property="Background" Value="#101828"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                    <Grid Background="{TemplateBinding Background}">
+                        <Track x:Name="PART_Track" Orientation="Horizontal" IsDirectionReversed="False">
+                            <Track.Thumb>
+                                <Thumb>
+                                    <Thumb.Style>
+                                        <Style TargetType="Thumb">
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Thumb">
+                                                        <Border x:Name="Bar" CornerRadius="3" Background="#3AD3A24C" Margin="0,2"/>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter TargetName="Bar" Property="Background" Value="#7AD3A24C"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </Thumb.Style>
+                                </Thumb>
+                            </Track.Thumb>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageRightCommand" Opacity="0" Focusable="False"/>
+                            </Track.IncreaseRepeatButton>
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageLeftCommand" Opacity="0" Focusable="False"/>
+                            </Track.DecreaseRepeatButton>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style TargetType="ScrollBar">
         <Setter Property="Width" Value="10"/>
         <Setter Property="Background" Value="Transparent"/>

@@ -2,12 +2,44 @@ $modulePath = Join-Path $PSScriptRoot "..\ProjectFile.psm1"
 Import-Module $modulePath -Force
 Import-Module (Join-Path $PSScriptRoot "..\Captions.psm1") -Force
 
+# Every test writes into ITS OWN store, never the app's assets\projects.
+$script:TestStore = Join-Path $env:TEMP ("pf-store-" + [guid]::NewGuid().ToString("N"))
+Set-TrimProjectStore -Path $script:TestStore
+
 Describe "Get-TrimProjectPath" {
-    It "replaces the extension with .ffgui.json" {
-        Get-TrimProjectPath -VideoPath "C:\v\clip.mp4" | Should Be "C:\v\clip.ffgui.json"
+    It "lives in the project STORE, named leaf + path hash + .ffgui.json" {
+        $p = Get-TrimProjectPath -VideoPath "C:\v\clip.mp4"
+        (Split-Path $p -Parent) | Should Be $script:TestStore
+        (Split-Path $p -Leaf) | Should Match '^clip-[0-9a-f]{8}\.ffgui\.json$'
     }
-    It "handles names with dots" {
-        Get-TrimProjectPath -VideoPath "C:\v\a.b.DVR.mp4" | Should Be "C:\v\a.b.DVR.ffgui.json"
+    It "is stable for the same path and distinct for same-named clips elsewhere" {
+        $a = Get-TrimProjectPath -VideoPath "C:\v\clip.mp4"
+        $b = Get-TrimProjectPath -VideoPath "C:\v\clip.mp4"
+        $c = Get-TrimProjectPath -VideoPath "C:\other\clip.mp4"
+        $a | Should Be $b
+        $a | Should Not Be $c
+    }
+    It "keeps dotted names readable" {
+        (Split-Path (Get-TrimProjectPath -VideoPath "C:\v\a.b.DVR.mp4") -Leaf) | Should Match '^a\.b\.DVR-[0-9a-f]{8}\.ffgui\.json$'
+    }
+    It "still knows the legacy sidecar location" {
+        Get-TrimLegacyProjectPath -VideoPath "C:\v\clip.mp4" | Should Be "C:\v\clip.ffgui.json"
+    }
+}
+
+Describe "Read-TrimProject legacy sidecar migration" {
+    $tmp = Join-Path $env:TEMP ("pf-legacy-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $video = Join-Path $tmp "old.mp4"
+    Set-Content -Path $video -Value "fake"
+
+    It "reads a sidecar from beside the video and MOVES it into the store" {
+        Set-Content -Path (Get-TrimLegacyProjectPath -VideoPath $video) -Encoding UTF8 -Value `
+            '{"Version":1,"CutList":[{"Start":0,"End":5}],"Fades":{},"Captions":[]}'
+        $r = Read-TrimProject -VideoPath $video
+        @($r.CutList).Count | Should Be 1
+        (Test-Path (Get-TrimLegacyProjectPath -VideoPath $video)) | Should Be $false
+        (Test-Path (Get-TrimProjectPath -VideoPath $video)) | Should Be $true
     }
 }
 

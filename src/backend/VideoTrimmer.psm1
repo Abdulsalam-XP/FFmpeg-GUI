@@ -904,30 +904,34 @@ function Export-TrimAudioStream {
     # starts playing THE SAME multi-GB file -- at normal priority the extraction visibly
     # stuttered playback until it finished.
     $runIdle = {
-        param($exe, $arguments)
+        param($exe, $arguments, $priority)
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $exe
         $psi.Arguments = $arguments
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
-        try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
+        try { $proc.PriorityClass = $priority } catch { }
         $proc.WaitForExit()
         return $proc.ExitCode
     }
+    $idle = [System.Diagnostics.ProcessPriorityClass]::Idle
     if ([math]::Abs($GainDb) -gt 0.05) {
         # InvariantCulture: a comma decimal in the filter string splits the ffmpeg option.
         $inv = [System.Globalization.CultureInfo]::InvariantCulture
         $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -af volume={2}dB -c:a aac -b:a 192k "{3}"' -f `
             $InputFile, $StreamIndex, $GainDb.ToString("0.#", $inv), $OutputFile
-        & $runIdle $ffmpeg $mapArgs | Out-Null
+        # BelowNormal, not Idle: a boost bake happens while the user is WAITING to hear
+        # it, so it deserves more CPU than the load-time base extraction -- at Idle it
+        # could sit starved for tens of seconds behind a 120fps preview decode.
+        & $runIdle $ffmpeg $mapArgs ([System.Diagnostics.ProcessPriorityClass]::BelowNormal) | Out-Null
         return [bool](Test-Path -LiteralPath $OutputFile)
     }
     $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a copy "{2}"' -f $InputFile, $StreamIndex, $OutputFile
-    $code = & $runIdle $ffmpeg $mapArgs
+    $code = & $runIdle $ffmpeg $mapArgs $idle
     if ($code -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
         $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a aac -b:a 192k "{2}"' -f $InputFile, $StreamIndex, $OutputFile
-        & $runIdle $ffmpeg $mapArgs | Out-Null
+        & $runIdle $ffmpeg $mapArgs $idle | Out-Null
     }
     return [bool](Test-Path -LiteralPath $OutputFile)
 }

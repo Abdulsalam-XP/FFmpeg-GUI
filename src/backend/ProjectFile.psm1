@@ -1,7 +1,32 @@
 # Project persistence: cuts, fades and captions ride along next to the source video
 # in "<video>.ffgui.json" so closing the app never throws away editing work.
 
+# Where project saves live: the app's own assets\projects folder, NOT beside the
+# recordings (user ask 2026-08-14 -- the sidecars were cluttering the recordings dir).
+# Tests and special hosts can point the store elsewhere.
+$script:TrimProjectStore = [System.IO.Path]::Combine((Split-Path $PSScriptRoot -Parent), "assets", "projects")
+
+function Set-TrimProjectStore {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $script:TrimProjectStore = $Path
+}
+
+function Get-TrimProjectStore { return $script:TrimProjectStore }
+
 function Get-TrimProjectPath {
+    param([Parameter(Mandatory = $true)][string]$VideoPath)
+    # Leaf + a short path hash: the leaf keeps the file recognizable in the store, the
+    # hash keeps two same-named clips in different folders from sharing one save.
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($VideoPath)
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($VideoPath.ToLowerInvariant()))
+    $hash = -join (@($bytes[0], $bytes[1], $bytes[2], $bytes[3]) | ForEach-Object { $_.ToString("x2") })
+    return [System.IO.Path]::Combine($script:TrimProjectStore, "$name-$hash.ffgui.json")
+}
+
+# The pre-2026-08-14 location: a sidecar next to the video. Still READ (and migrated
+# into the store) so no one's existing edits are lost by the move.
+function Get-TrimLegacyProjectPath {
     param([Parameter(Mandatory = $true)][string]$VideoPath)
     $dir = [System.IO.Path]::GetDirectoryName($VideoPath)
     $name = [System.IO.Path]::GetFileNameWithoutExtension($VideoPath)
@@ -27,6 +52,9 @@ function Save-TrimProject {
             Lanes    = @(@($Lanes) | ForEach-Object { $_ })
         }
         $json = $doc | ConvertTo-Json -Depth 8
+        if (-not (Test-Path -LiteralPath $script:TrimProjectStore)) {
+            New-Item -ItemType Directory -Path $script:TrimProjectStore -Force | Out-Null
+        }
         [System.IO.File]::WriteAllText((Get-TrimProjectPath -VideoPath $VideoPath), $json,
             (New-Object System.Text.UTF8Encoding($false)))
         return $true
@@ -36,6 +64,19 @@ function Save-TrimProject {
 function Read-TrimProject {
     param([Parameter(Mandatory = $true)][string]$VideoPath)
     $path = Get-TrimProjectPath -VideoPath $VideoPath
+    if (-not (Test-Path -LiteralPath $path)) {
+        # One-time migration: an old sidecar beside the video is relocated into the
+        # store, then read from there. If the move fails (locked, read-only folder),
+        # reading it in place still works -- the next Save writes to the store.
+        $legacy = Get-TrimLegacyProjectPath -VideoPath $VideoPath
+        if (-not (Test-Path -LiteralPath $legacy)) { return $null }
+        try {
+            if (-not (Test-Path -LiteralPath $script:TrimProjectStore)) {
+                New-Item -ItemType Directory -Path $script:TrimProjectStore -Force | Out-Null
+            }
+            Move-Item -LiteralPath $legacy -Destination $path -Force
+        } catch { $path = $legacy }
+    }
     if (-not (Test-Path -LiteralPath $path)) { return $null }
     try {
         $doc = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -239,4 +280,5 @@ function Read-TrimProject {
     } catch { return $null }
 }
 
-Export-ModuleMember -Function Get-TrimProjectPath, Save-TrimProject, Read-TrimProject
+Export-ModuleMember -Function Get-TrimProjectPath, Get-TrimLegacyProjectPath, `
+    Set-TrimProjectStore, Get-TrimProjectStore, Save-TrimProject, Read-TrimProject

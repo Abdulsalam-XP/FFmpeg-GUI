@@ -477,7 +477,10 @@ try {
             $stack = New-Object System.Windows.Controls.StackPanel
 
             $name = New-Object System.Windows.Controls.TextBlock
-            $name.Text = [System.IO.Path]::GetFileName($entry.Path)
+            # A "Saved" row is a project save, not just a recently touched file -- say so
+            # (user ask 2026-08-14): opening it restores the saved edit.
+            $recentLeaf = [System.IO.Path]::GetFileName($entry.Path)
+            $name.Text = $(if ([string]$entry.Job -eq "Saved") { "Saved file: " + $recentLeaf } else { $recentLeaf })
             $name.Foreground = $ctx.Window.FindResource("BrushTextPrimary")
             $name.FontFamily = $ctx.Window.FindResource("FontChrome")
             $name.FontSize = 12.5
@@ -856,6 +859,7 @@ try {
     $panelTrimLanes      = $panelTrim.FindName("PanelTrimTracks")
     $panelTrimAddTracks  = $panelTrim.FindName("PanelTrimAddTracks")
     $panelTrimLaneArea   = $panelTrim.FindName("PanelTrimLaneArea")
+    $scrollTrimView      = $panelTrim.FindName("ScrollTrimView")
     $canvasTrimLaneOverlay = $panelTrim.FindName("CanvasTrimLaneOverlay")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $previewCell         = $panelTrim.FindName("PreviewCell")
@@ -1092,6 +1096,8 @@ try {
     $script:TrimSourceStreamBase = @{}       # idx -> the un-boosted file (kept for instant reset)
     # Throttle stamp for the DRAG-scrub's media seeks (see Set-TrimScrubFromX).
     $script:TrimScrubLastSeek = $null
+    # True while Update-TrimTimeline itself writes the view scrollbar's Value.
+    $script:TrimViewScrollSync = $false
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
     # (Invoke-TrimAddClip) for every overlay clip so the magnet-locked resize drag can read
     # it without shelling out to ffprobe on every mouse-move.
@@ -1145,22 +1151,45 @@ try {
     $script:ProjectSaveWarned = $false
 
     # One DispatcherTimer, restarted on every edit: the file writes once things go quiet
-    # for a second, not on every keystroke of caption typing. A save is cheap, but it is
-    # a synchronous disk write on the UI thread, so it must not run per keypress.
-    $script:ProjectSaveTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $script:ProjectSaveTimer.Interval = [timespan]::FromSeconds(1)
-    $script:ProjectSaveTimer.Add_Tick({
-        $script:ProjectSaveTimer.Stop()
-        if (-not $script:TrimInputFile) { return }
+    # Saving is EXPLICIT now (user ask 2026-08-14): edits mark the project dirty, and the
+    # write happens on Ctrl+S or through the save prompt when closing / switching files.
+    # The old one-second auto-save timer is gone with the sidecars-next-to-the-videos.
+    $script:TrimProjectDirty = $false
+
+    # The one place a project write actually happens. Adds the save to the recent list as
+    # a "Saved file:" row so reopening the video from there restores the edit.
+    function Invoke-TrimProjectSaveNow {
+        param([switch]$Quiet)
+        if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return $false }
         $ok = Save-TrimProject -VideoPath $script:TrimInputFile `
             -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions) `
             -Zooms @($script:TrimZooms) -Lanes @($script:TrimLanes)
-        if (-not $ok -and -not $script:ProjectSaveWarned) {
-            $script:ProjectSaveWarned = $true
-            Show-PanelMessage -Block $textTrimMeta -IsError `
-                -Text "Couldn't save the project file next to the video. Edits won't survive closing the app."
+        if ($ok) {
+            $script:TrimProjectDirty = $false
+            Add-RecentFile -Path $script:TrimInputFile -Job "Saved"
+            Update-AllRecentLists
+            if (-not $Quiet) {
+                Show-PanelMessage -Block $textTrimMeta -Text "Saved -- reopening this video restores this edit."
+            }
+        } elseif (-not $Quiet) {
+            Show-PanelMessage -Block $textTrimMeta -IsError -Text "Couldn't write the project file."
         }
-    })
+        return $ok
+    }
+
+    # Yes/No/Cancel before dirty work is lost. Returns $true when the caller may proceed
+    # (saved or discarded), $false when the user cancelled the close/switch.
+    function Confirm-TrimUnsavedWork {
+        if (-not $script:TrimProjectDirty -or -not $script:TrimInputFile) { return $true }
+        $leaf = [System.IO.Path]::GetFileName([string]$script:TrimInputFile)
+        $answer = [System.Windows.MessageBox]::Show(
+            "Save your edit for `"$leaf`"?", "FFmpeg GUI",
+            [System.Windows.MessageBoxButton]::YesNoCancel, [System.Windows.MessageBoxImage]::Question)
+        if ($answer -eq [System.Windows.MessageBoxResult]::Cancel) { return $false }
+        if ($answer -eq [System.Windows.MessageBoxResult]::Yes) { [void](Invoke-TrimProjectSaveNow -Quiet) }
+        $script:TrimProjectDirty = $false
+        return $true
+    }
 
     # Zoom-gesture refinement: each Ctrl+wheel notch repaints through the cheap -TickOnly
     # path (no lane-row rebuild), and this timer runs ONE full Update-TrimTimeline shortly
@@ -1183,8 +1212,8 @@ try {
     # bare $script: write would land in the closure's own private module.
     function Request-TrimProjectSave {
         if (-not $script:TrimEditorReady) { return }
-        $script:ProjectSaveTimer.Stop()
-        $script:ProjectSaveTimer.Start()
+        # Every mutating action still funnels here; it only MARKS now, never writes.
+        $script:TrimProjectDirty = $true
     }
 
     function Format-TrimTime {
@@ -1598,6 +1627,21 @@ try {
             if ($script:TrimViewStart + $script:TrimViewSpan -gt $viewMax) {
                 $script:TrimViewStart = [math]::Max(0.0, $viewMax - $script:TrimViewSpan)
             }
+        }
+
+        # The horizontal scrollbar mirrors the view window. Sync-guarded: writing Value
+        # here fires ValueChanged, whose handler would otherwise re-enter this repaint.
+        if ($null -ne $scrollTrimView) {
+            $script:TrimViewScrollSync = $true
+            $sbMax = $(if ($timelineLength -gt 0) { [math]::Max(0.0, (Get-TrimViewMax -TimelineLength $timelineLength) - $script:TrimViewSpan) } else { 0.0 })
+            $scrollTrimView.Minimum = 0.0
+            $scrollTrimView.Maximum = $sbMax
+            $scrollTrimView.ViewportSize = $script:TrimViewSpan
+            $scrollTrimView.SmallChange = $script:TrimViewSpan * 0.1
+            $scrollTrimView.LargeChange = $script:TrimViewSpan * 0.9
+            $scrollTrimView.Value = [math]::Min($sbMax, [math]::Max(0.0, $script:TrimViewStart))
+            $scrollTrimView.Visibility = $(if ($script:TrimInputFile) { "Visible" } else { "Collapsed" })
+            $script:TrimViewScrollSync = $false
         }
 
         # The SRC strip is hidden (V1's own lane row draws the pieces now), so building
@@ -2489,10 +2533,10 @@ try {
     function Reset-TrimEditorToDropzone {
         if (-not $script:TrimInputFile) { return }
         Set-TrimLanes -Lanes @()
-        if ($script:ProjectSaveTimer) { $script:ProjectSaveTimer.Stop() }
         Save-TrimProject -VideoPath $script:TrimInputFile `
             -CutList @($script:TrimCutList) -Fades $script:TrimFades -Captions @($script:TrimCaptions) `
             -Zooms @($script:TrimZooms) -Lanes @() | Out-Null
+        $script:TrimProjectDirty = $false
         if ($null -ne $script:TrimTimer) { $script:TrimTimer.Stop() }
         try { $mediaTrimPreview.Stop() } catch {}
         try { $mediaTrimPreview.Source = $null } catch {}
@@ -3509,6 +3553,13 @@ try {
                 $badge.VerticalAlignment = "Center"
                 $badge.Opacity = $(if ($rowMuted) { 0.4 } else { 1.0 })
                 $badge.Text = "{0:+0.0;-0.0;0}" -f $rowGain
+                # A source row whose boost is still being BAKED (Sync-TrimSourceStreamBoosts
+                # re-extraction in flight) shows an ellipsis: without it the fader looks
+                # done while the loudness is still seconds away.
+                if ($null -ne $head -and [string]$head.Path -eq [string]$script:TrimInputFile -and
+                    $script:TrimSourceStreamPending.ContainsKey([string]([int]$head.StreamIdx))) {
+                    $badge.Text = $badge.Text + [string][char]0x2026
+                }
                 $badge.Margin = New-Object System.Windows.Thickness(0, 0, 4, 0)
                 [void]$rightPanel.Children.Add($badge)
 
@@ -5272,6 +5323,9 @@ try {
         # If the transport is already running, hand the freshly extracted stream its
         # element right away instead of waiting for the next tick.
         Update-TrimPreviewVolume
+        # And clear the fader badge's "baking..." ellipsis (a rebuild repaints it; the
+        # rebuild self-guards against live drags).
+        Update-TrimLaneRows
     }
 
     function Start-TrimSourceStreamQueue {
@@ -8095,6 +8149,19 @@ try {
             $wheelSurface.Add_PreviewMouseWheel($script:TrimWheelHandler)
         }
 
+        # The horizontal view scrollbar: dragging it pans the timeline. Sync-guarded so
+        # the repaint writing Value back does not re-enter.
+        if ($null -ne $scrollTrimView) {
+            $scrollTrimView.Add_ValueChanged({
+                param($eventSource, $e)
+                if ($script:TrimViewScrollSync) { return }
+                if (-not $script:TrimInputFile) { return }
+                Set-TrimView -Start ([double]$eventSource.Value) -Span $script:TrimViewSpan
+                Update-TrimTimeline -TickOnly
+                Request-TrimZoomRefine
+            })
+        }
+
         # The canvas has no width until it is laid out, so the first paint must wait for it,
         # and a resize invalidates every x already computed.
         $canvasTrimTimeline.Add_SizeChanged({ Update-TrimTimeline })
@@ -8440,6 +8507,7 @@ try {
 
             if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Z) { Invoke-TrimUndo; $e.Handled = $true; return }
             if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Y) { Invoke-TrimRedo; $e.Handled = $true; return }
+            if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::S) { [void](Invoke-TrimProjectSaveNow); $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::S -and -not $ctrl) { Invoke-TrimSplit; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::C -and -not $ctrl) { Invoke-TrimAddCaption; $e.Handled = $true; return }
             if ($e.Key -eq [System.Windows.Input.Key]::Z -and -not $ctrl) { Invoke-TrimAddZoom; $e.Handled = $true; return }
@@ -8484,17 +8552,9 @@ try {
         param($path)
         if (-not $script:TrimEditorReady) { return $false }
 
-        # Flush the pending debounced save for the OUTGOING file before anything below
-        # touches state -- same unconditional, timer-bypassed flush the window's Closed
-        # handler does, and for the same reason. Without it, switching videos within a
-        # second of an edit loses that edit, and worse, the still-armed timer would fire
-        # later and write the NEW video's fresh state over the old file's project.
-        if ($script:ProjectSaveTimer) { $script:ProjectSaveTimer.Stop() }
-        if ($script:TrimInputFile) {
-            Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
-                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) `
-                -Lanes @($script:TrimLanes) | Out-Null
-        }
+        # Unsaved work on the OUTGOING file: ask before it is lost (saving is explicit
+        # now). Cancel aborts the switch entirely and the current file stays open.
+        if (-not (Confirm-TrimUnsavedWork)) { return $false }
 
         $props = Get-VideoProperties -inputFile $path
         if (-not $props) {
@@ -8806,6 +8866,8 @@ try {
         if ($null -ne $buttonTrimBrowse) { $buttonTrimBrowse.Visibility = "Collapsed" }
         if ($null -ne $cardRecentTrim) { $cardRecentTrim.Visibility = "Collapsed" }
         if ($null -ne $buttonTrimOpenAnother) { $buttonTrimOpenAnother.Visibility = "Visible" }
+        # A fresh load IS the saved state (or a clean default) -- nothing dirty yet.
+        $script:TrimProjectDirty = $false
         return $true
     }
 
@@ -9375,15 +9437,15 @@ try {
     # The trim editor's scratch directories live for the session. Thumbnails are a few
     # hundred KB, but the rendered fades are real mp4s, so leaving a set behind per run
     # accumulates in %TEMP% with nothing to ever clear it.
+    # Saving is explicit now: closing with unsaved work ASKS (Yes = save, No = discard,
+    # Cancel = stay open). This is the Closing event, not Closed -- only Closing can
+    # still veto the close via e.Cancel.
+    $ctx.Window.Add_Closing({
+        param($eventSource, $e)
+        if (-not (Confirm-TrimUnsavedWork)) { $e.Cancel = $true }
+    })
+
     $ctx.Window.Add_Closed({
-        # Unconditional, timer bypassed: closing within a second of the last edit would
-        # otherwise take the debounced save down with the window. Save-TrimProject
-        # swallows its own failures, and there is no panel left to report one to anyway.
-        if ($script:TrimInputFile) {
-            Save-TrimProject -VideoPath $script:TrimInputFile -CutList @($script:TrimCutList) `
-                -Fades $script:TrimFades -Captions @($script:TrimCaptions) -Zooms @($script:TrimZooms) `
-                -Lanes @($script:TrimLanes) | Out-Null
-        }
         foreach ($dir in @($script:TrimThumbDir, $script:TrimFadeProxyDir)) {
             if ($dir -and (Test-Path $dir)) {
                 Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue

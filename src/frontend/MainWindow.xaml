@@ -585,6 +585,13 @@
                                  badge, which sits below the ticks and is clipped at 20. -->
                             <Canvas x:Name="CanvasTrimRuler" Height="26" Margin="250,0,0,0" Background="Transparent" ClipToBounds="True"/>
 
+                            <!-- The visible way to reach the montage/slack region on the right;
+                                 Shift+wheel and Ctrl+wheel do the same with the pointer. Bound to
+                                 the view window from code on every timeline repaint. -->
+                            <ScrollBar x:Name="ScrollTrimView" Orientation="Horizontal"
+                                       Style="{StaticResource TimelineScrollBarStyle}"
+                                       Margin="250,2,0,0" Visibility="Collapsed"/>
+
                             <!-- One fade toggle per internal cut, drawn from code at the
                                  cut's x position. Its own row rather than pills sitting on
                                  the track: at a tight zoom two cuts can be a few pixels

@@ -11,3 +11,6 @@ assets/settings.json
 # Get-ToolPath prefers bin/ and falls back to PATH, so a source checkout works
 # either by dropping the exes in here or by having them installed.
 bin/*.exe
+
+# Project saves (the editor's .ffgui.json store) -- user data, never committed.
+assets/projects/
