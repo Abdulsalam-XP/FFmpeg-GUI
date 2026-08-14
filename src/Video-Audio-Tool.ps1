@@ -855,6 +855,7 @@ try {
     $canvasTrimZooms     = $panelTrim.FindName("CanvasTrimZooms")
     $panelTrimLanes      = $panelTrim.FindName("PanelTrimTracks")
     $panelTrimAddTracks  = $panelTrim.FindName("PanelTrimAddTracks")
+    $panelTrimLaneArea   = $panelTrim.FindName("PanelTrimLaneArea")
     $canvasTrimLaneOverlay = $panelTrim.FindName("CanvasTrimLaneOverlay")
     $previewZoomHost     = $panelTrim.FindName("PreviewZoomHost")
     $previewCell         = $panelTrim.FindName("PreviewCell")
@@ -1082,11 +1083,13 @@ try {
     # decodes only the container's FIRST audio stream (WPF offers no stream selection),
     # so streams 2..N are extracted to their own files in the background and played by
     # off-tree elements synced to the main one. Keyed by ABSOLUTE stream index.
-    $script:TrimSourceStreamAudio = @{}      # idx -> extracted file path (ready to play)
-    $script:TrimSourceStreamElements = @{}   # idx -> @{ Element; Playing; StartedAt }
+    $script:TrimSourceStreamAudio = @{}      # idx -> extracted file path (the one to PLAY)
+    $script:TrimSourceStreamElements = @{}   # idx -> @{ Element; Playing; StartedAt; Path }
     $script:TrimSourceStreamPending = @{}    # idx -> $true while ffmpeg runs
     $script:TrimSourceStreamOrder = @()      # probed stream indices, file order
-    $script:TrimSourceStreamQueue = @()      # indices still waiting for extraction
+    $script:TrimSourceStreamQueue = @()      # @{ Idx; Gain } jobs waiting for extraction
+    $script:TrimSourceStreamBoost = @{}      # idx -> dB BAKED into the registered file
+    $script:TrimSourceStreamBase = @{}       # idx -> the un-boosted file (kept for instant reset)
     # Throttle stamp for the DRAG-scrub's media seeks (see Set-TrimScrubFromX).
     $script:TrimScrubLastSeek = $null
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
@@ -3267,12 +3270,32 @@ try {
                 if ($files.Count -eq 0) { return }
                 # The shared timeline canvas is the x-reference for every strip, so the
                 # drop position converts with the same mapping the playhead uses.
+                # -NewLaneOnRefusal: a video dropped on V1 (or on a mismatched-kind row)
+                # lands on a freshly created lane instead of bouncing off with a warning.
                 $t = Convert-TrimXToTime -X ($e.GetPosition($canvasTrimTimeline)).X
                 foreach ($f in $files) {
-                    Add-TrimMediaFromPath -Path ([string]$f) -TargetLaneId $thisId -AtTimeline ([math]::Max(0.0, $t))
+                    Add-TrimMediaFromPath -Path ([string]$f) -TargetLaneId $thisId -AtTimeline ([math]::Max(0.0, $t)) -NewLaneOnRefusal
                 }
                 $e.Handled = $true
             }.GetNewClosure())
+
+            # Clicking EMPTY strip space jumps the playhead there -- and holding keeps
+            # scrubbing -- like every NLE. Clip bodies mark their presses Handled, so this
+            # bubbling handler only ever fires on bare row background; header-column
+            # clicks (left of the strip, negative canvas x) keep selecting the lane.
+            $rowGrid.Add_MouseLeftButtonDown({
+                param($eventSource, $e)
+                if ($e.Handled) { return }
+                $bgX = ($e.GetPosition($canvasTrimTimeline)).X
+                if ($bgX -lt 0) { return }
+                Set-TrimScrubFromX -X $bgX
+                $script:TrimScrubDrag = $true
+                # Capture on the PANEL, never this row: the jump's full repaint rebuilds
+                # every row, so this grid is already detached by the time the capture
+                # would matter. The panel persists and carries the shared move/up handlers.
+                if ($null -ne $panelTrimLanes) { [void]$panelTrimLanes.CaptureMouse() }
+                $e.Handled = $true
+            })
             $c0 = New-Object System.Windows.Controls.ColumnDefinition
             $c0.Width = New-Object System.Windows.GridLength(250)
             $c1 = New-Object System.Windows.Controls.ColumnDefinition
@@ -4091,8 +4114,10 @@ try {
     function Update-TrimClipProps {
         # "Selection ticks": every row rebuild (load, undo/redo, mute/gain/delete, unlink)
         # ends up here, so this is also the one place that keeps the preview volume caught
-        # up with the model without a second call at each of those sites.
+        # up with the model without a second call at each of those sites -- and the one
+        # place that notices a row's BOOST changed and queues its baked re-extraction.
         Update-TrimPreviewVolume
+        Sync-TrimSourceStreamBoosts
         if ($null -eq $panelTrimTrackProps) { return }
         $ref = $null
         if ($null -ne $script:TrimSelectedClip) { $ref = Get-TrimClipRef -Id $script:TrimSelectedClip }
@@ -5194,18 +5219,25 @@ try {
     # the watcher tick is a GetNewClosure block, where a bare $script: write would land
     # in the closure's own module.
     function Request-TrimSourceStreamAudio {
-        param([int]$StreamIdx)
+        param([int]$StreamIdx, [double]$GainDb = 0.0)
         $skey = [string]$StreamIdx
-        if ($script:TrimSourceStreamAudio.ContainsKey($skey) -or $script:TrimSourceStreamPending.ContainsKey($skey)) { return }
+        if ($script:TrimSourceStreamPending.ContainsKey($skey)) { return }
         $script:TrimSourceStreamPending[$skey] = $true
-        $outFile = Join-Path $script:TrimThumbDir ("srcaudio{0}.m4a" -f $StreamIdx)
+        # Distinct name per boost level so a re-extraction never overwrites the file the
+        # element is CURRENTLY playing from.
+        $outName = if ([math]::Abs($GainDb) -gt 0.05) {
+            "srcaudio{0}-b{1}.m4a" -f $StreamIdx, [int][math]::Round($GainDb * 10.0)
+        } else {
+            "srcaudio{0}.m4a" -f $StreamIdx
+        }
+        $outFile = Join-Path $script:TrimThumbDir $outName
         $srcFile = [string]$script:TrimInputFile
         $ps = [powershell]::Create()
         $ps.AddScript({
-            param($modulePath, $file, $idx, $outFile)
+            param($modulePath, $file, $idx, $outFile, $gain)
             Import-Module $modulePath -Force
-            Export-TrimAudioStream -InputFile $file -StreamIndex $idx -OutputFile $outFile
-        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($srcFile).AddArgument($StreamIdx).AddArgument($outFile) | Out-Null
+            Export-TrimAudioStream -InputFile $file -StreamIndex $idx -OutputFile $outFile -GainDb $gain
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($srcFile).AddArgument($StreamIdx).AddArgument($outFile).AddArgument($GainDb) | Out-Null
         $handle = $ps.BeginInvoke()
         $watcher = New-Object System.Windows.Threading.DispatcherTimer
         $watcher.Interval = [timespan]::FromMilliseconds(500)
@@ -5214,23 +5246,29 @@ try {
             $watcher.Stop()
             try { $ps.EndInvoke($handle) | Out-Null } catch { }
             $ps.Dispose()
-            Set-TrimSourceStreamAudio -StreamIdx $StreamIdx -Path $outFile -ForFile $srcFile
+            Set-TrimSourceStreamAudio -StreamIdx $StreamIdx -Path $outFile -ForFile $srcFile -GainDb $GainDb
         }.GetNewClosure())
         $watcher.Start()
     }
 
     function Set-TrimSourceStreamAudio {
-        param([int]$StreamIdx, [string]$Path, [string]$ForFile)
+        param([int]$StreamIdx, [string]$Path, [string]$ForFile, [double]$GainDb = 0.0)
         $skey = [string]$StreamIdx
         $script:TrimSourceStreamPending.Remove($skey)
         # The load that asked can be gone by the time ffmpeg finishes -- a different file
         # switched in. Registering the stale result would play the OLD file's audio.
         if ([string]$script:TrimInputFile -ne $ForFile) { return }
-        if (Test-Path -LiteralPath $Path) { $script:TrimSourceStreamAudio[$skey] = $Path }
+        if (Test-Path -LiteralPath $Path) {
+            $script:TrimSourceStreamAudio[$skey] = $Path
+            $script:TrimSourceStreamBoost[$skey] = $GainDb
+            if ([math]::Abs($GainDb) -le 0.05) { $script:TrimSourceStreamBase[$skey] = $Path }
+        }
         # One extraction at a time (they all read the same multi-GB recording; two ffmpegs
         # seeking it in parallel thrash the disk the preview is decoding from) -- the next
-        # queued stream starts only when the previous one lands.
+        # queued job starts only when the previous one lands.
         Start-TrimSourceStreamQueue
+        # A boost wish that arrived while this job was running gets queued now.
+        Sync-TrimSourceStreamBoosts
         # If the transport is already running, hand the freshly extracted stream its
         # element right away instead of waiting for the next tick.
         Update-TrimPreviewVolume
@@ -5239,9 +5277,41 @@ try {
     function Start-TrimSourceStreamQueue {
         if (@($script:TrimSourceStreamQueue).Count -eq 0) { return }
         if (@($script:TrimSourceStreamPending.Keys).Count -gt 0) { return }
-        $next = [int]$script:TrimSourceStreamQueue[0]
+        $next = $script:TrimSourceStreamQueue[0]
         $script:TrimSourceStreamQueue = @($script:TrimSourceStreamQueue | Select-Object -Skip 1)
-        Request-TrimSourceStreamAudio -StreamIdx $next
+        Request-TrimSourceStreamAudio -StreamIdx ([int]$next.Idx) -GainDb ([double]$next.Gain)
+    }
+
+    # Keeps the extracted files in step with the rows' BOOSTS. A cut (negative gain) is
+    # just element volume; a boost has to be baked into the samples (MediaElement cannot
+    # amplify), so a row sitting above 0 dB gets its stream re-extracted with the gain in
+    # it. Runs from every row rebuild (fader release, keyboard commit, undo, load) --
+    # cheap when nothing changed, and never during a live drag (rebuilds bail then).
+    function Sync-TrimSourceStreamBoosts {
+        if (-not $script:TrimInputFile) { return }
+        $queued = $false
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                if ($c.Kind -ne "audio") { continue }
+                if ([string]$c.Path -ne [string]$script:TrimInputFile) { continue }
+                $idx = [int]$c.StreamIdx
+                $skey = [string]$idx
+                $want = [math]::Round([math]::Max(0.0, [double]$c.GainDb), 1)
+                $have = $(if ($script:TrimSourceStreamBoost.ContainsKey($skey)) { [double]$script:TrimSourceStreamBoost[$skey] } else { 0.0 })
+                if ([math]::Abs($want - $have) -le 0.25) { continue }
+                if ($want -eq 0.0 -and $script:TrimSourceStreamBase.ContainsKey($skey)) {
+                    # The un-boosted file is still on disk: switch back instantly.
+                    $script:TrimSourceStreamAudio[$skey] = $script:TrimSourceStreamBase[$skey]
+                    $script:TrimSourceStreamBoost[$skey] = 0.0
+                    continue
+                }
+                $queuedIdx = @(@($script:TrimSourceStreamQueue) | ForEach-Object { [int]$_.Idx })
+                if ($queuedIdx -contains $idx -or $script:TrimSourceStreamPending.ContainsKey($skey)) { continue }
+                $script:TrimSourceStreamQueue = @($script:TrimSourceStreamQueue) + ,@{ Idx = $idx; Gain = $want }
+                $queued = $true
+            }
+        }
+        if ($queued) { Start-TrimSourceStreamQueue }
     }
 
     # Element per extracted stream, off-tree like the audio-clip pool -- $null until the
@@ -5255,7 +5325,8 @@ try {
             $el.LoadedBehavior = "Manual"
             $el.UnloadedBehavior = "Manual"
             try { $el.Source = New-Object System.Uri([string]$script:TrimSourceStreamAudio[$skey]) } catch {}
-            $script:TrimSourceStreamElements[$skey] = @{ Element = $el; Playing = $false; StartedAt = $null }
+            $script:TrimSourceStreamElements[$skey] = @{ Element = $el; Playing = $false; StartedAt = $null
+                                                         Path = [string]$script:TrimSourceStreamAudio[$skey] }
         }
         return $script:TrimSourceStreamElements[$skey]
     }
@@ -5270,6 +5341,8 @@ try {
         $script:TrimSourceStreamPending = @{}
         $script:TrimSourceStreamOrder = @()
         $script:TrimSourceStreamQueue = @()
+        $script:TrimSourceStreamBoost = @{}
+        $script:TrimSourceStreamBase = @{}
     }
 
     # Preview volumes for the SOURCE audio rows plus playback of the extracted extras:
@@ -5316,10 +5389,23 @@ try {
             if ($null -eq $entry) { continue }
             $el = $entry.Element
             $skey = [string]$idx
+            # A re-extraction (boost baked in, or reset back to the base file) registered a
+            # NEW file for this stream: swap the element's source and let the play branch
+            # below reseed its position.
+            $registered = [string]$script:TrimSourceStreamAudio[$skey]
+            if ($registered -ne [string]$entry.Path) {
+                try { $el.Pause() } catch {}
+                try { $el.Source = New-Object System.Uri($registered) } catch {}
+                $entry.Path = $registered
+                $entry.Playing = $false
+            }
+            # Element volume carries only the RESIDUAL gain: whatever boost is already
+            # baked into the registered file is subtracted, cuts stay pure volume-scale.
+            $baked = $(if ($script:TrimSourceStreamBoost.ContainsKey($skey)) { [double]$script:TrimSourceStreamBoost[$skey] } else { 0.0 })
             $vol = 0.0
             if ($rows.ContainsKey($skey)) {
                 $r = $rows[$skey]
-                if (-not [bool]$r.Muted) { $vol = [math]::Min(1.0, [math]::Pow(10.0, [double]$r.GainDb / 20.0)) }
+                if (-not [bool]$r.Muted) { $vol = [math]::Min(1.0, [math]::Pow(10.0, ([double]$r.GainDb - $baked) / 20.0)) }
             }
             $el.Volume = $vol
             if ($mainPlaying -and $vol -gt 0.0) {
@@ -5438,7 +5524,14 @@ try {
             [string]$TargetLaneId = "",
             # Timeline seconds to place the clip's START at; negative means "at the
             # playhead" (the dialog flow). A drop passes the drop position instead.
-            [double]$AtTimeline = -1.0
+            [double]$AtTimeline = -1.0,
+            # Drop ergonomics (user ask, 2026-08-14): a file dropped on an unsuitable row
+            # (a video on V1, audio on a video lane) lands on a FRESH lane instead of
+            # bouncing off with a warning...
+            [switch]$NewLaneOnRefusal,
+            # ...and a file dropped on the open lane area below the rows always gets its
+            # own new track -- "drag a video in" must not require "+ Video track" first.
+            [switch]$ForceNewLane
         )
         if (-not $script:TrimEditorReady -or -not $script:TrimInputFile) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
@@ -5454,8 +5547,12 @@ try {
 
         $refusal = Test-TrimAddTargetLane -Kind $laneKind -TargetLaneId $TargetLaneId
         if (-not [string]::IsNullOrEmpty($refusal)) {
-            Show-PanelMessage -Block $textTrimMeta -IsWarning -Text $refusal
-            return
+            if ($NewLaneOnRefusal) {
+                $ForceNewLane = $true
+            } else {
+                Show-PanelMessage -Block $textTrimMeta -IsWarning -Text $refusal
+                return
+            }
         }
 
         # Probed once, up front, and cached by path -- the export call site and every span
@@ -5483,7 +5580,11 @@ try {
         }
 
         Push-TrimUndo
-        $lane = Get-TrimAddTargetLane -Kind $laneKind -TargetLaneId $TargetLaneId
+        $lane = if ($ForceNewLane) {
+            Add-TrimLaneRow -Kind $laneKind
+        } else {
+            Get-TrimAddTargetLane -Kind $laneKind -TargetLaneId $TargetLaneId
+        }
         if ($null -eq $lane) { return }
         $laneId = [string]$lane.Id
 
@@ -7923,6 +8024,30 @@ try {
             $grabSurface.Add_MouseLeftButtonUp($script:TrimScrubUpHandler)
         }
 
+        # Files dropped on the OPEN lane area (between/below the rows -- the rows mark
+        # their own drops Handled) create a NEW track of the file's kind at the drop
+        # position: "drag a video in" must never require "+ Video track" first.
+        if ($null -ne $panelTrimLaneArea) {
+            $panelTrimLaneArea.Add_PreviewDragOver({
+                param($eventSource, $e)
+                if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
+                    $e.Effects = [System.Windows.DragDropEffects]::Copy
+                    $e.Handled = $true
+                }
+            })
+            $panelTrimLaneArea.Add_Drop({
+                param($eventSource, $e)
+                if (-not $e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { return }
+                $files = @($e.Data.GetData([System.Windows.DataFormats]::FileDrop))
+                if ($files.Count -eq 0) { return }
+                $t = Convert-TrimXToTime -X ($e.GetPosition($canvasTrimTimeline)).X
+                foreach ($f in $files) {
+                    Add-TrimMediaFromPath -Path ([string]$f) -AtTimeline ([math]::Max(0.0, $t)) -ForceNewLane
+                }
+                $e.Handled = $true
+            })
+        }
+
         # Ctrl + wheel zooms around the pointer, Shift + wheel PANS; a bare wheel is left
         # alone so the panel still scrolls the way every other screen does. Attached to
         # every timeline surface (ruler, lanes, caption/zoom/fade strips) because the strip
@@ -8567,8 +8692,11 @@ try {
         # the first stream needs its own element too, because which stream the main
         # element decodes is not reliable). Sequential on purpose: parallel ffmpegs
         # reading the same multi-GB recording thrash the disk playback decodes from.
-        $script:TrimSourceStreamQueue = @(@($script:TrimSourceStreamOrder) | ForEach-Object { [int]$_ })
+        $script:TrimSourceStreamQueue = @(@($script:TrimSourceStreamOrder) | ForEach-Object { @{ Idx = [int]$_; Gain = 0.0 } })
         Start-TrimSourceStreamQueue
+        # Restored rows can already carry boosts; queue their baked variants behind the
+        # base extractions.
+        Sync-TrimSourceStreamBoosts
         # Waveform strips get a PERSISTENT on-disk cache, unlike the thumbnails: they
         # took a visible couple of seconds to re-render on every single file open, and
         # a waveform never changes for a given source file. Keyed by path + size +

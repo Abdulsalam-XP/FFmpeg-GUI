@@ -534,7 +534,11 @@
                                  UNDER the stack, aligned with the header column, where new lanes
                                  actually appear (moved out of the toolbar on the user's ask). -->
                             <Grid Margin="0,4,0,0">
-                                <StackPanel>
+                                <!-- Transparent Background + AllowDrop: files dropped on the OPEN
+                                     area (between/below the rows) create a new track of the file's
+                                     kind at the drop position; rows mark their own drops Handled
+                                     so they still target that specific lane. -->
+                                <StackPanel x:Name="PanelTrimLaneArea" Background="Transparent" AllowDrop="True">
                                     <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed"/>
                                     <StackPanel x:Name="PanelTrimAddTracks" Orientation="Horizontal" Visibility="Collapsed" Margin="0,2,0,4">
                                         <Button x:Name="ButtonTrimAddVideoTrack" Content="＋ Video track" Style="{StaticResource LaneAddButtonStyle}"/>

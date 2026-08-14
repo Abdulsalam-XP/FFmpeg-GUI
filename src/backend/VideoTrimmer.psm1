@@ -893,7 +893,11 @@ function Export-TrimAudioStream {
         [Parameter(Mandatory = $true)][string]$InputFile,
         # ABSOLUTE ffprobe stream index, the same meaning StreamIdx has everywhere.
         [Parameter(Mandatory = $true)][int]$StreamIndex,
-        [Parameter(Mandatory = $true)][string]$OutputFile
+        [Parameter(Mandatory = $true)][string]$OutputFile,
+        # Non-zero bakes the gain INTO the file (an encode, not a stream copy): the
+        # preview's MediaElement cannot amplify past 1.0, so a BOOSTED row is only
+        # audible if the boost is already in the samples it decodes.
+        [double]$GainDb = 0.0
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     # IDLE process priority: this runs right after a file load, exactly when the preview
@@ -910,6 +914,14 @@ function Export-TrimAudioStream {
         try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $proc.WaitForExit()
         return $proc.ExitCode
+    }
+    if ([math]::Abs($GainDb) -gt 0.05) {
+        # InvariantCulture: a comma decimal in the filter string splits the ffmpeg option.
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -af volume={2}dB -c:a aac -b:a 192k "{3}"' -f `
+            $InputFile, $StreamIndex, $GainDb.ToString("0.#", $inv), $OutputFile
+        & $runIdle $ffmpeg $mapArgs | Out-Null
+        return [bool](Test-Path -LiteralPath $OutputFile)
     }
     $mapArgs = '-hide_banner -y -i "{0}" -map 0:{1} -vn -c:a copy "{2}"' -f $InputFile, $StreamIndex, $OutputFile
     $code = & $runIdle $ffmpeg $mapArgs
