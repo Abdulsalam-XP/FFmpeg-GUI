@@ -9325,12 +9325,17 @@ try {
     Update-LookButtons
 
     # ---- Petalfall: the falling petals ------------------------------------------------
-    # ~26 Path elements on the shell-level canvas (above the glows, below every panel),
+    # 40 Path elements on the window-spanning canvas,
     # repositioned ~60x/sec by one DispatcherTimer. Cheap by construction: transform and
     # Canvas position writes only, no layout passes; petals recycle at the edges; the
     # layer only exists when the look AND animations are both on.
     function Start-LookPetals {
-        if ([string]$global:AppLook -ne "Petalfall" -or -not $global:ShowAnimations) { return }
+        if ([string]$global:AppLook -ne "Petalfall") { return }
+        # No corner glows in Petalfall (user: "remove the bubbles") -- the ink ground
+        # stays clean and the petals alone carry the motion.
+        $glowGrid = $ctx.Window.FindName("GridBackgroundGlows")
+        if ($null -ne $glowGrid) { $glowGrid.Visibility = "Collapsed" }
+        if (-not $global:ShowAnimations) { return }
         $canvas = $ctx.Window.FindName("CanvasLookPetals")
         if ($null -eq $canvas) { return }
         $script:LookPetalCanvas = $canvas
@@ -9340,7 +9345,7 @@ try {
         $petalBc = New-Object "System.Windows.Media.BrushConverter"
         $petalColors = @("#C22F2F", "#A82531", "#D8434F", "#8E1F26")
         $geoText = "M 0,-6 Q 5.4,-1.5 0,6 Q -5.4,-1.5 0,-6 Z"
-        for ($i = 0; $i -lt 26; $i++) {
+        for ($i = 0; $i -lt 40; $i++) {
             $depth = 0.35 + $script:LookPetalRand.NextDouble() * 0.65
             $path = New-Object System.Windows.Shapes.Path
             $path.Data = [System.Windows.Media.Geometry]::Parse($geoText)

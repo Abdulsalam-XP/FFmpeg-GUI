@@ -16,7 +16,7 @@
              fill, per the "Midnight Gold" spec, so empty space still reads as having
              depth instead of a flat fill. Behind everything, never hit-test visible.
              Spans both columns so the glow isn't clipped to the sidebar's column. -->
-        <Grid IsHitTestVisible="False" Grid.ColumnSpan="2">
+        <Grid x:Name="GridBackgroundGlows" IsHitTestVisible="False" Grid.ColumnSpan="2">
             <Ellipse Width="620" Height="620" Fill="{StaticResource BrushGlowGold}"
                      HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-220,-220,0,0">
                 <Ellipse.Effect><BlurEffect Radius="40"/></Ellipse.Effect>
