@@ -1078,6 +1078,14 @@ try {
     # unset/$null) is the legacy/unknown sentinel every downstream function treats as
     # "behave exactly as before this existed".
     $script:TrimSourceAudioStreamCount = -1
+    # Preview playback of the source's OWN extra audio streams. The main MediaElement
+    # decodes only the container's FIRST audio stream (WPF offers no stream selection),
+    # so streams 2..N are extracted to their own files in the background and played by
+    # off-tree elements synced to the main one. Keyed by ABSOLUTE stream index.
+    $script:TrimSourceStreamAudio = @{}      # idx -> extracted file path (ready to play)
+    $script:TrimSourceStreamElements = @{}   # idx -> @{ Element; Playing }
+    $script:TrimSourceStreamPending = @{}    # idx -> $true while ffmpeg runs
+    $script:TrimSourceStreamOrder = @()      # probed stream indices, file order
     # Path -> the clip's own width/height aspect ratio, populated once at add-time
     # (Invoke-TrimAddClip) for every overlay clip so the magnet-locked resize drag can read
     # it without shelling out to ffprobe on every mouse-move.
@@ -3981,6 +3989,19 @@ try {
         $line.Stroke = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E64A3C")
         $line.StrokeThickness = 2
         [void]$canvasTrimLaneOverlay.Children.Add($line)
+        # A grab wedge at the top of the line, matching the ruler's: the line is
+        # draggable (the near-line press handler on the lane panel starts a scrub), and
+        # a bare 2px line does not look like something you can hold.
+        $wedge = New-Object System.Windows.Shapes.Polygon
+        $wedgePoints = New-Object System.Windows.Media.PointCollection
+        $wedgePoints.Add((New-Object System.Windows.Point(0, 0)))
+        $wedgePoints.Add((New-Object System.Windows.Point(11, 0)))
+        $wedgePoints.Add((New-Object System.Windows.Point(5.5, 7)))
+        $wedge.Points = $wedgePoints
+        $wedge.Fill = (New-Object System.Windows.Media.BrushConverter).ConvertFromString("#E64A3C")
+        [System.Windows.Controls.Canvas]::SetLeft($wedge, $x - 5.5)
+        [System.Windows.Controls.Canvas]::SetTop($wedge, 0)
+        [void]$canvasTrimLaneOverlay.Children.Add($wedge)
     }
 
     # Spec 4.6: only a NON-MAIN video clip has a display mode to offer. The main lane's clip
@@ -4055,32 +4076,12 @@ try {
         }
     }
 
-    # Approximates the export's per-row gain in the single preview decoder: one MediaElement
-    # cannot play separate streams at separate volumes, so this collapses the whole stack to
-    # one number -- silence if every source audio clip is muted, otherwise the gain of the
-    # first unmuted one. The EXPORT (Tracks.psm1's mix graph) is authoritative; this is only
-    # ever what plays back while editing.
+    # Superseded shim: the per-stream preview (Update-TrimSourceAudioPreview) replaced the
+    # old "first unmuted row's gain on the single decoder" collapse -- every source stream
+    # has its own playback element now, each following its own row's fader and mute. Kept
+    # under the old name so every existing refresh point keeps working.
     function Update-TrimPreviewVolume {
-        if ($null -eq $mediaTrimPreview) { return }
-        # SOURCE audio only: the main file's own streams are what this element is decoding.
-        # An external audio clip has its own off-tree element (Update-TrimAudioClipPreview).
-        $sources = @()
-        foreach ($lane in @($script:TrimLanes)) {
-            foreach ($c in @($lane.Clips)) {
-                if ($c.Kind -ne "audio") { continue }
-                if ([string]$c.Path -ne [string]$script:TrimInputFile) { continue }
-                if (-not $c.Enabled) { continue }
-                $sources += ,$c
-            }
-        }
-        if (@($sources).Count -eq 0) { return }
-        $unmuted = @(@($sources) | Where-Object { -not $_.Muted })
-        if (@($unmuted).Count -eq 0) {
-            $mediaTrimPreview.Volume = 0
-            return
-        }
-        $firstUnmutedSourceGain = [double]$unmuted[0].GainDb
-        $mediaTrimPreview.Volume = [math]::Min(1.0, [math]::Pow(10.0, $firstUnmutedSourceGain / 20.0))
+        Update-TrimSourceAudioPreview -Playing ($null -ne $buttonTrimPlay -and $buttonTrimPlay.Content -eq "Pause")
     }
 
     # ---- Row fader edit bracket (spec 3.2) ---------------------------------------
@@ -5139,6 +5140,137 @@ try {
             } else {
                 if ($entry.InSpan) { try { $el.Pause() } catch {} }
                 $entry.InSpan = $false
+            }
+        }
+    }
+
+    # ---- Preview playback of the source's extra audio streams ---------------------
+
+    # Background extraction of one source stream (same runspace + watcher shape as
+    # Request-TrimThumbnail). The result registers through the write-through below --
+    # the watcher tick is a GetNewClosure block, where a bare $script: write would land
+    # in the closure's own module.
+    function Request-TrimSourceStreamAudio {
+        param([int]$StreamIdx)
+        $skey = [string]$StreamIdx
+        if ($script:TrimSourceStreamAudio.ContainsKey($skey) -or $script:TrimSourceStreamPending.ContainsKey($skey)) { return }
+        $script:TrimSourceStreamPending[$skey] = $true
+        $outFile = Join-Path $script:TrimThumbDir ("srcaudio{0}.m4a" -f $StreamIdx)
+        $srcFile = [string]$script:TrimInputFile
+        $ps = [powershell]::Create()
+        $ps.AddScript({
+            param($modulePath, $file, $idx, $outFile)
+            Import-Module $modulePath -Force
+            Export-TrimAudioStream -InputFile $file -StreamIndex $idx -OutputFile $outFile
+        }).AddArgument((Join-Path $scriptRoot "backend\VideoTrimmer.psm1")).AddArgument($srcFile).AddArgument($StreamIdx).AddArgument($outFile) | Out-Null
+        $handle = $ps.BeginInvoke()
+        $watcher = New-Object System.Windows.Threading.DispatcherTimer
+        $watcher.Interval = [timespan]::FromMilliseconds(500)
+        $watcher.Add_Tick({
+            if (-not $handle.IsCompleted) { return }
+            $watcher.Stop()
+            try { $ps.EndInvoke($handle) | Out-Null } catch { }
+            $ps.Dispose()
+            Set-TrimSourceStreamAudio -StreamIdx $StreamIdx -Path $outFile -ForFile $srcFile
+        }.GetNewClosure())
+        $watcher.Start()
+    }
+
+    function Set-TrimSourceStreamAudio {
+        param([int]$StreamIdx, [string]$Path, [string]$ForFile)
+        $skey = [string]$StreamIdx
+        $script:TrimSourceStreamPending.Remove($skey)
+        # The load that asked can be gone by the time ffmpeg finishes -- a different file
+        # switched in. Registering the stale result would play the OLD file's audio.
+        if ([string]$script:TrimInputFile -ne $ForFile) { return }
+        if (Test-Path -LiteralPath $Path) { $script:TrimSourceStreamAudio[$skey] = $Path }
+    }
+
+    # Element per extracted stream, off-tree like the audio-clip pool -- $null until the
+    # extraction has landed.
+    function Get-TrimSourceStreamElement {
+        param([int]$StreamIdx)
+        $skey = [string]$StreamIdx
+        if (-not $script:TrimSourceStreamAudio.ContainsKey($skey)) { return $null }
+        if (-not $script:TrimSourceStreamElements.ContainsKey($skey)) {
+            $el = New-Object System.Windows.Controls.MediaElement
+            $el.LoadedBehavior = "Manual"
+            $el.UnloadedBehavior = "Manual"
+            try { $el.Source = New-Object System.Uri([string]$script:TrimSourceStreamAudio[$skey]) } catch {}
+            $script:TrimSourceStreamElements[$skey] = @{ Element = $el; Playing = $false }
+        }
+        return $script:TrimSourceStreamElements[$skey]
+    }
+
+    function Clear-TrimSourceStreamAudio {
+        foreach ($k in @($script:TrimSourceStreamElements.Keys)) {
+            try { $script:TrimSourceStreamElements[$k].Element.Stop() } catch {}
+            try { $script:TrimSourceStreamElements[$k].Element.Source = $null } catch {}
+        }
+        $script:TrimSourceStreamElements = @{}
+        $script:TrimSourceStreamAudio = @{}
+        $script:TrimSourceStreamPending = @{}
+        $script:TrimSourceStreamOrder = @()
+    }
+
+    # Preview volumes for the SOURCE audio rows plus playback of the extracted extras:
+    #   - the main element's Volume follows the FIRST stream's row (fader, mute, delete),
+    #   - every later stream plays through its own element, mirroring the main element's
+    #     source position: seeded on start/seek, drift-corrected past 0.35s otherwise
+    #     (piece-jumps move the main element without notice, per-tick seeks stutter).
+    # Volume is 10^(dB/20) clamped at 1.0 -- MediaElement cannot boost, so positive gains
+    # are only audible in the export. A DELETED row silences its stream, matching what the
+    # export's mix graph does. The export remains authoritative; this is the live preview.
+    function Update-TrimSourceAudioPreview {
+        param([bool]$Playing, [bool]$Seek = $false)
+        if (-not $script:TrimInputFile -or $null -eq $mediaTrimPreview) { return }
+        $rows = @{}
+        foreach ($lane in @($script:TrimLanes)) {
+            foreach ($c in @($lane.Clips)) {
+                if ($c.Kind -ne "audio") { continue }
+                if ([string]$c.Path -ne [string]$script:TrimInputFile) { continue }
+                $rows[[string]([int]$c.StreamIdx)] = $c
+            }
+        }
+        $order = @($script:TrimSourceStreamOrder)
+        if ($order.Count -eq 0) { return }
+        $firstKey = [string]([int]$order[0])
+        $mainVol = 0.0
+        if ($rows.ContainsKey($firstKey)) {
+            $r = $rows[$firstKey]
+            if (-not [bool]$r.Muted) { $mainVol = [math]::Min(1.0, [math]::Pow(10.0, [double]$r.GainDb / 20.0)) }
+        }
+        $mediaTrimPreview.Volume = $mainVol
+        $mainPlaying = ($Playing -and -not (Test-TrimInExtension))
+        $mainPos = $mediaTrimPreview.Position
+        for ($si = 1; $si -lt $order.Count; $si++) {
+            $idx = [int]$order[$si]
+            $entry = Get-TrimSourceStreamElement -StreamIdx $idx
+            if ($null -eq $entry) { continue }
+            $el = $entry.Element
+            $skey = [string]$idx
+            $vol = 0.0
+            if ($rows.ContainsKey($skey)) {
+                $r = $rows[$skey]
+                if (-not [bool]$r.Muted) { $vol = [math]::Min(1.0, [math]::Pow(10.0, [double]$r.GainDb / 20.0)) }
+            }
+            $el.Volume = $vol
+            if ($mainPlaying -and $vol -gt 0.0) {
+                if (-not $entry.Playing) {
+                    try { $el.Position = $mainPos } catch {}
+                    try { $el.Play() } catch {}
+                    $entry.Playing = $true
+                } elseif ($Seek) {
+                    try { $el.Position = $mainPos } catch {}
+                } else {
+                    try {
+                        if ([math]::Abs($el.Position.TotalSeconds - $mainPos.TotalSeconds) -gt 0.35) { $el.Position = $mainPos }
+                    } catch {}
+                }
+            } else {
+                if ($entry.Playing) { try { $el.Pause() } catch {} }
+                $entry.Playing = $false
+                if ($Seek) { try { $el.Position = $mainPos } catch {} }
             }
         }
     }
@@ -7446,6 +7578,7 @@ try {
             # Whatever the pools were playing has to stop with it.
             Update-PipPreview -SourceSeconds $script:TrimPlayhead
             Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+            Update-TrimSourceAudioPreview -Playing $false
             Update-TrimBlackBase
         }
 
@@ -7540,6 +7673,9 @@ try {
             # scrubbing never reaches them).
             Update-PipPreview -SourceSeconds $script:TrimPlayhead
             Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $true
+            # Source-stream players ride the same tick: volumes track the faders live and
+            # the extracted streams stay in step with the main element.
+            Update-TrimSourceAudioPreview -Playing $true
             Update-TrimBlackBase
         })
 
@@ -7552,6 +7688,7 @@ try {
                 # $script: read/write: this block IS a GetNewClosure'd one).
                 if (Test-TrimInExtension) { Reset-TrimExtensionClock } else { $mediaTrimPreview.Play() }
                 $buttonTrimPlay.Content = "Pause"
+                Update-TrimSourceAudioPreview -Playing $true -Seek $true
                 $script:TrimTimer.Start()
             } else {
                 $mediaTrimPreview.Pause()
@@ -7562,6 +7699,7 @@ try {
                 # point the visible transport stopped.
                 Update-PipPreview -SourceSeconds $script:TrimPlayhead
                 Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+                Update-TrimSourceAudioPreview -Playing $false
                 Update-TrimBlackBase
             }
         }.GetNewClosure())
@@ -7624,6 +7762,9 @@ try {
                 # audio-clip (Update-TrimAudioClipPreview's own comment explains why).
                 Update-PipPreview -SourceSeconds $script:TrimPlayhead -Seek $true
                 Update-TrimAudioClipPreview -SourceSeconds $script:TrimPlayhead -Playing $false
+                # The extracted source streams DO seek with a scrub -- they mirror the
+                # main element, which just moved.
+                Update-TrimSourceAudioPreview -Playing $playing -Seek $true
             }
             Update-TrimBlackBase
         }
@@ -7661,6 +7802,30 @@ try {
             $scrubSurface.Add_MouseLeftButtonDown($script:TrimScrubDownHandler)
             $scrubSurface.Add_MouseMove($script:TrimScrubMoveHandler)
             $scrubSurface.Add_MouseLeftButtonUp($script:TrimScrubUpHandler)
+        }
+
+        # Grabbing the playhead LINE itself, anywhere it crosses the stack: a press within
+        # 6px of the line starts the same scrub drag the ruler runs. PREVIEW (tunneling)
+        # handlers, so the grab wins over whatever sits under the line -- a clip body's
+        # own press never fires when the user is visibly aiming for the playhead.
+        $script:TrimPlayheadGrabHandler = {
+            param($eventSource, $e)
+            if (-not $script:TrimInputFile) { return }
+            $grabX = ($e.GetPosition($canvasTrimTimeline)).X
+            $playheadX = Convert-TrimTimeToX -Seconds (Get-TrimTimelinePlayhead)
+            if ([math]::Abs($grabX - $playheadX) -gt 6.0) { return }
+            Set-TrimScrubFromX -X $grabX
+            $script:TrimScrubDrag = $true
+            [void]$eventSource.CaptureMouse()
+            $e.Handled = $true
+        }
+        foreach ($grabSurface in @($panelTrimLanes, $canvasTrimCaptions, $canvasTrimZooms, $canvasTrimFades)) {
+            if ($null -eq $grabSurface) { continue }
+            $grabSurface.Add_PreviewMouseLeftButtonDown($script:TrimPlayheadGrabHandler)
+            # The capture from the grab routes the rest of the gesture to this surface, so
+            # it needs the shared move/up handlers too (both no-op unless a scrub is live).
+            $grabSurface.Add_MouseMove($script:TrimScrubMoveHandler)
+            $grabSurface.Add_MouseLeftButtonUp($script:TrimScrubUpHandler)
         }
 
         # Ctrl + wheel zooms around the pointer, Shift + wheel PANS; a bare wheel is left
@@ -8162,6 +8327,9 @@ try {
         # no longer open, and the duration/aspect caches are keyed by path so they carry
         # no meaning across files either.
         Clear-TrimClipMediaElementPools
+        # Same teardown for the extracted source-stream players: they point at temp files
+        # cut from the PREVIOUS recording.
+        Clear-TrimSourceStreamAudio
         $script:TrimClipDurations = @{}
         $script:TrimClipAspect = @{}
         $script:PipBoxDrag = $null
@@ -8176,10 +8344,11 @@ try {
         Set-TrimExtensionPosition -Seconds 0.0
         $script:TrimTimelineLengthCache = 0.0
         $script:TrimViewStart = 0.0
-        # The first Update-TrimTimeline clamps this to Get-TrimViewMax (content plus
-        # breathing room), so the default view always shows empty track after the content
-        # -- the room the user drags new clips into.
-        $script:TrimViewSpan = $script:TrimDuration
+        # The view OPENS at content + breathing room -- the same Get-TrimViewMax the
+        # clamps use. Setting the bare duration here (the old value) meant an UNCUT video
+        # filled the strip edge to edge with no empty track to drop new clips onto; the
+        # clamp only ever shrinks, so the slack has to be present from the start.
+        $script:TrimViewSpan = Get-TrimViewMax -TimelineLength $script:TrimDuration
         # Empty until the async read lands; Find-NearestKeyframe treats that as "no
         # snapping" rather than "cannot cut".
         $script:TrimKeyframes = @()
@@ -8224,6 +8393,11 @@ try {
         # belt-and-suspenders against the @($null).Count -eq 1 trap, not a fix for a real
         # null -- same defensive habit as the -Lanes wrapping at the export call site below.
         $script:TrimSourceAudioStreamCount = @($streams).Count
+        # The preview's per-stream playback: remember the file order of the stream indices
+        # (the FIRST is what the main element decodes). The extraction requests fire
+        # further down, AFTER $script:TrimThumbDir is created for this file -- they write
+        # into it, and on the very first load it does not exist yet at this point.
+        $script:TrimSourceStreamOrder = @(@($streams) | ForEach-Object { [int]$_.StreamIdx })
         if ($project -and $null -ne $project.Lanes -and @($project.Lanes).Count -gt 0) {
             # Restored lanes carry whatever Path was on disk at save time. The MAIN lane's
             # video clip is BY DEFINITION the loaded file -- not a movable reference to it --
@@ -8293,6 +8467,11 @@ try {
         New-Item -ItemType Directory -Path $script:TrimThumbDir -Force | Out-Null
         $script:TrimThumbCache = @{}
         $script:TrimThumbPending = @{}
+        # Now that the per-file temp dir exists: start pulling the extra source audio
+        # streams out for the preview (see $script:TrimSourceStreamOrder above).
+        for ($sn = 1; $sn -lt @($script:TrimSourceStreamOrder).Count; $sn++) {
+            Request-TrimSourceStreamAudio -StreamIdx ([int]$script:TrimSourceStreamOrder[$sn])
+        }
         # Waveform strips get a PERSISTENT on-disk cache, unlike the thumbnails: they
         # took a visible couple of seconds to re-render on every single file open, and
         # a waveform never changes for a given source file. Keyed by path + size +

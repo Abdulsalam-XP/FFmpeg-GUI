@@ -882,6 +882,27 @@ function Export-TrimThumbnail {
     & $ffmpeg -y -ss $Seconds -i $InputFile -frames:v 1 -vf "scale=-2:$Height" -q:v 4 $OutputFile 2>&1 | Out-Null
 }
 
+# One source audio stream, pulled out to its own playable file so the PREVIEW can play it:
+# WPF's MediaElement always decodes a container's default (first) audio stream and offers
+# no stream selection at all, so streams 2..N are inaudible while editing unless they get
+# a file of their own. Stream copy first (the DVR recordings carry AAC, which .m4a holds
+# as-is); the transcode fallback covers codecs mp4 refuses. Returns $true when the file
+# is there to play.
+function Export-TrimAudioStream {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        # ABSOLUTE ffprobe stream index, the same meaning StreamIdx has everywhere.
+        [Parameter(Mandatory = $true)][int]$StreamIndex,
+        [Parameter(Mandatory = $true)][string]$OutputFile
+    )
+    $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    & $ffmpeg -hide_banner -y -i $InputFile -map "0:$StreamIndex" -vn -c:a copy $OutputFile 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
+        & $ffmpeg -hide_banner -y -i $InputFile -map "0:$StreamIndex" -vn -c:a aac -b:a 192k $OutputFile 2>&1 | Out-Null
+    }
+    return [bool](Test-Path -LiteralPath $OutputFile)
+}
+
 # One waveform strip PNG for a source-time window, drawn by ffmpeg itself.
 # showwavespic is a single decode pass over the audio only, so this is cheap
 # even on the 3GB recordings.
@@ -1019,6 +1040,6 @@ function Test-TrackStackHasAudio {
 }
 
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
-    Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
+    Export-TrimThumbnail, Export-TrimAudioStream, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
     ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimWaveformFilter, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
     Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration
