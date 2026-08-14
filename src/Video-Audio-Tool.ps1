@@ -1228,6 +1228,15 @@ try {
         return $script:TrimViewStart + ($X / $w) * $script:TrimViewSpan
     }
 
+    # How far right the VIEW may extend: the content plus breathing room, so there is
+    # always empty track to zoom/pan into -- and to drop the NEXT clip onto -- past the
+    # last thing on the timeline. A view clamped exactly to the content gave new montage
+    # clips nowhere visible to land.
+    function Get-TrimViewMax {
+        param([double]$TimelineLength)
+        return $TimelineLength + [math]::Max(10.0, 0.25 * $TimelineLength)
+    }
+
     # The timeline is drawn compacted -- surviving pieces sit back-to-back with no gap,
     # matching what Export actually produces, rather than at their real spread-out
     # positions in the source file. These three converters are the seam between that
@@ -1563,19 +1572,26 @@ try {
         # canvas past the last piece would keep showing however much space the OLD,
         # longer timeline used to span.
         #
-        # Clamped to the FULL timeline length, not to the cut list: a clip that runs past
-        # V1's end is part of what this ruler measures now (spec 4.7), and clamping to
-        # TotalDuration would make the montage region unreachable by scrub or zoom. This is
-        # also the piece-edit refresh of the cache -- every split/delete/undo repaints here.
+        # Clamped to the VIEW MAX (content + breathing room), not to the content: a clip
+        # past V1's end is part of what this ruler measures (spec 4.7), and the extra
+        # slack past the LAST clip is deliberate -- it is the empty track new clips get
+        # dropped onto. This is also the piece-edit refresh of the cache -- every
+        # split/delete/undo repaints here.
         $timelineLength = Update-TrimTimelineLengthCache
         if ($timelineLength -gt 0) {
-            if ($script:TrimViewSpan -gt $timelineLength) { $script:TrimViewSpan = $timelineLength }
-            if ($script:TrimViewStart + $script:TrimViewSpan -gt $timelineLength) {
-                $script:TrimViewStart = [math]::Max(0.0, $timelineLength - $script:TrimViewSpan)
+            $viewMax = Get-TrimViewMax -TimelineLength $timelineLength
+            if ($script:TrimViewSpan -gt $viewMax) { $script:TrimViewSpan = $viewMax }
+            if ($script:TrimViewStart + $script:TrimViewSpan -gt $viewMax) {
+                $script:TrimViewStart = [math]::Max(0.0, $viewMax - $script:TrimViewSpan)
             }
         }
 
-        for ($i = 0; $i -lt $pieces.Count; $i++) {
+        # The SRC strip is hidden (V1's own lane row draws the pieces now), so building
+        # its piece visuals -- and above all their per-slot Request-TrimThumbnail calls --
+        # would be pure waste on every repaint. The canvas itself stays alive purely as
+        # the x-axis every strip measures against.
+        $buildSrcPieces = $false
+        for ($i = 0; $buildSrcPieces -and $i -lt $pieces.Count; $i++) {
             $tp = $timelinePieces[$i]
             $x1 = Convert-TrimTimeToX -Seconds $tp.TimelineStart
             $x2 = Convert-TrimTimeToX -Seconds $tp.TimelineEnd
@@ -1780,6 +1796,22 @@ try {
                     [System.Windows.Controls.Canvas]::SetLeft($badge, $badgeLeft)
                     [System.Windows.Controls.Canvas]::SetTop($badge, 4)
                     $canvasTrimRuler.Children.Add($badge) | Out-Null
+                }
+
+                # The playhead's grab wedge, on the RULER: the SRC strip that used to
+                # carry it is hidden, and the ruler is the scrub surface now -- the wedge
+                # marks where to press. Same shape as the old strip grip.
+                if ($playheadVisible) {
+                    $rulerGrip = New-Object System.Windows.Shapes.Polygon
+                    $rulerGrip.Style = $ctx.Window.FindResource("TimelinePlayheadGripStyle")
+                    $rulerGripPoints = New-Object System.Windows.Media.PointCollection
+                    $rulerGripPoints.Add((New-Object System.Windows.Point(0, 0)))
+                    $rulerGripPoints.Add((New-Object System.Windows.Point(11, 0)))
+                    $rulerGripPoints.Add((New-Object System.Windows.Point(5.5, 7)))
+                    $rulerGrip.Points = $rulerGripPoints
+                    [System.Windows.Controls.Canvas]::SetLeft($rulerGrip, $playX - 5.5)
+                    [System.Windows.Controls.Canvas]::SetTop($rulerGrip, 0)
+                    $canvasTrimRuler.Children.Add($rulerGrip) | Out-Null
                 }
             }
         }
@@ -3631,13 +3663,17 @@ try {
                     $isLastSeg = ($segIndex -eq $segCount - 1)
                     $segIndex++
 
+                    # V1's bodies ARE the cut pieces now that the SRC strip is hidden, so
+                    # the piece selection ($script:TrimSelected, what Del removes) paints
+                    # here: the selected piece's body gets the gold selected border.
+                    $isSelectedPiece = ($cutSpace -and $isMainClip -and ($segIndex - 1) -eq $script:TrimSelected)
                     $clipBorder = New-Object System.Windows.Controls.Border
                     $clipBorder.Height = $clipHeight
                     $clipBorder.Width = [double]$seg.Width
                     $clipBorder.CornerRadius = New-Object System.Windows.CornerRadius(3)
                     $clipBorder.ClipToBounds = $true
-                    $clipBorder.BorderThickness = New-Object System.Windows.Thickness($(if ($isSelectedClip) { 2 } else { 1 }))
-                    $clipBorder.BorderBrush = $(if ($isSelectedClip) { $goldBrush }
+                    $clipBorder.BorderThickness = New-Object System.Windows.Thickness($(if ($isSelectedClip -or $isSelectedPiece) { 2 } else { 1 }))
+                    $clipBorder.BorderBrush = $(if ($isSelectedClip -or $isSelectedPiece) { $goldBrush }
                         elseif ($isImageClip) { $imageBorderBrush } else { $clipBorderBrush })
                     $clipBorder.Background = $(if ($isAudioClip) { $audioBodyBrush } else { $placeholderBrush })
                     $clipBorder.Opacity = $(if ($rowDim -or -not $clip.Enabled) { 0.4 } else { 1.0 })
@@ -3751,15 +3787,33 @@ try {
                     # keep the plain select-and-rebuild handler. Every other clip is a
                     # single source-space body and gets the full drag.
                     if ($cutSpace) {
-                        # GetNewClosure over $thisClipId, exactly as the caption blocks do --
-                        # without it every body captures the loop's final clip and clicking
-                        # any of them selects the last.
-                        $clipBorder.Add_MouseLeftButtonDown({
-                            param($eventSource, $e)
-                            Set-TrimSelectedClip -Id $thisClipId
-                            Update-TrimLaneRows
-                            $e.Handled = $true
-                        }.GetNewClosure())
+                        if ($isMainClip) {
+                            # Clicking a V1 body selects the PIECE (what Del removes and a
+                            # fade sits beside), never the main clip -- deleting the whole
+                            # V1 stays on the row's trash. Mirrors what the old SRC piece
+                            # click did, including arming the Delete button. GetNewClosure
+                            # over the piece ordinal, like every per-item handler.
+                            $thisPieceIndex = $segIndex - 1
+                            $clipBorder.Add_MouseLeftButtonDown({
+                                param($eventSource, $e)
+                                Set-TrimSelection -Index $thisPieceIndex
+                                Set-TrimSelectedClip -Id $null
+                                $buttonTrimDelete.IsEnabled = $true
+                                Update-TrimSelectionText
+                                Update-TrimTimeline
+                                $e.Handled = $true
+                            }.GetNewClosure())
+                        } else {
+                            # GetNewClosure over $thisClipId, exactly as the caption blocks
+                            # do -- without it every body captures the loop's final clip and
+                            # clicking any of them selects the last.
+                            $clipBorder.Add_MouseLeftButtonDown({
+                                param($eventSource, $e)
+                                Set-TrimSelectedClip -Id $thisClipId
+                                Update-TrimLaneRows
+                                $e.Handled = $true
+                            }.GetNewClosure())
+                        }
                     } else {
                         Register-TrimClipElement -ClipId $thisClipId -Border $clipBorder -Canvas $bodyCanvas
                         # Selection is painted DIRECTLY here rather than through a rebuild:
@@ -7574,66 +7628,87 @@ try {
             Update-TrimBlackBase
         }
 
-        # A click on a piece bubbles down to here too, so one click both selects that
-        # piece and moves the playhead -- see the note on the piece handler. The press
-        # also CAPTURES the canvas so the playhead can be DRAGGED: every move until
-        # release keeps scrubbing, exactly like holding the seek bar in an NLE.
+        # Scrub press-and-drag, shared across surfaces: the RULER is the visible scrub
+        # strip now that the SRC filmstrip row is hidden (the hidden timeline canvas
+        # keeps the handlers too -- harmless, unreachable). Mouse capture goes on the
+        # surface that took the press ($eventSource); the x always converts through the
+        # hidden canvas, the x-axis authority every strip shares.
         #
         # No GetNewClosure() on these, same reason as the timer tick above: they write
         # $script: state, which a closure would rebind into its own private module.
-        $canvasTrimTimeline.Add_MouseLeftButtonDown({
+        $script:TrimScrubDownHandler = {
             param($eventSource, $e)
             if (-not $script:TrimInputFile) { return }
             Set-TrimScrubFromX -X ($e.GetPosition($canvasTrimTimeline)).X
             $script:TrimScrubDrag = $true
-            [void]$canvasTrimTimeline.CaptureMouse()
-        })
-
-        $canvasTrimTimeline.Add_MouseMove({
+            [void]$eventSource.CaptureMouse()
+        }
+        $script:TrimScrubMoveHandler = {
             param($eventSource, $e)
             if (-not $script:TrimScrubDrag) { return }
             Set-TrimScrubFromX -X ($e.GetPosition($canvasTrimTimeline)).X -Light
-        })
-
-        $canvasTrimTimeline.Add_MouseLeftButtonUp({
+        }
+        $script:TrimScrubUpHandler = {
             param($eventSource, $e)
             if (-not $script:TrimScrubDrag) { return }
             $script:TrimScrubDrag = $false
-            $canvasTrimTimeline.ReleaseMouseCapture()
+            $eventSource.ReleaseMouseCapture()
             # The full pass: lane rows recatch the final position and the PiP pools seek.
             Set-TrimScrubFromX -X ($e.GetPosition($canvasTrimTimeline)).X
-        })
+        }
+        foreach ($scrubSurface in @($canvasTrimTimeline, $canvasTrimRuler)) {
+            if ($null -eq $scrubSurface) { continue }
+            $scrubSurface.Add_MouseLeftButtonDown($script:TrimScrubDownHandler)
+            $scrubSurface.Add_MouseMove($script:TrimScrubMoveHandler)
+            $scrubSurface.Add_MouseLeftButtonUp($script:TrimScrubUpHandler)
+        }
 
-        # Ctrl + wheel zooms around the pointer; a bare wheel is left alone so the panel
-        # still scrolls the way every other screen does.
-        $canvasTrimTimeline.Add_PreviewMouseWheel({
+        # Ctrl + wheel zooms around the pointer, Shift + wheel PANS; a bare wheel is left
+        # alone so the panel still scrolls the way every other screen does. Attached to
+        # every timeline surface (ruler, lanes, caption/zoom/fade strips) because the strip
+        # that used to take this wheel -- the SRC filmstrip -- is hidden now.
+        $script:TrimWheelHandler = {
             param($eventSource, $e)
-            if (([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -eq 0) { return }
             if (-not $script:TrimInputFile) { return }
+            $wheelCtrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
+            $wheelShift = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift) -ne 0
+            if (-not $wheelCtrl -and -not $wheelShift) { return }
             $state = Get-TrimTimelineState
             if ($state.TotalDuration -le 0) { return }
             $e.Handled = $true
+            $viewMax = Get-TrimViewMax -TimelineLength (Get-TrimTimelineLengthCached)
+
+            if ($wheelShift -and -not $wheelCtrl) {
+                # PAN: a notch slides the view 10% of its span; wheel-down scrolls right,
+                # the usual horizontal-scroll convention.
+                $step = $script:TrimViewSpan * 0.1 * $(if ($e.Delta -gt 0) { -1.0 } else { 1.0 })
+                $newStart = [math]::Max(0.0, [math]::Min($viewMax - $script:TrimViewSpan, $script:TrimViewStart + $step))
+                Set-TrimView -Start $newStart -Span $script:TrimViewSpan
+                Update-TrimTimeline -TickOnly
+                Request-TrimZoomRefine
+                return
+            }
 
             # Anchor and span are both timeline (compacted) seconds -- zoom operates on
-            # the same space the ruler and track are drawn in.
+            # the same space the ruler and track are drawn in. Floor of 0.5s: below that
+            # the pieces are narrower than their own borders. Ceiling of viewMax, not the
+            # content length: the breathing room past the last clip is part of the view.
             $anchor = Convert-TrimXToTime -X ($e.GetPosition($canvasTrimTimeline)).X
             $factor = if ($e.Delta -gt 0) { 0.8 } else { 1.25 }
-            # Floor of 0.5s: below that the pieces are narrower than their own borders.
-            # The whole timeline, not just the cut list: the montage region past V1's end
-            # is part of what this ruler measures, so the view window must be able to reach
-            # it (and to span it) or it could never be scrubbed into.
-            $timelineLength = Get-TrimTimelineLengthCached
-            $newSpan = [math]::Max(0.5, [math]::Min($timelineLength, $script:TrimViewSpan * $factor))
-
+            $newSpan = [math]::Max(0.5, [math]::Min($viewMax, $script:TrimViewSpan * $factor))
             $ratio = if ($script:TrimViewSpan -gt 0) { ($anchor - $script:TrimViewStart) / $script:TrimViewSpan } else { 0.5 }
-            # Keep the window inside the clip.
-            $newStart = [math]::Max(0.0, [math]::Min($timelineLength - $newSpan, $anchor - ($ratio * $newSpan)))
+            $newStart = [math]::Max(0.0, [math]::Min($viewMax - $newSpan, $anchor - ($ratio * $newSpan)))
             Set-TrimView -Start $newStart -Span $newSpan
             # Cheap path per notch, full rebuild once the wheel goes quiet -- see the
             # comment on $script:ZoomRefineTimer.
             Update-TrimTimeline -TickOnly
             Request-TrimZoomRefine
-        })
+        }
+        foreach ($wheelSurface in @($canvasTrimTimeline, $canvasTrimRuler, $canvasTrimFades,
+                                    $canvasTrimCaptions, $canvasTrimZooms, $panelTrimLanes)) {
+            if ($null -eq $wheelSurface) { continue }
+            $wheelSurface.Add_PreviewMouseWheel($script:TrimWheelHandler)
+        }
 
         # The canvas has no width until it is laid out, so the first paint must wait for it,
         # and a resize invalidates every x already computed.
@@ -8101,6 +8176,9 @@ try {
         Set-TrimExtensionPosition -Seconds 0.0
         $script:TrimTimelineLengthCache = 0.0
         $script:TrimViewStart = 0.0
+        # The first Update-TrimTimeline clamps this to Get-TrimViewMax (content plus
+        # breathing room), so the default view always shows empty track after the content
+        # -- the room the user drags new clips into.
         $script:TrimViewSpan = $script:TrimDuration
         # Empty until the async read lands; Find-NearestKeyframe treats that as "no
         # snapping" rather than "cannot cut".

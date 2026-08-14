@@ -514,23 +514,17 @@
                                  rows take it as a plain Margin (the mockup leaves the ruler gutter
                                  empty); the three lanes with something to say fill it with a
                                  header cell. -->
-                            <Grid>
+                            <!-- Height 0 + clip, NOT removed: CanvasTrimTimeline is the x-axis
+                                 authority for the whole editor (Convert-TrimTimeToX measures its
+                                 ActualWidth), so it must stay laid out at full width even though
+                                 the SRC filmstrip row no longer shows. V1's own lane row is the
+                                 visible piece strip now, and scrubbing lives on the ruler. -->
+                            <Grid Height="0" ClipToBounds="True">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <Border Grid.Column="0" Style="{StaticResource LaneHeaderStyle}">
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="7,0,7,0">
-                                        <TextBlock Text="SRC" Style="{StaticResource LaneNameStyle}" Margin="0,0,5,0"/>
-                                        <TextBlock Text="Source filmstrip" Style="{StaticResource LaneLabelStyle}"/>
-                                    </StackPanel>
-                                </Border>
-                                <Border Grid.Column="1" Style="{StaticResource TimelineTrackStyle}" Height="90" ClipToBounds="True">
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="*"/>
-                                        </Grid.RowDefinitions>
-                                        <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Panel.ZIndex="1" Background="Transparent"/>
-                                    </Grid>
+                                <Border Grid.Column="1" Height="90" ClipToBounds="True">
+                                    <Canvas x:Name="CanvasTrimTimeline" Background="Transparent"/>
                                 </Border>
                             </Grid>
 
