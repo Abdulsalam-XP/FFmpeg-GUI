@@ -314,3 +314,67 @@ Describe "Test-TrackStackHasAudio" {
         Test-TrackStackHasAudio -Tracks @() | Should Be $false
     }
 }
+
+Describe "Get-TrimExportMode (lanes)" {
+    $streams = @(@{StreamIdx=1;Label="Game"})
+    It "is trivial for a fresh lane stack and preserves the legacy arm untouched" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" -SourceAudioStreamCount 1 | Should Be "trivial"
+        # legacy arm, no lanes: identical to the pre-existing contract
+        Get-TrimExportMode -Tracks @() -PipSpans @() | Should Be "trivial"
+    }
+    It "rebuilds on any lane-stack deviation" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        $lanes[1].Clips[0].GainDb = 3.0
+        Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" | Should Be "rebuild"
+    }
+    It "is audio-only when no enabled video content exists" {
+        $lanes = Get-TrimLaneStack -Path "a.mp4" -AudioStreams $streams
+        $lanes[0].Clips = @()
+        Get-TrimExportMode -Lanes $lanes -MainPath "a.mp4" | Should Be "audio-only"
+    }
+}
+
+Describe "Split-TrimSegmentsForPips with black extension segments" {
+    It "splits a black segment at overlay edges and tags the inside part" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 10.0 }, @{ Kind = "black"; Start = 0.0; Duration = 10.0 })
+        $spans = @(@{ Start = 12.0; End = 16.0; Overlay = @{ ClipId="c1"; Path="c.mp4"; Kind="video"; InStart = 1.0; Pip = $null } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $r.Count | Should Be 4
+        $r[1].Kind | Should Be "black"
+        $r[1].Duration | Should Be 2.0
+        $p = @($r[2].Pips)
+        $p.Count | Should Be 1
+        $p[0].SegmentClipStart | Should Be 1.0
+        $r[2].Duration | Should Be 4.0
+    }
+    It "carries Kind and null Pip through the overlay descriptor" {
+        $segs = @(@{ Kind = "cut"; Start = 0.0; Duration = 10.0 })
+        $spans = @(@{ Start = 2.0; End = 6.0; Overlay = @{ ClipId="i1"; Path="l.png"; Kind="image"; InStart = 0.0; Pip = $null } })
+        $r = Split-TrimSegmentsForPips -Segments $segs -PipSpans $spans
+        $r[1].Pips[0].Kind | Should Be "image"
+        $r[1].Pips[0].Pip | Should Be $null
+    }
+}
+
+Describe "Get-TrimSourceProfile Fps" {
+    It "defaults Fps to 120.0 when the probe is unreadable" {
+        # Unreadable path exercises every default in one call, same as the Width/Height tests do.
+        $p = Get-TrimSourceProfile -InputFile "Z:\does\not\exist.mp4"
+        $p.Fps | Should Be 120.0
+    }
+}
+
+Describe "Get-TrimWaveformFilter stream selection" {
+    It "defaults to the first audio stream, byte-identical to the pre-lane graph" {
+        Get-TrimWaveformFilter |
+            Should Be "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=1600x96:colors=#3E9B84:scale=sqrt:draw=full:filter=peak"
+    }
+    It "uses an absolute stream label when StreamIndex is non-negative" {
+        Get-TrimWaveformFilter -StreamIndex 2 -Width 1600 -Height 34 |
+            Should Be "[0:2]aformat=channel_layouts=mono,showwavespic=s=1600x34:colors=#3E9B84:scale=sqrt:draw=full:filter=peak"
+    }
+    It "treats stream index 0 as absolute, not as the -1 default" {
+        (Get-TrimWaveformFilter -StreamIndex 0).StartsWith("[0:0]") | Should Be $true
+    }
+}

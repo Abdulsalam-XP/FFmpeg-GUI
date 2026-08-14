@@ -2,6 +2,7 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="FFmpeg GUI" Height="1300" Width="1860" MinHeight="640" MinWidth="980"
+        WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BrushShellBase}">
 
@@ -15,7 +16,7 @@
              fill, per the "Midnight Gold" spec, so empty space still reads as having
              depth instead of a flat fill. Behind everything, never hit-test visible.
              Spans both columns so the glow isn't clipped to the sidebar's column. -->
-        <Grid IsHitTestVisible="False" Grid.ColumnSpan="2">
+        <Grid x:Name="GridBackgroundGlows" IsHitTestVisible="False" Grid.ColumnSpan="2">
             <Ellipse Width="620" Height="620" Fill="{StaticResource BrushGlowGold}"
                      HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-220,-220,0,0">
                 <Ellipse.Effect><BlurEffect Radius="40"/></Ellipse.Effect>
@@ -33,6 +34,18 @@
                 <Ellipse.Effect><BlurEffect Radius="40"/></Ellipse.Effect>
             </Ellipse>
         </Grid>
+
+        <!-- Midnight Gold look only: the "Carina Sea" nebula sky, built entirely from
+             code (two pre-rendered cloud bitmaps that drift against each other, a star
+             field, twinkling and spiked stars). Empty in Petalfall. Behind everything,
+             never hit-test visible. -->
+        <Grid x:Name="GridLookNebula" IsHitTestVisible="False" Grid.ColumnSpan="2" ClipToBounds="True"/>
+
+        <!-- Petalfall look only: falling petals, drawn from code onto this layer. ZIndex
+             puts them OVER the whole window; the approved mockup drifts petals across
+             panels and preview alike, and hit-testing stays off so they never eat a click. -->
+        <Canvas x:Name="CanvasLookPetals" Grid.ColumnSpan="2" Panel.ZIndex="50"
+                IsHitTestVisible="False" ClipToBounds="True"/>
 
         <!-- Sidebar -->
         <Grid Grid.Column="0" Background="#8C060914">
@@ -500,49 +513,103 @@
                                         Padding="12,4,12,4" Margin="28,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
 
-                            <!-- Row split pairs with $script:TrimWaveRowHeight in
-                                 Video-Audio-Tool.ps1; change them together. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="134" ClipToBounds="True">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/><RowDefinition Height="48"/>
-                                    </Grid.RowDefinitions>
-                                    <!-- ZIndex 1: the playhead is drawn taller than this row so it
-                                         crosses the waveform strip below, and the strip's own
-                                         background would otherwise paint over it. -->
-                                    <Canvas x:Name="CanvasTrimTimeline" Grid.Row="0" Panel.ZIndex="1" Background="Transparent"/>
-                                    <!-- Waveform strip: painted from code with per piece renders. -->
-                                    <Canvas x:Name="CanvasTrimWave" Grid.Row="1" Background="#CC070B14" IsHitTestVisible="False"/>
-                                </Grid>
-                            </Border>
+                            <!-- Filmstrip track. The dedicated waveform strip that used to sit in a
+                                 second row here is gone: audio lane rows carry their own waveforms
+                                 now (spec 3.1), so this is a single full height row.
 
-                            <!-- Track lanes (Task 8): one row per track in the multi-track stack.
-                                 Collapsed by default, since the linked, single-video-plus-audio-source
-                                 case looks exactly like the pre-multitrack editor. Lanes themselves
-                                 are code-built children, drawn by Update-TrimTrackLanes. -->
-                            <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed" Margin="0,4,0,0"/>
+                                 The 250px column in front of this row and every other timeline
+                                 space row below (captions, zooms, ruler, fades) is the same header
+                                 column the lane rows use: the mockup runs it down the whole stack
+                                 so one playhead line crosses every row at the same x.
+                                 Convert-TrimTimeToX measures CanvasTrimTimeline, so all of these
+                                 have to share the inset or they stop agreeing. The ruler and fade
+                                 rows take it as a plain Margin (the mockup leaves the ruler gutter
+                                 empty); the three lanes with something to say fill it with a
+                                 header cell. -->
+                            <!-- Height 0 + clip, NOT removed: CanvasTrimTimeline is the x-axis
+                                 authority for the whole editor (Convert-TrimTimeToX measures its
+                                 ActualWidth), so it must stay laid out at full width even though
+                                 the SRC filmstrip row no longer shows. V1's own lane row is the
+                                 visible piece strip now, and scrubbing lives on the ruler. -->
+                            <Grid Height="0" ClipToBounds="True">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="1" Height="90" ClipToBounds="True">
+                                    <Canvas x:Name="CanvasTrimTimeline" Background="Transparent"/>
+                                </Border>
+                            </Grid>
+
+                            <!-- Track lanes: grouped NLE rows, code-built by Update-TrimLaneRows.
+                                 CanvasTrimLaneOverlay carries the stack-spanning playhead line and
+                                 the green snap flash, above every row. The add-track buttons sit
+                                 UNDER the stack, aligned with the header column, where new lanes
+                                 actually appear (moved out of the toolbar on the user's ask). -->
+                            <Grid Margin="0,4,0,0">
+                                <!-- Transparent Background + AllowDrop: files dropped on the OPEN
+                                     area (between/below the rows) create a new track of the file's
+                                     kind at the drop position; rows mark their own drops Handled
+                                     so they still target that specific lane. -->
+                                <StackPanel x:Name="PanelTrimLaneArea" Background="Transparent" AllowDrop="True">
+                                    <StackPanel x:Name="PanelTrimTracks" Visibility="Collapsed"/>
+                                    <StackPanel x:Name="PanelTrimAddTracks" Orientation="Horizontal" Visibility="Collapsed" Margin="0,2,0,4">
+                                        <Button x:Name="ButtonTrimAddVideoTrack" Content="＋ Video track" Style="{StaticResource LaneAddButtonStyle}"/>
+                                        <Button x:Name="ButtonTrimAddAudioTrack" Content="＋ Audio track" Style="{StaticResource LaneAddButtonStyle}" Margin="8,0,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                                <Canvas x:Name="CanvasTrimLaneOverlay" IsHitTestVisible="False" ClipToBounds="True"/>
+                            </Grid>
 
                             <!-- Caption lane: one block per caption, drag to move, edge drag to retime. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="54" Margin="0,4,0,0" ClipToBounds="True">
-                                <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
-                            </Border>
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource LaneHeaderStyle}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="7,0,7,0">
+                                        <TextBlock Text="CC" Style="{StaticResource LaneNameStyle}" Margin="0,0,5,0"/>
+                                        <TextBlock Text="Captions" Style="{StaticResource LaneLabelStyle}"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource TimelineTrackStyle}" Height="54" ClipToBounds="True">
+                                    <Canvas x:Name="CanvasTrimCaptions" Background="Transparent"/>
+                                </Border>
+                            </Grid>
 
                             <!-- Zoom keyframe lane: diamonds mark keyframes, ramps show the
                                  transition between them. Drawn from code. -->
-                            <Border Style="{StaticResource TimelineTrackStyle}" Height="26" Margin="0,4,0,0" ClipToBounds="True">
-                                <Canvas x:Name="CanvasTrimZooms" Background="Transparent"/>
-                            </Border>
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="250"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource LaneHeaderStyle}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="7,0,7,0">
+                                        <TextBlock Text="Z" Style="{StaticResource LaneNameStyle}" Margin="0,0,5,0"/>
+                                        <TextBlock Text="Zoom" Style="{StaticResource LaneLabelStyle}"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource TimelineTrackStyle}" Height="26" ClipToBounds="True">
+                                    <Canvas x:Name="CanvasTrimZooms" Background="Transparent"/>
+                                </Border>
+                            </Grid>
 
                             <!-- 26, not 20: the ruler now also carries the playhead time
                                  badge, which sits below the ticks and is clipped at 20. -->
-                            <Canvas x:Name="CanvasTrimRuler" Height="26" Background="Transparent" ClipToBounds="True"/>
+                            <Canvas x:Name="CanvasTrimRuler" Height="26" Margin="250,0,0,0" Background="Transparent" ClipToBounds="True"/>
+
+                            <!-- The visible way to reach the montage/slack region on the right;
+                                 Shift+wheel and Ctrl+wheel do the same with the pointer. Bound to
+                                 the view window from code on every timeline repaint. -->
+                            <ScrollBar x:Name="ScrollTrimView" Orientation="Horizontal"
+                                       Style="{StaticResource TimelineScrollBarStyle}"
+                                       Margin="250,2,0,0" Visibility="Collapsed"/>
 
                             <!-- One fade toggle per internal cut, drawn from code at the
                                  cut's x position. Its own row rather than pills sitting on
                                  the track: at a tight zoom two cuts can be a few pixels
                                  apart, and a toggle overlapping the footage would be both
                                  unreadable and impossible to hit. -->
-                            <Canvas x:Name="CanvasTrimFades" Height="38" Background="Transparent" ClipToBounds="True"/>
+                            <Canvas x:Name="CanvasTrimFades" Height="38" Margin="250,0,0,0" Background="Transparent" ClipToBounds="True"/>
 
                             <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                 <TextBlock x:Name="TextTrimPieces" Text="1 piece"
@@ -577,71 +644,79 @@
                                            VerticalAlignment="Center" Margin="16,0,0,0"/>
                             </StackPanel>
 
-                            <!-- Track properties strip: shown only while a track lane is selected,
-                                 the same on/off rule PanelTrimFadeLength uses for a selected cut. -->
+                            <!-- CLIP properties strip: shown only while a clip is selected, the
+                                 same on/off rule PanelTrimFadeLength uses for a selected cut.
+                                 The gain slider, mute box and row trash that used to live here
+                                 moved into the lane row headers (spec 3.2), where they belong to
+                                 the row rather than to whichever clip was last clicked. What is
+                                 left is the clip's own identity, its full-frame/box display mode
+                                 and its delete. -->
                             <StackPanel x:Name="PanelTrimTrackProps" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
-                                <TextBlock Text="TRACK" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
+                                <TextBlock Text="CLIP" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center"/>
                                 <TextBlock x:Name="TextTrackPropsName" Text="" FontFamily="{StaticResource FontData}" FontSize="12.5" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                <Slider x:Name="SliderTrackGain" Style="{StaticResource GainSliderStyle}" Width="220" Minimum="-30" Maximum="30" VerticalAlignment="Center" Margin="16,0,0,0"/>
-                                <TextBlock x:Name="TextTrackGain" Text="0.0 dB" FontFamily="{StaticResource FontData}" FontSize="12" Foreground="{StaticResource BrushGoldValue}" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                <CheckBox x:Name="CheckTrackMute" Content="Mute" Foreground="{StaticResource BrushTextBody}" VerticalAlignment="Center" Margin="16,0,0,0"/>
-                                <Button x:Name="ButtonTrackDelete" Content="Delete track" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
+                                <Button x:Name="ButtonClipDisplayMode" Content="⛶ Full-frame" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
+                                <TextBlock x:Name="TextClipDisplayHint" Text="" FontFamily="{StaticResource FontChrome}" FontSize="12" FontStyle="Italic" Foreground="{StaticResource BrushTextMuted}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                <Button x:Name="ButtonTrackDelete" Content="Delete clip" Style="{StaticResource PresetButtonStyle}" Margin="16,0,0,0"/>
                             </StackPanel>
 
-                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                                <Button x:Name="ButtonTrimAddCaption" Style="{StaticResource PresetButtonStyle}" Width="120">
+                            <!-- DockPanel, not a StackPanel: Export is declared FIRST and docked
+                                 Right, so it claims its space before the editing verbs do and can
+                                 never be pushed off the card at narrow widths (the old fixed-width
+                                 StackPanel clipped it). The add-track buttons live beside the lane
+                                 stack now, not here. -->
+                            <DockPanel Margin="0,16,0,0" LastChildFill="False">
+                                <Button x:Name="ButtonTrimExport" DockPanel.Dock="Right" Content="Export Video"
+                                        Style="{StaticResource HeroButtonStyle}"
+                                        Width="170" Margin="40,0,0,0" IsEnabled="False"/>
+                                <Button x:Name="ButtonTrimAddCaption" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="120">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="＋ Caption"/>
                                         <TextBlock Text="C" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimAddZoom" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimAddZoom" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="＋ Zoom"/>
                                         <TextBlock Text="Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimAddTrack" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimSnap" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="＋ Track"/>
+                                        <TextBlock x:Name="TextTrimSnapGlyph" Text="🧲 Snap"/>
+                                        <TextBlock Text="N" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimUnlink" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimUnlink" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="150" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="Unlink audio"/>
+                                        <TextBlock Text="🔗 Unlink"/>
                                         <TextBlock Text="U" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimSplit" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
+                                <Button x:Name="ButtonTrimSplit" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="12,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Split"/>
                                         <TextBlock Text="S" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimDelete" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="12,0,0,0" IsEnabled="False">
+                                <Button x:Name="ButtonTrimDelete" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="120" Margin="12,0,0,0" IsEnabled="False">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Delete"/>
                                         <TextBlock Text="DEL" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimUndo" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
+                                <Button x:Name="ButtonTrimUndo" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Undo"/>
                                         <TextBlock Text="Ctrl+Z" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <Button x:Name="ButtonTrimRedo" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
+                                <Button x:Name="ButtonTrimRedo" DockPanel.Dock="Left" Style="{StaticResource PresetButtonStyle}" Width="130" Margin="12,0,0,0" IsEnabled="False">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Redo"/>
                                         <TextBlock Text="Ctrl+Y" Style="{StaticResource ShortcutHintStyle}"/>
                                     </StackPanel>
                                 </Button>
-                                <!-- Pushed to the right edge rather than sitting flush against
-                                     Undo: the editing verbs are one group, the action that
-                                     writes a file is not part of it. -->
-                                <Button x:Name="ButtonTrimExport" Content="Export Video" Style="{StaticResource HeroButtonStyle}"
-                                        Width="170" Margin="40,0,0,0" IsEnabled="False"/>
-                            </StackPanel>
+                            </DockPanel>
                         </StackPanel>
                     </Border>
 
@@ -754,6 +829,26 @@
                             </StackPanel>
                             <CheckBox x:Name="CheckShowAnimations" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitchStyle}"
                                       VerticalAlignment="Center" IsChecked="True"/>
+                        </DockPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
+                        <DockPanel LastChildFill="False">
+                            <StackPanel DockPanel.Dock="Left">
+                                <TextBlock Text="Look" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"/>
+                                <TextBlock Text="Midnight Gold is the original. Petalfall is ink, smoke and falling red petals."
+                                           FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                           FontFamily="{StaticResource FontChrome}" Margin="0,5,0,0" TextWrapping="Wrap" MaxWidth="480"
+                                           HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="TextLookHint" Text="" FontSize="11.5"
+                                           Foreground="{StaticResource BrushGoldValue}" FontFamily="{StaticResource FontChrome}"
+                                           Margin="0,6,0,0" TextWrapping="Wrap" HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="ButtonLookGold" Content="Midnight Gold" Style="{StaticResource PresetButtonStyle}" Width="130"/>
+                                <Button x:Name="ButtonLookPetalfall" Content="Petalfall" Style="{StaticResource PresetButtonStyle}" Width="110" Margin="10,0,0,0"/>
+                            </StackPanel>
                         </DockPanel>
                     </Border>
 

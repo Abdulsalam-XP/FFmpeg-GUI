@@ -32,17 +32,37 @@ function Import-Config {
             } else {
                 $global:RecentFiles = @()
             }
+
+            # The editor's timeline snapping (N). Absent in every settings.json written
+            # before the NLE track work, so a null here means "first run with this
+            # feature" rather than "the user turned it off" -- snapping defaults ON,
+            # which is what an NLE user expects of a fresh install.
+            if ($null -ne $config.TrimSnapEnabled) {
+                $global:TrimSnapEnabled = [bool]$config.TrimSnapEnabled
+            } else {
+                $global:TrimSnapEnabled = $true
+            }
+
+            # The visual theme ("Look"). Absent in every settings.json written before
+            # 2026-08-14 -- null means "the original Midnight Gold", never a fault.
+            $global:AppLook = if ("MidnightGold", "Petalfall" -contains [string]$config.AppLook) {
+                [string]$config.AppLook
+            } else { "MidnightGold" }
         }
         catch {
             $global:ShowAnimations = $true
             $global:ToolCheckCache = $null
             $global:RecentFiles = @()
+            $global:TrimSnapEnabled = $true
+            $global:AppLook = "MidnightGold"
             Save-Settings
         }
     } else {
         $global:ShowAnimations = $true
         $global:ToolCheckCache = $null
         $global:RecentFiles = @()
+        $global:TrimSnapEnabled = $true
+        $global:AppLook = "MidnightGold"
         Save-Settings
     }
 }
@@ -57,6 +77,8 @@ function Save-Settings {
             ShowAnimations = $global:ShowAnimations
             ToolCheckCache = $global:ToolCheckCache
             RecentFiles    = $global:RecentFiles
+            TrimSnapEnabled = $global:TrimSnapEnabled
+            AppLook        = $global:AppLook
         }
         # Depth 6 because the cache is nested three levels and ConvertTo-Json truncates at
         # depth 2 by default -- without this the cache round-trips as the literal string

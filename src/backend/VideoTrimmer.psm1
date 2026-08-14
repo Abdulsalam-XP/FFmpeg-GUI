@@ -66,11 +66,13 @@ function Get-TrimSourceProfile {
     $ffprobe = Get-ToolPath -Name "ffprobe" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
 
     # Field ORDER in the csv is ffprobe's own (the order the fields appear in its stream
-    # struct), NOT the order they are requested in -- verified against these recordings:
-    # codec_name,width,height,time_base. Adding a field can therefore shift the index of
-    # every field after it, which is why each one below is read by its fixed position.
+    # struct), NOT the order they are requested in -- verified live against a DVR clip:
+    # codec_name,width,height,r_frame_rate,time_base ("hevc,1152,864,120/1,1/90000"), so
+    # r_frame_rate sits BEFORE time_base and time_base's index moves from 3 to 4 accordingly.
+    # Adding a field can therefore shift the index of every field after it, which is why
+    # each one below is read by its fixed position.
     $videoRaw = & $ffprobe -v error -select_streams v:0 `
-        -show_entries stream=codec_name,width,height,time_base -of csv=p=0 $InputFile 2>&1
+        -show_entries stream=codec_name,width,height,r_frame_rate,time_base -of csv=p=0 $InputFile 2>&1
     $videoParts = ("$videoRaw").Trim() -split ','
     $codec = if ($videoParts.Count -ge 1) { $videoParts[0].Trim() } else { "" }
 
@@ -83,9 +85,16 @@ function Get-TrimSourceProfile {
     if ($videoParts.Count -ge 2 -and $videoParts[1].Trim() -match '^\d+$') { $width = [int]$videoParts[1].Trim() }
     if ($videoParts.Count -ge 3 -and $videoParts[2].Trim() -match '^\d+$') { $height = [int]$videoParts[2].Trim() }
 
-    # time_base arrives as "1/90000"; the denominator is the timescale.
+    # r_frame_rate arrives as "120/1" -- index 3, before time_base.
+    $fps = 120.0
+    if ($videoParts.Count -ge 4 -and $videoParts[3] -match '^\s*(\d+)\s*/\s*(\d+)\s*$') {
+        $num = [double]$Matches[1]; $den = [double]$Matches[2]
+        if ($den -gt 0.0) { $fps = $num / $den }
+    }
+
+    # time_base arrives as "1/90000"; the denominator is the timescale. Now index 4.
     $timeScale = 90000
-    if ($videoParts.Count -ge 4 -and $videoParts[3] -match '^\s*\d+\s*/\s*(\d+)\s*$') {
+    if ($videoParts.Count -ge 5 -and $videoParts[4] -match '^\s*\d+\s*/\s*(\d+)\s*$') {
         $timeScale = [int]$Matches[1]
     }
 
@@ -113,6 +122,7 @@ function Get-TrimSourceProfile {
         TimeScale    = $timeScale
         Width        = $width
         Height       = $height
+        Fps          = $fps
         AudioStreams = $audioRaw.Count
         SampleRate   = $sampleRate
         Channels     = $channels
@@ -236,9 +246,9 @@ function Export-CutListAsync {
         # Path -> seconds, probed by the app, for audio-clip tracks whose InEnd is 0 (means
         # "to the end of the clip"). Passed straight through to New-TrimAudioMixPlan.
         [hashtable]$ClipDurations = @{},
-        # Picture-in-picture spans (Start/End/Overlay), SOURCE time. Non-empty forces the
-        # rebuild path even on an otherwise-trivial stack, because a pip has to be composited
-        # onto the video during the segment re-encode.
+        # Picture-in-picture spans (Start/End/Overlay), TIMELINE (compacted) time. Non-empty
+        # forces the rebuild path even on an otherwise-trivial stack, because a pip has to be
+        # composited onto the video during the segment re-encode.
         [object[]]$PipSpans = @(),
         # Probed count of audio streams the SOURCE file itself has, -1 (default) for every
         # existing caller -- the legacy/unknown sentinel Test-TrackStackTrivial treats as
@@ -248,6 +258,16 @@ function Export-CutListAsync {
         # non-trivial and would silently fall through to stream-copying the source's
         # original, undeleted audio. See Get-TrimExportMode / Test-TrackStackTrivial.
         [int]$SourceAudioStreamCount = -1,
+        # NLE lane/clip stack (Task 5's New-TrimLane shape). Empty (the default, and every
+        # existing caller) means the legacy $Tracks pipeline above runs completely unchanged
+        # -- Get-TrimExportMode's lane branch only activates once this is non-empty.
+        [object[]]$Lanes = @(),
+        # Overlay spans over the lane stack (Get-TrimOverlaySpans shape), TIMELINE time.
+        # Used in place of $PipSpans whenever $Lanes is non-empty.
+        [object[]]$OverlaySpans = @(),
+        # Full timeline length including any lane content that runs past the last piece
+        # (Get-TrimTimelineLength). 0.0 (the default) means no extension past the cut list.
+        [double]$TimelineLength = 0.0,
         [scriptblock]$OnFinished = $null
     )
 
@@ -264,8 +284,11 @@ function Export-CutListAsync {
     # Everything below this line up to $stepCount is guarded by $mode so the trivial path
     # (no tracks, or an untouched stack with no pips) takes EXACTLY the pre-existing route:
     # no -an, no mix pass, no mux, no behavioral change of any kind. See Get-TrimExportMode
-    # for the decision, kept pure and unit-tested there rather than inlined here.
-    $mode = Get-TrimExportMode -Tracks $Tracks -PipSpans $PipSpans -SourceAudioStreamCount $SourceAudioStreamCount
+    # for the decision, kept pure and unit-tested there rather than inlined here. The lane
+    # branch inside Get-TrimExportMode only activates when $Lanes is non-empty, so a legacy
+    # caller (empty $Lanes, the default) reaches the exact same "trivial"/"rebuild"/
+    # "audio-only" decision it always did.
+    $mode = Get-TrimExportMode -Lanes $Lanes -MainPath $InputFile -SourceAudioStreamCount $SourceAudioStreamCount -Tracks $Tracks -PipSpans $PipSpans
     # A deleted video-main means there is no video pipeline at all -- the audio pass IS the
     # export, and it writes an audio container rather than an mp4.
     if ($mode -eq "audio-only") {
@@ -278,7 +301,8 @@ function Export-CutListAsync {
     # video-only, no-audio-stream-at-all output. Checked only for rebuild mode: audio-only
     # mode already requires an audio pass to have any output at all (a fully-muted,
     # video-main-deleted stack is a degenerate empty project, out of scope here).
-    $hasAudio = Test-TrackStackHasAudio -Tracks $Tracks
+    # SCALAR, direct assignment -- not @()-wrapped (trap #5 applies to arrays only).
+    $hasAudio = if (@($Lanes).Count -gt 0) { Test-TrimLaneStackHasAudio -Lanes $Lanes } else { Test-TrackStackHasAudio -Tracks $Tracks }
 
     # $work is the segment plan, not the piece list: with no fades the two are the same
     # thing (one copy step per piece), and with fades it also carries the transition
@@ -308,7 +332,17 @@ function Export-CutListAsync {
     # there actually are. audio-only mode has no video-main at all, so the whole video
     # pipeline is skipped: $work becomes empty and the audio pass is the only step.
     if ($mode -eq "rebuild") {
-        $work = Split-TrimSegmentsForPips -Segments $work -PipSpans $PipSpans
+        if (@($Lanes).Count -gt 0) {
+            # Lane content running past the last piece (e.g. a pip clip that keeps going
+            # after V1 ends) gets a black base segment to composite onto -- ordinary
+            # segments as far as the splitter/encoder/concat are concerned.
+            $work = $work + (Get-TrimExtensionSegments -Pieces $Pieces -FadeLengths $FadeLengths -TimelineLength $TimelineLength)
+        }
+        # ARRAY (trap #5): outer @() around the whole if/else, or the else branch's
+        # one-element array unwraps to a bare hashtable and Split-TrimSegmentsForPips'
+        # @($PipSpans) Where-Object below would iterate its properties instead of one span.
+        $effectiveSpans = @(if (@($Lanes).Count -gt 0) { @($OverlaySpans) } else { @($PipSpans) })
+        $work = Split-TrimSegmentsForPips -Segments $work -PipSpans $effectiveSpans
     } elseif ($mode -eq "audio-only") {
         $work = @()
     }
@@ -341,7 +375,7 @@ function Export-CutListAsync {
     # with no unmuted audio did NOT get those entries appended, so it keeps the "+1" and
     # reaches the implicit concat step exactly like trivial mode does.
     if ($appendsFinalSteps) { $stepCount = $work.Count }
-    $profile = Get-TrimSourceProfile -InputFile $InputFile
+    $sourceProfile = Get-TrimSourceProfile -InputFile $InputFile
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ffgui-cut-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     # Dedicated path for the audio-rebuild's mix pass. Written here (rather than inline in
@@ -365,8 +399,8 @@ function Export-CutListAsync {
         $seg = $work[$i]
         if (($seg.Kind -eq "burn" -or $seg.Kind -eq "transition") -and $seg.Captions) {
             $assPath = Join-Path $tempDir ("seg{0:D3}.ass" -f $i)
-            $assDoc = New-AssDocument -Captions $seg.Captions -PlayResX $profile.Width `
-                -PlayResY $profile.Height -TimeOffset $seg.Start
+            $assDoc = New-AssDocument -Captions $seg.Captions -PlayResX $sourceProfile.Width `
+                -PlayResY $sourceProfile.Height -TimeOffset $seg.Start
             [System.IO.File]::WriteAllText($assPath, $assDoc, (New-Object System.Text.UTF8Encoding($true)))
             $seg.AssFile = $assPath
         }
@@ -379,7 +413,7 @@ function Export-CutListAsync {
     # Every audio stream gets its own acrossfade. The DVR recordings carry two (system and
     # mic) and both have to survive a fade, or a crossfaded export would silently lose a
     # track that a plain export keeps.
-    $audioStreamCount = $profile.AudioStreams
+    $audioStreamCount = $sourceProfile.AudioStreams
     # Audio maps only. The video map is chosen per transition, because a transition that
     # also burns captions ends on a different filter label than one that does not.
     $fadeAudioMaps = @()
@@ -445,7 +479,7 @@ function Export-CutListAsync {
         $cancelButton = $cancelButton
         $startButton = $startButton
         $stepCount = $stepCount
-        $profile = $profile
+        $sourceProfile = $sourceProfile
         $buildFadeFilter = $buildFadeFilter
         $fadeAudioMaps = $fadeAudioMaps
         $mode = $mode
@@ -458,6 +492,9 @@ function Export-CutListAsync {
         $ClipDurations = $ClipDurations
         $audioMixOutput = $audioMixOutput
         $tempDir = $tempDir
+        $Lanes = $Lanes
+        $OverlaySpans = $OverlaySpans
+        $TimelineLength = $TimelineLength
 
         if ($StepIndex -lt $work.Count) {
             $segment = $work[$StepIndex]
@@ -465,7 +502,13 @@ function Export-CutListAsync {
                 # Mixes every unmuted audio-source/audio-clip track down to one AAC file.
                 # Runs for both "rebuild" (feeds the mux step below) and "audio-only"
                 # (writes the final output directly, already given a .m4a extension).
-                $plan = New-TrimAudioMixPlan -Tracks $Tracks -Pieces $Pieces -FadeLengths $FadeLengths -ClipDurations $ClipDurations
+                # Same {InputPaths, FilterComplex, OutputLabel} shape either way, so the
+                # arg assembly below is identical regardless of which plan built it.
+                $plan = if (@($Lanes).Count -gt 0) {
+                    New-TrimLaneAudioMixPlan -Lanes $Lanes -MainPath $InputFile -Pieces $Pieces -FadeLengths $FadeLengths -ClipDurations $ClipDurations -TimelineLength $TimelineLength
+                } else {
+                    New-TrimAudioMixPlan -Tracks $Tracks -Pieces $Pieces -FadeLengths $FadeLengths -ClipDurations $ClipDurations
+                }
                 $audioInputArgs = @()
                 foreach ($p in @($plan.InputPaths)) { $audioInputArgs += @("-i", "`"$p`"") }
                 $audioDest = if ($mode -eq "audio-only") { $outputFile } else { $audioMixOutput }
@@ -485,6 +528,35 @@ function Export-CutListAsync {
                           "-i", "`"$audioMixOutput`"",
                           "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
                           "`"$outputFile`"", "-y")
+            } elseif ($segment.Kind -eq "black") {
+                # Montage extension: a black base at source resolution/fps, encoded under
+                # the same encoder/timescale contract as every other re-encoding segment so
+                # the final concat stays a stream copy. -t BEFORE -i bounds the lavfi source.
+                $inv = [System.Globalization.CultureInfo]::InvariantCulture
+                $colorSrc = "color=black:s={0}x{1}:r={2}" -f $sourceProfile.Width, $sourceProfile.Height, ([double]$sourceProfile.Fps).ToString("0.###", $inv)
+                $args = @("-hide_banner", "-f", "lavfi", "-t", $segment.Duration, "-i", "`"$colorSrc`"")
+                if ($segment.Pips) {
+                    $extraInputArgs = @()
+                    $overlays = @()
+                    $pipInputIdx = 1
+                    foreach ($p in @($segment.Pips)) {
+                        if ($p.Kind -eq "image") {
+                            $extraInputArgs += @("-loop", "1", "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
+                        } else {
+                            $extraInputArgs += @("-ss", $p.SegmentClipStart, "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
+                        }
+                        $overlays += ,@{ InputIndex = $pipInputIdx; Kind = $p.Kind; Pip = $p.Pip }
+                        $pipInputIdx++
+                    }
+                    $graph = New-TrimOverlayChainV3 -Overlays $overlays -Width $sourceProfile.Width -Height $sourceProfile.Height
+                    $args = $args + $extraInputArgs + @("-filter_complex", "`"$graph`"", "-map", "`"[vout]`"")
+                } else {
+                    $args = $args + @("-map", "0:v")
+                }
+                $args = $args + @("-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                                  "-pix_fmt", "yuv420p",
+                                  "-video_track_timescale", $sourceProfile.TimeScale,
+                                  "-an", "`"$($tempFiles[$StepIndex])`"", "-y")
             } elseif ($segment.Pips) {
                 # A segment carrying pips re-encodes with an overlay chain even if its Kind
                 # is "cut" -- the pip has to be composited onto the frame, so a stream copy
@@ -503,8 +575,14 @@ function Export-CutListAsync {
                     # input's -t cutoff (e.g. a 6s segment with an unbounded 10s pip input
                     # produced a ~9.9s output). Bounding the pip input the same way the
                     # main input already is fixes it (verified: 5.99s for the same case).
-                    $extraInputArgs += @("-ss", $p.SegmentClipStart, "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
-                    $overlays += ,@{ InputIndex = $pipInputIdx; Pip = $p.Pip }
+                    # A still image has no in-point, so a pip whose Kind is "image" loops the
+                    # frame instead of seeking into it (Task 6: full-frame/image overlays).
+                    if ($p.Kind -eq "image") {
+                        $extraInputArgs += @("-loop", "1", "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
+                    } else {
+                        $extraInputArgs += @("-ss", $p.SegmentClipStart, "-t", $segment.Duration, "-i", "`"$($p.Path)`"")
+                    }
+                    $overlays += ,@{ InputIndex = $pipInputIdx; Kind = $p.Kind; Pip = $p.Pip }
                     $pipInputIdx++
                 }
                 # The segment's own crop/scale (zoom) and/or burned caption still has to
@@ -514,17 +592,20 @@ function Export-CutListAsync {
                 # instead of the chain's default [0:v] start.
                 $baseVf = ""
                 if ($segment.Zoom) {
-                    $baseVf = New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height
+                    $baseVf = New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $sourceProfile.Width -Height $sourceProfile.Height
                 }
                 if ($segment.AssFile) {
                     $assEsc = ConvertTo-AssFilterPath -Path $segment.AssFile
                     $baseVf = if ($baseVf) { "$baseVf,ass='$assEsc'" } else { "ass='$assEsc'" }
                 }
-                $overlayChain = New-PipOverlayChain -Overlays $overlays -Width $profile.Width -Height $profile.Height
+                # New-TrimOverlayChainV3 (Task 5): same [0:v]-rooted chain shape as
+                # New-PipOverlayChain, but each overlay's Kind/Pip decide full-frame
+                # (aspect-fit + pad) vs boxed pip, so this one function now covers both.
+                $overlayChain = New-TrimOverlayChainV3 -Overlays $overlays -Width $sourceProfile.Width -Height $sourceProfile.Height
                 if ($baseVf) {
-                    # New-PipOverlayChain always starts its chain from [0:v]; that first
-                    # overlay's input label is retargeted to [vbase] so it reads the
-                    # already-cropped/captioned frame instead of the raw source.
+                    # The chain's [0:v] only ever appears as the FIRST overlay's left input,
+                    # in both the full-frame and boxed-pip branches, so this retarget stays
+                    # exact regardless of which one the first overlay took.
                     $overlayChain = $overlayChain.Replace("[0:v][ov0]overlay", "[vbase][ov0]overlay")
                     $graph = "[0:v]$baseVf" + "[vbase];" + $overlayChain
                 } else {
@@ -535,9 +616,9 @@ function Export-CutListAsync {
                         $extraInputArgs +
                         @("-filter_complex", "`"$graph`"",
                           "-map", "`"[vout]`"",
-                          "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                          "-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                           "-pix_fmt", "yuv420p",
-                          "-video_track_timescale", $profile.TimeScale,
+                          "-video_track_timescale", $sourceProfile.TimeScale,
                           "-an",
                           "`"$($tempFiles[$StepIndex])`"", "-y")
             } elseif ($segment.Kind -eq "transition") {
@@ -559,11 +640,11 @@ function Export-CutListAsync {
                               "-filter_complex", "`"$(& $buildFadeFilter $fadeLength $assFile)`"",
                               "-map", "`"$videoLabel`"") +
                             $fadeAudioMaps +
-                            @("-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                            @("-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                               "-pix_fmt", "yuv420p",
-                              "-video_track_timescale", $profile.TimeScale,
+                              "-video_track_timescale", $sourceProfile.TimeScale,
                               "-c:a", "aac", "-b:a", "256k",
-                              "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                              "-ar", $sourceProfile.SampleRate, "-ac", $sourceProfile.Channels,
                               "`"$($tempFiles[$StepIndex])`"", "-y")
                 } else {
                     # Rebuild path: video-only. $buildFadeFilter -IncludeAudio:$false leaves
@@ -576,9 +657,9 @@ function Export-CutListAsync {
                               "-ss", $segment.NextStart, "-t", $fadeLength, "-i", "`"$InputFile`"",
                               "-filter_complex", "`"$(& $buildFadeFilter $fadeLength $assFile $false)`"",
                               "-map", "`"$videoLabel`"",
-                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                               "-pix_fmt", "yuv420p",
-                              "-video_track_timescale", $profile.TimeScale,
+                              "-video_track_timescale", $sourceProfile.TimeScale,
                               "-an",
                               "`"$($tempFiles[$StepIndex])`"", "-y")
                 }
@@ -597,27 +678,27 @@ function Export-CutListAsync {
                 # along with the footage.
                 $vf = "ass='$assEsc'"
                 if ($segment.Zoom) {
-                    $vf = "$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height),$vf"
+                    $vf = "$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $sourceProfile.Width -Height $sourceProfile.Height),$vf"
                 }
                 if ($mode -eq "trivial") {
                     $args = @("-hide_banner",
                               "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
                               "-vf", "`"$vf`"",
                               "-map", "0:v", "-map", "0:a",
-                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                               "-pix_fmt", "yuv420p",
-                              "-video_track_timescale", $profile.TimeScale,
+                              "-video_track_timescale", $sourceProfile.TimeScale,
                               "-c:a", "aac", "-b:a", "256k",
-                              "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                              "-ar", $sourceProfile.SampleRate, "-ac", $sourceProfile.Channels,
                               "`"$($tempFiles[$StepIndex])`"", "-y")
                 } else {
                     $args = @("-hide_banner",
                               "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
                               "-vf", "`"$vf`"",
                               "-map", "0:v",
-                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                               "-pix_fmt", "yuv420p",
-                              "-video_track_timescale", $profile.TimeScale,
+                              "-video_track_timescale", $sourceProfile.TimeScale,
                               "-an",
                               "`"$($tempFiles[$StepIndex])`"", "-y")
                 }
@@ -628,22 +709,22 @@ function Export-CutListAsync {
                 if ($mode -eq "trivial") {
                     $args = @("-hide_banner",
                               "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
-                              "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height)`"",
+                              "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $sourceProfile.Width -Height $sourceProfile.Height)`"",
                               "-map", "0:v", "-map", "0:a",
-                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                               "-pix_fmt", "yuv420p",
-                              "-video_track_timescale", $profile.TimeScale,
+                              "-video_track_timescale", $sourceProfile.TimeScale,
                               "-c:a", "aac", "-b:a", "256k",
-                              "-ar", $profile.SampleRate, "-ac", $profile.Channels,
+                              "-ar", $sourceProfile.SampleRate, "-ac", $sourceProfile.Channels,
                               "`"$($tempFiles[$StepIndex])`"", "-y")
                 } else {
                     $args = @("-hide_banner",
                               "-ss", $segment.Start, "-t", $segment.Duration, "-i", "`"$InputFile`"",
-                              "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $profile.Width -Height $profile.Height)`"",
+                              "-vf", "`"$(New-ZoomCropFilter -Zoom $segment.Zoom -Duration $segment.Duration -Width $sourceProfile.Width -Height $sourceProfile.Height)`"",
                               "-map", "0:v",
-                              "-c:v", $profile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
+                              "-c:v", $sourceProfile.VideoEncoder, "-preset", "veryfast", "-crf", "18",
                               "-pix_fmt", "yuv420p",
-                              "-video_track_timescale", $profile.TimeScale,
+                              "-video_track_timescale", $sourceProfile.TimeScale,
                               "-an",
                               "`"$($tempFiles[$StepIndex])`"", "-y")
                 }
@@ -689,6 +770,11 @@ function Export-CutListAsync {
                     if ($mode -eq "audio-only") { "writing audio only" } else { "mixing audio" }
                 } elseif ($work[$StepIndex].Kind -eq "mux") {
                     "finalizing..."
+                } elseif ($work[$StepIndex].Kind -eq "black") {
+                    # Checked before the generic Pips check: a black extension segment may
+                    # also carry .Pips, and this text names what is actually going on
+                    # (montage running past V1's end) rather than the generic overlay text.
+                    "extending past the end ($($StepIndex + 1) of $segCount)"
                 } elseif ($work[$StepIndex].Pips) {
                     "overlaying clip video ($($StepIndex + 1) of $segCount)"
                 } elseif ($work[$StepIndex].Kind -eq "transition") {
@@ -796,6 +882,65 @@ function Export-TrimThumbnail {
     & $ffmpeg -y -ss $Seconds -i $InputFile -frames:v 1 -vf "scale=-2:$Height" -q:v 4 $OutputFile 2>&1 | Out-Null
 }
 
+# One source audio stream, pulled out to its own playable file so the PREVIEW can play it:
+# WPF's MediaElement always decodes a container's default (first) audio stream and offers
+# no stream selection at all, so streams 2..N are inaudible while editing unless they get
+# a file of their own. Stream copy first (the DVR recordings carry AAC, which .m4a holds
+# as-is); the transcode fallback covers codecs mp4 refuses. Returns $true when the file
+# is there to play.
+function Export-TrimAudioStream {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputFile,
+        # ABSOLUTE ffprobe stream index, the same meaning StreamIdx has everywhere.
+        [Parameter(Mandatory = $true)][int]$StreamIndex,
+        [Parameter(Mandatory = $true)][string]$OutputFile,
+        # Non-zero decodes to 32-bit FLOAT PCM (.wav) with this many dB of gain
+        # pre-applied. Float samples cannot clip, so once the file exists EVERY fader
+        # value up to the headroom becomes a pure element-volume attenuation at
+        # playback time -- the editor trick: decode once, never re-encode on a gain
+        # change. No encoder runs (PCM is a raw write), so this is also faster than
+        # the old AAC bake ever was.
+        [double]$HeadroomDb = 0.0
+    )
+    $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
+    # -1 = "the first audio stream, whatever its absolute index": what an external
+    # audio clip's StreamIdx -1 means everywhere else (the export mix maps [n:a] too).
+    $mapSpec = $(if ($StreamIndex -ge 0) { "0:{0}" -f $StreamIndex } else { "0:a:0" })
+    # Reduced process priority: this runs right after a file load, exactly when the
+    # preview starts playing THE SAME multi-GB file -- at normal priority the
+    # extraction visibly stuttered playback until it finished.
+    $runAt = {
+        param($exe, $arguments, $priority)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = $arguments
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        try { $proc.PriorityClass = $priority } catch { }
+        $proc.WaitForExit()
+        return $proc.ExitCode
+    }
+    if ($HeadroomDb -gt 0.05) {
+        # InvariantCulture: a comma decimal in the filter string splits the ffmpeg option.
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        $mapArgs = '-hide_banner -y -i "{0}" -map {1} -vn -af volume={2}dB -c:a pcm_f32le "{3}"' -f `
+            $InputFile, $mapSpec, $HeadroomDb.ToString("0.#", $inv), $OutputFile
+        # BelowNormal, not Idle: the user cannot hear this stream at all until the
+        # file lands, and with no encoder in the chain it is over in seconds.
+        & $runAt $ffmpeg $mapArgs ([System.Diagnostics.ProcessPriorityClass]::BelowNormal) | Out-Null
+        return [bool](Test-Path -LiteralPath $OutputFile)
+    }
+    $idle = [System.Diagnostics.ProcessPriorityClass]::Idle
+    $mapArgs = '-hide_banner -y -i "{0}" -map {1} -vn -c:a copy "{2}"' -f $InputFile, $mapSpec, $OutputFile
+    $code = & $runAt $ffmpeg $mapArgs $idle
+    if ($code -ne 0 -or -not (Test-Path -LiteralPath $OutputFile)) {
+        $mapArgs = '-hide_banner -y -i "{0}" -map {1} -vn -c:a aac -b:a 192k "{2}"' -f $InputFile, $mapSpec, $OutputFile
+        & $runAt $ffmpeg $mapArgs $idle | Out-Null
+    }
+    return [bool](Test-Path -LiteralPath $OutputFile)
+}
+
 # One waveform strip PNG for a source-time window, drawn by ffmpeg itself.
 # showwavespic is a single decode pass over the audio only, so this is cheap
 # even on the 3GB recordings.
@@ -803,6 +948,19 @@ function Export-TrimThumbnail {
 # sqrt + draw=full + filter=peak, not the defaults: game audio is quiet on average
 # with sharp peaks, and a linear scale renders it as a hairline scribble. Peak-held
 # square-root scaling is what makes the strip read like an editor's waveform.
+# The waveform filtergraph, split out so the stream selection can be unit tested without
+# shelling out. -1 (the default) keeps the historical "[0:a:0]" label -- the FIRST audio
+# stream -- so every pre-existing caller renders byte-identically. A non-negative index is
+# an ABSOLUTE stream index (what Get-TrimAudioStreams reports and what a lane clip's
+# StreamIdx carries), hence "[0:N]" and not "[0:a:N]".
+function Get-TrimWaveformFilter {
+    # -Color: the app passes the active Look's waveform hue; the default keeps every
+    # pre-existing caller (and the filter test) byte-identical.
+    param([int]$StreamIndex = -1, [int]$Width = 1600, [int]$Height = 96, [string]$Color = "#3E9B84")
+    $label = if ($StreamIndex -ge 0) { "[0:$StreamIndex]" } else { "[0:a:0]" }
+    return "${label}aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=${Color}:scale=sqrt:draw=full:filter=peak"
+}
+
 function Export-TrimWaveform {
     param(
         [Parameter(Mandatory = $true)][string]$InputFile,
@@ -810,12 +968,14 @@ function Export-TrimWaveform {
         [Parameter(Mandatory = $true)][double]$DurationSeconds,
         [Parameter(Mandatory = $true)][string]$OutputFile,
         [int]$Width = 1600,
-        [int]$Height = 96
+        [int]$Height = 96,
+        [int]$StreamIndex = -1,
+        [string]$Color = "#3E9B84"
     )
     $ffmpeg = Get-ToolPath -Name "ffmpeg" -ScriptRoot (Split-Path $PSScriptRoot -Parent)
     & $ffmpeg -y -hide_banner -loglevel error `
         -ss $StartSeconds -t $DurationSeconds -i $InputFile `
-        -filter_complex "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=${Width}x${Height}:colors=#3E9B84:scale=sqrt:draw=full:filter=peak" `
+        -filter_complex (Get-TrimWaveformFilter -StreamIndex $StreamIndex -Width $Width -Height $Height -Color $Color) `
         -frames:v 1 $OutputFile 2>&1 | Out-Null
 }
 
@@ -862,8 +1022,10 @@ function Split-TrimSegmentsForPips {
             foreach ($sp in $overlapping) {
                 if ($mid -gt [double]$sp.Start -and $mid -lt [double]$sp.End) {
                     $ov = $sp.Overlay
+                    # Legacy v2 spans carry TrackId; lane spans (Task 5) carry ClipId instead.
                     $pips += ,@{
-                        TrackId = $ov.TrackId; Path = $ov.Path; Pip = $ov.Pip
+                        TrackId = $(if ($ov.ContainsKey("ClipId")) { $ov.ClipId } else { $ov.TrackId })
+                        Path = $ov.Path; Pip = $ov.Pip; Kind = $ov.Kind
                         SegmentClipStart = [double]$ov.InStart + ($t0 - [double]$sp.Start)
                     }
                 }
@@ -886,7 +1048,16 @@ function Split-TrimSegmentsForPips {
 #   "audio-only" -- no video-main in the stack at all: only the audio pass runs, and it
 #                   writes the final output directly.
 function Get-TrimExportMode {
-    param([object[]]$Tracks = @(), [object[]]$PipSpans = @(), [int]$SourceAudioStreamCount = -1)
+    param(
+        [object[]]$Tracks = @(), [object[]]$PipSpans = @(), [int]$SourceAudioStreamCount = -1,
+        [object[]]$Lanes = @(), [string]$MainPath = ""
+    )
+    if (@($Lanes).Count -gt 0) {
+        if (-not (Test-TrimLaneStackHasVideo -Lanes $Lanes)) { return "audio-only" }
+        if (Test-TrimLaneStackTrivial -Lanes $Lanes -MainPath $MainPath -SourceAudioStreamCount $SourceAudioStreamCount) { return "trivial" }
+        return "rebuild"
+    }
+    # ---- legacy v2 arm below: UNCHANGED, byte for byte ----
     if (@($Tracks).Count -eq 0) { return "trivial" }
     $mains = @(@($Tracks) | Where-Object { $_.Kind -eq "video-main" })
     if ($mains.Count -eq 0) { return "audio-only" }
@@ -910,6 +1081,6 @@ function Test-TrackStackHasAudio {
 }
 
 Export-ModuleMember -Function Export-CutListAsync, ConvertFrom-KeyframeOutput, Get-KeyframeTimes, `
-    Export-TrimThumbnail, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
-    ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
+    Export-TrimThumbnail, Export-TrimAudioStream, Get-TrimSourceProfile, Get-TrimSegmentPlan, Export-TrimFadeProxy, `
+    ConvertTo-AssFilterPath, Export-TrimWaveform, Get-TrimWaveformFilter, Get-TrimAudioStreams, Split-TrimSegmentsForPips, `
     Get-TrimExportMode, Test-TrackStackHasAudio, Get-TrimClipDuration
