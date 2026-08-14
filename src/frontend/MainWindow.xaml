@@ -35,6 +35,12 @@
             </Ellipse>
         </Grid>
 
+        <!-- Midnight Gold look only: the "Carina Sea" nebula sky, built entirely from
+             code (two pre-rendered cloud bitmaps that drift against each other, a star
+             field, twinkling and spiked stars). Empty in Petalfall. Behind everything,
+             never hit-test visible. -->
+        <Grid x:Name="GridLookNebula" IsHitTestVisible="False" Grid.ColumnSpan="2" ClipToBounds="True"/>
+
         <!-- Petalfall look only: falling petals, drawn from code onto this layer. ZIndex
              puts them OVER the whole window; the approved mockup drifts petals across
              panels and preview alike, and hit-testing stays off so they never eat a click. -->

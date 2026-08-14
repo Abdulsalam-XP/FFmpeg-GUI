@@ -9408,6 +9408,231 @@ try {
     }
     Start-LookPetals
 
+    # ---- Midnight Gold: the "Carina Sea" nebula sky -----------------------------------
+    # The mockup the user picked: a teal-green nebula sea with golden pillar clouds, a
+    # star field, and a few bright stars with four-point diffraction spikes. The clouds
+    # are painted ONCE into two frozen bitmaps (soft radial puffs deposited along
+    # momentum random-walk filaments, plus dark dust puffs) and per frame the two
+    # bitmaps only drift and breathe against each other -- transform and opacity writes,
+    # zero layout passes, no per-frame drawing.
+    function Add-LookNebulaFilament {
+        param($Dc, $Rand, $W, $H, $K, $F)
+        $x = [double]$F.X * $W
+        $y = [double]$F.Y * $H
+        $ang = [double]$F.Ang
+        $n = [int]$F.N
+        for ($i = 0; $i -lt $n; $i++) {
+            $u = $i / [double]$n
+            $ang = $ang + ($Rand.NextDouble() - 0.5) * [double]$F.Wobble
+            $step = [double]$F.Step * $K * (0.6 + $Rand.NextDouble() * 0.8)
+            $x = $x + [math]::Cos($ang) * $step
+            $y = $y + [math]::Sin($ang) * $step
+            $r = ([double]$F.R0 + ([double]$F.R1 - [double]$F.R0) * $u + $Rand.NextDouble() * [double]$F.Rj) * $K
+            $col = $F.Colors[$Rand.Next(@($F.Colors).Count)]
+            $jx = $x + ($Rand.NextDouble() - 0.5) * [double]$F.Spread * $K
+            $jy = $y + ($Rand.NextDouble() - 0.5) * [double]$F.Spread * $K
+            # WPF composites alpha-over (not the mockup's additive 'lighter'), so these
+            # alphas run about twice the mockup's to land on the same visual density.
+            $c0 = [System.Windows.Media.Color]::FromArgb([byte](255.0 * [double]$F.A), [byte]$col[0], [byte]$col[1], [byte]$col[2])
+            $c1 = [System.Windows.Media.Color]::FromArgb([byte](255.0 * [double]$F.A * 0.4), [byte]$col[0], [byte]$col[1], [byte]$col[2])
+            $c2 = [System.Windows.Media.Color]::FromArgb(0, [byte]$col[0], [byte]$col[1], [byte]$col[2])
+            $gsc = New-Object System.Windows.Media.GradientStopCollection
+            $gsc.Add((New-Object System.Windows.Media.GradientStop($c0, 0.0)))
+            $gsc.Add((New-Object System.Windows.Media.GradientStop($c1, 0.6)))
+            $gsc.Add((New-Object System.Windows.Media.GradientStop($c2, 1.0)))
+            $rb = [System.Windows.Media.RadialGradientBrush]::new($gsc)
+            $rb.Freeze()
+            $Dc.DrawEllipse($rb, $null, (New-Object System.Windows.Point($jx, $jy)), $r, $r)
+        }
+    }
+
+    function New-LookNebulaLayer {
+        param($Rand, $Filaments, $Dust)
+        $W = 1600.0; $H = 900.0; $K = 1.33
+        $dv = New-Object System.Windows.Media.DrawingVisual
+        $dc = $dv.RenderOpen()
+        foreach ($f in $Filaments) { Add-LookNebulaFilament -Dc $dc -Rand $Rand -W $W -H $H -K $K -F $f }
+        foreach ($d in @($Dust)) {
+            if ($null -eq $d) { continue }
+            $x = [double]$d.X * $W; $y = [double]$d.Y * $H; $ang = [double]$d.Ang
+            for ($i = 0; $i -lt [int]$d.N; $i++) {
+                $ang = $ang + ($Rand.NextDouble() - 0.5) * 0.8
+                $x = $x + [math]::Cos($ang) * [double]$d.Step * $K
+                $y = $y + [math]::Sin($ang) * [double]$d.Step * $K
+                $r = [double]$d.R * $K * (0.6 + $Rand.NextDouble() * 0.8)
+                $c0 = [System.Windows.Media.Color]::FromArgb([byte](255.0 * [double]$d.A), 6, 8, 14)
+                $c2 = [System.Windows.Media.Color]::FromArgb(0, 6, 8, 14)
+                $gsc = New-Object System.Windows.Media.GradientStopCollection
+                $gsc.Add((New-Object System.Windows.Media.GradientStop($c0, 0.0)))
+                $gsc.Add((New-Object System.Windows.Media.GradientStop($c2, 1.0)))
+                $rb = [System.Windows.Media.RadialGradientBrush]::new($gsc)
+                $rb.Freeze()
+                $dc.DrawEllipse($rb, $null, (New-Object System.Windows.Point($x, $y)), $r, $r)
+            }
+        }
+        $dc.Close()
+        $rtb = New-Object System.Windows.Media.Imaging.RenderTargetBitmap(1600, 900, 96.0, 96.0, ([System.Windows.Media.PixelFormats]::Pbgra32))
+        $rtb.Render($dv)
+        $rtb.Freeze()
+        return $rtb
+    }
+
+    function Start-LookNebula {
+        if ([string]$global:AppLook -ne "MidnightGold") { return }
+        $nebGrid = $ctx.Window.FindName("GridLookNebula")
+        if ($null -eq $nebGrid) { return }
+        # The nebula replaces the four corner glows outright (user: "completely rework
+        # the background").
+        $nebGlows = $ctx.Window.FindName("GridBackgroundGlows")
+        if ($null -ne $nebGlows) { $nebGlows.Visibility = "Collapsed" }
+        $script:LookNebulaGrid = $nebGrid
+        # Fixed seed: the same sky every launch, so the backdrop reads as a place, not
+        # static noise.
+        $rand = New-Object System.Random(20260814)
+        $teal   = @(@(42,107,102), @(58,140,128), @(30,75,78))
+        $tealHi = @(@(58,140,128), @(84,168,150), @(42,107,102))
+        $tealLo = @(@(30,75,78), @(42,107,102))
+        $gold   = @(@(199,154,85), @(166,124,62), @(138,107,58))
+        $goldHi = @(@(232,217,168), @(199,154,85))
+        $layerA = New-LookNebulaLayer -Rand $rand -Filaments @(
+            @{ X=0.10; Y=0.30; Ang=0.3; N=170; Step=7; Wobble=0.8; Spread=120; R0=30; R1=64; Rj=26; A=0.10; Colors=$teal },
+            @{ X=0.55; Y=0.75; Ang=3.6; N=130; Step=7; Wobble=0.9; Spread=110; R0=26; R1=56; Rj=22; A=0.09; Colors=$tealHi },
+            @{ X=0.40; Y=0.85; Ang=4.9; N=110; Step=6; Wobble=0.7; Spread=55; R0=18; R1=40; Rj=16; A=0.12; Colors=$gold },
+            @{ X=0.52; Y=0.90; Ang=4.6; N=80; Step=6; Wobble=0.6; Spread=40; R0=14; R1=30; Rj=12; A=0.13; Colors=$goldHi },
+            @{ X=0.80; Y=0.20; Ang=2.4; N=90; Step=6; Wobble=1.0; Spread=80; R0=20; R1=44; Rj=18; A=0.08; Colors=$tealLo }
+        ) -Dust @(
+            @{ X=0.46; Y=0.70; Ang=4.4; N=30; Step=7; R=20; A=0.45 },
+            @{ X=0.86; Y=0.60; Ang=2.0; N=24; Step=8; R=24; A=0.35 }
+        )
+        $layerB = New-LookNebulaLayer -Rand $rand -Filaments @(
+            @{ X=0.25; Y=0.55; Ang=0.9; N=120; Step=7; Wobble=1.0; Spread=110; R0=24; R1=52; Rj=22; A=0.08; Colors=$tealHi },
+            @{ X=0.60; Y=0.35; Ang=2.9; N=70; Step=6; Wobble=0.8; Spread=60; R0=16; R1=36; Rj=14; A=0.09; Colors=$goldHi }
+        ) -Dust $null
+        # Oversize by 40px on every side so the +/-16px drift never exposes an edge.
+        $imgA = New-Object System.Windows.Controls.Image
+        $imgA.Source = $layerA
+        $imgA.Stretch = [System.Windows.Media.Stretch]::Fill
+        $imgA.Margin = New-Object System.Windows.Thickness(-40.0)
+        $ttA = New-Object System.Windows.Media.TranslateTransform
+        $imgA.RenderTransform = $ttA
+        [void]$nebGrid.Children.Add($imgA)
+        $imgB = New-Object System.Windows.Controls.Image
+        $imgB.Source = $layerB
+        $imgB.Stretch = [System.Windows.Media.Stretch]::Fill
+        $imgB.Margin = New-Object System.Windows.Thickness(-40.0)
+        $imgB.Opacity = 0.85
+        $ttB = New-Object System.Windows.Media.TranslateTransform
+        $imgB.RenderTransform = $ttB
+        [void]$nebGrid.Children.Add($imgB)
+        $starCanvas = New-Object System.Windows.Controls.Canvas
+        $starCanvas.ClipToBounds = $true
+        [void]$nebGrid.Children.Add($starCanvas)
+        $script:LookNebulaTwinkles = New-Object System.Collections.ArrayList
+        $script:LookNebulaBrights = New-Object System.Collections.ArrayList
+        $starBc = New-Object "System.Windows.Media.BrushConverter"
+        $coolStar = $starBc.ConvertFromString("#DCE7F5"); $coolStar.Freeze()
+        $warmStar = $starBc.ConvertFromString("#EFDCB2"); $warmStar.Freeze()
+        # Star positions live in a nominal 2600x1460 field (same convention as the
+        # petals); ClipToBounds trims whatever falls outside a smaller window.
+        $NW = 2600.0; $NH = 1460.0
+        for ($i = 0; $i -lt 250; $i++) {
+            $e = New-Object System.Windows.Shapes.Ellipse
+            $d = 0.7 + $rand.NextDouble() * 1.9
+            $e.Width = $d; $e.Height = $d
+            $e.Fill = $(if ($rand.NextDouble() -lt 0.22) { $warmStar } else { $coolStar })
+            $starBase = 0.25 + $rand.NextDouble() * 0.5
+            $e.Opacity = $starBase
+            [System.Windows.Controls.Canvas]::SetLeft($e, $rand.NextDouble() * $NW)
+            [System.Windows.Controls.Canvas]::SetTop($e, $rand.NextDouble() * $NH)
+            [void]$starCanvas.Children.Add($e)
+            if ($i -lt 40) {
+                [void]$script:LookNebulaTwinkles.Add(@{
+                    El = $e; Base = $starBase; Amp = 0.15 + $rand.NextDouble() * 0.35
+                    Speed = 0.4 + $rand.NextDouble() * 1.8; Phase = $rand.NextDouble() * 6.283 })
+            }
+        }
+        # The photo stars: a hot core, a soft tinted glow, four diffraction spikes.
+        $brightSpecs = @(
+            @{ X=0.375; Y=0.62; S=7.0; C=@(255,214,150); Ph=0.7 },
+            @{ X=0.685; Y=0.205; S=5.2; C=@(220,238,255); Ph=2.6 },
+            @{ X=0.155; Y=0.145; S=4.4; C=@(255,224,170); Ph=4.1 }
+        )
+        foreach ($bs in $brightSpecs) {
+            $g = New-Object System.Windows.Controls.Canvas
+            $R = [double]$bs.S * 6.0
+            $glow = New-Object System.Windows.Shapes.Ellipse
+            $glow.Width = $R * 2.0; $glow.Height = $R * 2.0
+            $gc0 = [System.Windows.Media.Color]::FromArgb(200, [byte]$bs.C[0], [byte]$bs.C[1], [byte]$bs.C[2])
+            $gc1 = [System.Windows.Media.Color]::FromArgb(70, [byte]$bs.C[0], [byte]$bs.C[1], [byte]$bs.C[2])
+            $gc2 = [System.Windows.Media.Color]::FromArgb(0, [byte]$bs.C[0], [byte]$bs.C[1], [byte]$bs.C[2])
+            $ggsc = New-Object System.Windows.Media.GradientStopCollection
+            $ggsc.Add((New-Object System.Windows.Media.GradientStop($gc0, 0.0)))
+            $ggsc.Add((New-Object System.Windows.Media.GradientStop($gc1, 0.25)))
+            $ggsc.Add((New-Object System.Windows.Media.GradientStop($gc2, 1.0)))
+            $grb = [System.Windows.Media.RadialGradientBrush]::new($ggsc)
+            $grb.Freeze()
+            $glow.Fill = $grb
+            [System.Windows.Controls.Canvas]::SetLeft($glow, -$R)
+            [System.Windows.Controls.Canvas]::SetTop($glow, -$R)
+            [void]$g.Children.Add($glow)
+            $L = [double]$bs.S * 7.0
+            $spikeBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(190, 235, 244, 255))
+            $spikeBrush.Freeze()
+            $spikeW = [math]::Max(1.0, [double]$bs.S * 0.22)
+            $lineH = New-Object System.Windows.Shapes.Line
+            $lineH.X1 = -$L; $lineH.Y1 = 0.0; $lineH.X2 = $L; $lineH.Y2 = 0.0
+            $lineH.Stroke = $spikeBrush; $lineH.StrokeThickness = $spikeW
+            [void]$g.Children.Add($lineH)
+            $lineV = New-Object System.Windows.Shapes.Line
+            $lineV.X1 = 0.0; $lineV.Y1 = -$L; $lineV.X2 = 0.0; $lineV.Y2 = $L
+            $lineV.Stroke = $spikeBrush; $lineV.StrokeThickness = $spikeW
+            [void]$g.Children.Add($lineV)
+            $core = New-Object System.Windows.Shapes.Ellipse
+            $coreD = [double]$bs.S * 1.8
+            $core.Width = $coreD; $core.Height = $coreD
+            $core.Fill = [System.Windows.Media.Brushes]::White
+            [System.Windows.Controls.Canvas]::SetLeft($core, -$coreD / 2.0)
+            [System.Windows.Controls.Canvas]::SetTop($core, -$coreD / 2.0)
+            [void]$g.Children.Add($core)
+            [System.Windows.Controls.Canvas]::SetLeft($g, [double]$bs.X * $NW)
+            [System.Windows.Controls.Canvas]::SetTop($g, [double]$bs.Y * $NH)
+            [void]$starCanvas.Children.Add($g)
+            [void]$script:LookNebulaBrights.Add(@{ El = $g; Phase = [double]$bs.Ph })
+        }
+        $script:LookNebula = @{ A = $ttA; B = $ttB; BImg = $imgB }
+        if (-not $global:ShowAnimations) { return }
+        $script:LookNebulaClock = 0.0
+        $script:LookNebulaStamp = [datetime]::UtcNow
+        $script:LookNebulaTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $script:LookNebulaTimer.Interval = [timespan]::FromMilliseconds(33)
+        $script:LookNebulaTimer.Add_Tick({ Update-LookNebula })
+        $script:LookNebulaTimer.Start()
+    }
+
+    function Update-LookNebula {
+        $now = [datetime]::UtcNow
+        $dt = ($now - $script:LookNebulaStamp).TotalSeconds
+        $script:LookNebulaStamp = $now
+        if ($dt -le 0 -or $dt -gt 0.5) { return }
+        if ($ctx.Window.WindowState -eq [System.Windows.WindowState]::Minimized) { return }
+        $script:LookNebulaClock = $script:LookNebulaClock + $dt
+        $t = $script:LookNebulaClock
+        $nb = $script:LookNebula
+        if ($null -eq $nb) { return }
+        $nb.A.X = [math]::Sin($t * 0.045) * 14.0
+        $nb.A.Y = [math]::Cos($t * 0.038) * 11.0
+        $nb.B.X = [math]::Cos($t * 0.03) * -16.0
+        $nb.B.Y = [math]::Sin($t * 0.05) * 12.0
+        $nb.BImg.Opacity = 0.75 + 0.25 * [math]::Sin($t * 0.09)
+        foreach ($s in $script:LookNebulaTwinkles) {
+            $s.El.Opacity = [math]::Max(0.05, $s.Base + $s.Amp * [math]::Sin($t * $s.Speed + $s.Phase))
+        }
+        foreach ($b in $script:LookNebulaBrights) {
+            $b.El.Opacity = 0.85 + 0.15 * [math]::Sin($t * 0.8 + $b.Phase)
+        }
+    }
+    Start-LookNebula
+
     $toolRows = @{
         ffmpeg    = @{ Version = $panelSettings.FindName("TextToolVersionFfmpeg")
                        Path = $panelSettings.FindName("TextToolPathFfmpeg")
