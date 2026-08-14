@@ -1177,16 +1177,114 @@ try {
         return $ok
     }
 
+    # Write-through for the prompt buttons: they are GetNewClosure'd handlers, where a
+    # bare $script: write would land in the closure's own module.
+    function Set-TrimSavePromptResult {
+        param([string]$Value)
+        $script:TrimSavePromptResult = $Value
+    }
+
+    # The APP-THEMED save prompt (user ask 2026-08-14: no native message boxes). Returns
+    # "Yes", "No" or "Cancel". Code-built like the rest of the dynamic UI; borderless
+    # with the Midnight Gold card chrome. Keys: Enter/Y = save, N = discard, Esc = cancel.
+    function Show-TrimSavePrompt {
+        param([string]$Leaf)
+        $script:TrimSavePromptResult = "Cancel"
+        $bc = New-Object System.Windows.Media.BrushConverter
+
+        $dlg = New-Object System.Windows.Window
+        $dlg.WindowStyle = "None"
+        $dlg.AllowsTransparency = $true
+        $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+        $dlg.SizeToContent = "WidthAndHeight"
+        $dlg.ResizeMode = "NoResize"
+        $dlg.ShowInTaskbar = $false
+        $dlg.WindowStartupLocation = "CenterOwner"
+        try { $dlg.Owner = $ctx.Window } catch { $dlg.WindowStartupLocation = "CenterScreen" }
+
+        $card = New-Object System.Windows.Controls.Border
+        $card.Background = $bc.ConvertFromString("#0E1626")
+        $card.BorderBrush = $bc.ConvertFromString("#2A3B52")
+        $card.BorderThickness = New-Object System.Windows.Thickness(1)
+        $card.CornerRadius = New-Object System.Windows.CornerRadius(10)
+        $card.Padding = New-Object System.Windows.Thickness(26, 22, 26, 22)
+        $card.Margin = New-Object System.Windows.Thickness(12)
+        $card.Effect = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $card.Effect.BlurRadius = 24
+        $card.Effect.ShadowDepth = 0
+        $card.Effect.Opacity = 0.6
+        $dlg.Content = $card
+
+        $stack = New-Object System.Windows.Controls.StackPanel
+        $card.Child = $stack
+
+        $title = New-Object System.Windows.Controls.TextBlock
+        $title.Text = "Save your work?"
+        $title.FontSize = 17
+        $title.FontWeight = "Bold"
+        $title.Foreground = $bc.ConvertFromString("#E0C48F")
+        try { $title.FontFamily = $ctx.Window.FindResource("FontChrome") } catch { }
+        [void]$stack.Children.Add($title)
+
+        $body = New-Object System.Windows.Controls.TextBlock
+        $body.Text = "Keep the edit for `"$Leaf`"?"
+        $body.FontSize = 12.5
+        $body.Foreground = $bc.ConvertFromString("#C9D6E4")
+        $body.TextWrapping = "Wrap"
+        $body.MaxWidth = 420
+        $body.Margin = New-Object System.Windows.Thickness(0, 10, 0, 20)
+        try { $body.FontFamily = $ctx.Window.FindResource("FontChrome") } catch { }
+        [void]$stack.Children.Add($body)
+
+        $buttons = New-Object System.Windows.Controls.StackPanel
+        $buttons.Orientation = "Horizontal"
+        $buttons.HorizontalAlignment = "Right"
+        [void]$stack.Children.Add($buttons)
+
+        foreach ($def in @(
+            @{ Label = "Save"; Result = "Yes"; Hero = $true; Default = $true; Cancel = $false },
+            @{ Label = "Don't save"; Result = "No"; Hero = $false; Default = $false; Cancel = $false },
+            @{ Label = "Cancel"; Result = "Cancel"; Hero = $false; Default = $false; Cancel = $true }
+        )) {
+            $btn = New-Object System.Windows.Controls.Button
+            $btn.Content = [string]$def.Label
+            $styleName = $(if ($def.Hero) { "HeroButtonStyle" } else { "PresetButtonStyle" })
+            try { $btn.Style = $ctx.Window.FindResource($styleName) } catch { }
+            $btn.MinWidth = 110
+            $btn.Margin = New-Object System.Windows.Thickness(10, 0, 0, 0)
+            $btn.IsDefault = [bool]$def.Default
+            $btn.IsCancel = [bool]$def.Cancel
+            $thisResult = [string]$def.Result
+            $thisDlg = $dlg
+            $btn.Add_Click({
+                Set-TrimSavePromptResult -Value $thisResult
+                $thisDlg.Close()
+            }.GetNewClosure())
+            [void]$buttons.Children.Add($btn)
+        }
+
+        # Plain Y / N answer it too (the same accelerators the old native box had).
+        $dlg.Add_PreviewKeyDown({
+            param($eventSource, $e)
+            if ($e.Key -eq [System.Windows.Input.Key]::Y) {
+                Set-TrimSavePromptResult -Value "Yes"; $eventSource.Close(); $e.Handled = $true
+            } elseif ($e.Key -eq [System.Windows.Input.Key]::N) {
+                Set-TrimSavePromptResult -Value "No"; $eventSource.Close(); $e.Handled = $true
+            }
+        })
+
+        [void]$dlg.ShowDialog()
+        return [string]$script:TrimSavePromptResult
+    }
+
     # Yes/No/Cancel before dirty work is lost. Returns $true when the caller may proceed
     # (saved or discarded), $false when the user cancelled the close/switch.
     function Confirm-TrimUnsavedWork {
         if (-not $script:TrimProjectDirty -or -not $script:TrimInputFile) { return $true }
         $leaf = [System.IO.Path]::GetFileName([string]$script:TrimInputFile)
-        $answer = [System.Windows.MessageBox]::Show(
-            "Save your edit for `"$leaf`"?", "FFmpeg GUI",
-            [System.Windows.MessageBoxButton]::YesNoCancel, [System.Windows.MessageBoxImage]::Question)
-        if ($answer -eq [System.Windows.MessageBoxResult]::Cancel) { return $false }
-        if ($answer -eq [System.Windows.MessageBoxResult]::Yes) { [void](Invoke-TrimProjectSaveNow -Quiet) }
+        $answer = Show-TrimSavePrompt -Leaf $leaf
+        if ($answer -eq "Cancel") { return $false }
+        if ($answer -eq "Yes") { [void](Invoke-TrimProjectSaveNow -Quiet) }
         $script:TrimProjectDirty = $false
         return $true
     }
