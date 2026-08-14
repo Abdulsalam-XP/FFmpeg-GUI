@@ -63,7 +63,12 @@ Copy-Item -Path (Join-Path $src "*") -Destination $stage -Recurse -Force
 
 $strip = @(
     (Join-Path $stage "backend\Tests"),
-    (Join-Path $stage "assets\settings.json")
+    (Join-Path $stage "assets\settings.json"),
+    # The project store: the developer's own saved edits (one .ffgui.json per video,
+    # gitignored). The app recreates the folder on first save.
+    (Join-Path $stage "assets\projects"),
+    # A probe copy only exists if a harness run died mid-way; never ship it.
+    (Join-Path $stage "Video-Audio-Tool.probe.ps1")
 )
 foreach ($path in $strip) {
     if (Test-Path $path) { Remove-Item $path -Recurse -Force }
@@ -79,11 +84,16 @@ foreach ($doc in @("README.md", "WHATS_NEW.txt", "THIRD-PARTY-NOTICES.txt")) {
 # Fail loudly if the layout a user depends on is wrong, rather than at their end.
 foreach ($expected in @("Launcher.exe", "Video-Audio-Tool.ps1", "bin\ffmpeg.exe",
                         "bin\ffprobe.exe", "bin\yt-dlp.exe", "frontend\MainWindow.xaml",
-                        "backend\ToolUpdates.psm1", "WHATS_NEW.txt")) {
+                        "backend\ToolUpdates.psm1", "WHATS_NEW.txt",
+                        "sections\10-shell-panels.ps1", "sections\85-tools-card.ps1")) {
     if (-not (Test-Path (Join-Path $stage $expected))) { throw "Staged package is missing $expected" }
+}
+if ((Get-ChildItem (Join-Path $stage "sections") -Filter "*.ps1").Count -ne 16) {
+    throw "Staged package does not hold exactly 16 section files"
 }
 if (Test-Path (Join-Path $stage "backend\Tests")) { throw "Tests leaked into the package" }
 if (Test-Path (Join-Path $stage "assets\settings.json")) { throw "settings.json leaked into the package" }
+if (Get-ChildItem $stage -Recurse -Force -Filter "*.ffgui.json") { throw "Saved projects leaked into the package" }
 
 # Media never belongs in the package, and src\.gitignore hides exactly this class of file
 # from git status, so nothing else would catch it. A v2.1.0 build shipped a 111 MB gameplay
