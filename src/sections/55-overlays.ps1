@@ -419,8 +419,12 @@
         param([double]$BoxW, [double]$BoxH)
         $zx = 1.0 / [math]::Max(0.01, $BoxW)
         $zy = 1.0 / [math]::Max(0.01, $BoxH)
-        if ([math]::Abs($BoxW - $BoxH) -lt 0.005) { return ("{0:N1}x" -f $zx) }
-        return ("{0:N1}x / {1:N1}x" -f $zx, $zy)
+        # InvariantCulture: "{0:N1}" follows the OS locale, and on comma-decimal systems
+        # the badge read "2,5x". The badge is a ratio, not prose; it renders the same
+        # everywhere.
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        if ([math]::Abs($BoxW - $BoxH) -lt 0.005) { return ($zx.ToString("0.0", $inv) + "x") }
+        return ($zx.ToString("0.0", $inv) + "x / " + $zy.ToString("0.0", $inv) + "x")
     }
 
     function Hide-ZoomPill {

@@ -22,6 +22,10 @@
             Lanes           = @(foreach ($l in $script:TrimLanes) { Copy-TrimLaneObj -Lane $l })
             SelectedClip    = $script:TrimSelectedClip
             SelectedLane    = $script:TrimSelectedLane
+            # Cloned so a later toggle cannot mutate the stored snapshot; values are
+            # plain doubles, a shallow clone is a deep one.
+            Fades           = $script:TrimFades.Clone()
+            ActiveFade      = $script:TrimActiveFade
         }
     }
 
@@ -128,6 +132,16 @@
             $script:TrimSelectedClip = $last.SelectedClip
             $script:TrimSelectedLane = $last.SelectedLane
             Update-TrimLaneRows
+        }
+        # Same "only restore what was recorded" rule for fades: entries pushed before
+        # fades joined the snapshot carry no Fades key, and treating that as "no fades"
+        # would wipe every dissolve. Cloned again on the way OUT, so a post-undo toggle
+        # cannot mutate the snapshot still sitting on the redo stack.
+        if ($last.ContainsKey("Fades")) {
+            $script:TrimFades = $last.Fades.Clone()
+            $script:TrimActiveFade = $last.ActiveFade
+            Sync-TrimFadeLengthButtons
+            Update-TrimFadeOverlay -SourceSeconds $script:TrimPlayhead
         }
         $buttonTrimDelete.IsEnabled = ($script:TrimSelected -ge 0)
         $buttonTrimUndo.IsEnabled = ($script:TrimUndoStack.Count -gt 0)

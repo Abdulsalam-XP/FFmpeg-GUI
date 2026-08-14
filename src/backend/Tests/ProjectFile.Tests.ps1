@@ -215,6 +215,22 @@ Describe "Save-TrimProject / Read-TrimProject schema v3 (lanes)" {
         $l[3].Kind | Should Be "audio"
         $l[3].Clips[0].Offset | Should Be 2.0
     }
+    It "clamps a corrupt Pip on the v2 track path too" {
+        $v2p = Join-Path $tmp "v2pipnle.mp4"
+        Set-Content -Path $v2p -Value "fake"
+        # W/H zeroed and X pushed outside the frame: unclamped this reached ffmpeg as
+        # scale=0:0 via the migration path, which only the v3 lane reader used to guard.
+        $json = '{"Version":2,"CutList":[],"Fades":{},"Captions":[],"Zooms":[],"Unlinked":true,"Tracks":[' +
+            '{"Id":"a","Kind":"video-main","Path":"x.mp4","StreamIdx":0,"Label":"Video","Offset":0,"InStart":0,"InEnd":0,"GainDb":0,"Muted":false},' +
+            '{"Id":"c","Kind":"video-clip","Path":"c.mp4","StreamIdx":0,"Label":"c.mp4","Offset":8,"InStart":0,"InEnd":0,"GainDb":0,"Muted":false,"Pip":{"X":4.0,"Y":0.5,"W":0.0,"H":0.0}}]}'
+        Set-Content -Path (Get-TrimProjectPath -VideoPath $v2p) -Value $json
+        $r = Read-TrimProject -VideoPath $v2p
+        $pip = @(@($r.Lanes) | Where-Object { $_.Kind -eq "video" -and -not $_.IsMain })[0].Clips[0].Pip
+        $pip.W | Should Be 0.05
+        $pip.H | Should Be 0.05
+        $pip.X | Should Be 0.975   # clamped inside the frame for its width
+        $pip.Y | Should Be 0.5
+    }
     It "drops corrupt lane and clip entries and counts them" {
         $tc = Join-Path $tmp "tcnle.mp4"
         Set-Content -Path $tc -Value "fake"

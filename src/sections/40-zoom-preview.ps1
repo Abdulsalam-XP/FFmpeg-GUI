@@ -182,7 +182,11 @@
                 $(if ($isSelected) { "ZoomDiamondSelectedStyle" } else { "ZoomDiamondStyle" }))
             $diamond.Width = $diamondSize
             $diamond.Height = $diamondSize
-            [System.Windows.Controls.Canvas]::SetLeft($diamond, $x - ($diamondSize / 2.0))
+            # A keyframe AT the view edge (t=0 above all) used to centre its rect half
+            # off-canvas and render as a clipped half-diamond. Clamp the layout rect
+            # fully inside the lane, with 3px spare for the rotated corners.
+            $diamondLeft = [math]::Max(3.0, [math]::Min($laneWidth - $diamondSize - 3.0, $x - ($diamondSize / 2.0)))
+            [System.Windows.Controls.Canvas]::SetLeft($diamond, $diamondLeft)
             [System.Windows.Controls.Canvas]::SetTop($diamond, $diamondTop)
 
             $thisId = $sorted[$i].Id

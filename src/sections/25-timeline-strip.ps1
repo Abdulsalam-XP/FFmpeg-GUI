@@ -405,6 +405,8 @@
             $thisBoundary = $boundarySource
             $thisState = $isOn
             $toggle.Add_MouseLeftButtonDown({
+                # Turning a dissolve on or off is an edit like any other: one undo step.
+                Push-TrimUndo
                 $nowOn = -not $thisState
                 Set-TrimFade -SourceSeconds $thisBoundary -Enabled $nowOn
                 # Clicking a pill also aims the length picker at that cut, so the two

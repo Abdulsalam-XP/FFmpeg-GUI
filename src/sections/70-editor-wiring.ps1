@@ -395,7 +395,11 @@
                 $eventSource.Cursor = $null
             }
         }
-        foreach ($grabSurface in @($panelTrimLanes, $canvasTrimCaptions, $canvasTrimZooms, $canvasTrimFades)) {
+        # NOT $canvasTrimFades: a split parks the playhead EXACTLY at the new boundary,
+        # which is exactly where the "+ FADE" pill appears -- with the tunneling grab on
+        # that canvas, the very next click a user makes after splitting (the pill) was
+        # swallowed by a playhead grab. The ruler sits directly above for grabbing there.
+        foreach ($grabSurface in @($panelTrimLanes, $canvasTrimCaptions, $canvasTrimZooms)) {
             if ($null -eq $grabSurface) { continue }
             $grabSurface.Add_PreviewMouseLeftButtonDown($script:TrimPlayheadGrabHandler)
             # The capture from the grab routes the rest of the gesture to this surface, so

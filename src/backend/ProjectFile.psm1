@@ -159,6 +159,12 @@ function Read-TrimProject {
                         if ($null -ne $t.PSObject.Properties["Pip"] -and $null -ne $t.Pip) {
                             $pip = @{}
                             foreach ($p in $t.Pip.PSObject.Properties) { $pip[$p.Name] = [double]$p.Value }
+                            # Same clamp as the v3 lane reader below: a corrupt Pip (zeroed
+                            # or hand-edited) must never reach ffmpeg as scale=0:0.
+                            $pip.W = [math]::Max(0.05, [math]::Min(1.0, [double]$pip.W))
+                            $pip.H = [math]::Max(0.05, [math]::Min(1.0, [double]$pip.H))
+                            $pip.X = [math]::Max([double]$pip.W / 2.0, [math]::Min(1.0 - [double]$pip.W / 2.0, [double]$pip.X))
+                            $pip.Y = [math]::Max([double]$pip.H / 2.0, [math]::Min(1.0 - [double]$pip.H / 2.0, [double]$pip.Y))
                         }
                         $trackList += ,[PSCustomObject]@{
                             Id = $id; Kind = $kind; Path = $path; StreamIdx = $streamIdx; Label = $label

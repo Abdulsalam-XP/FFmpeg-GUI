@@ -26,6 +26,9 @@
 
         function Set-TrimFadeSeconds {
             param([double]$Seconds)
+            # Retiming an EXISTING fade is undoable; merely changing the default for the
+            # next fade is not model state and must not burn a no-op undo step.
+            if ($null -ne $script:TrimActiveFade) { Push-TrimUndo }
             # Always update the default too, so the next fade added matches the last
             # length chosen rather than snapping back to 0.5s.
             $script:TrimFadeSeconds = $Seconds
