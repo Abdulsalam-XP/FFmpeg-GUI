@@ -1,6 +1,6 @@
 What's New in This Update:
 
-Version 3.1.0 - the app now shows you it is working: a loading screen at
+Version 3.0.2 - the app now shows you it is working: a loading screen at
 launch, a step-by-step tracker for YouTube downloads, and a badge when a tool
 needs updating.
 
