@@ -749,15 +749,57 @@
                         </DockPanel>
                     </Border>
 
+                    <!-- Filled in by YouTubeDownload.psm1 once yt-dlp has found the video. The frame
+                         shows first with a hint, so the panel does not jump when the name and the
+                         preview image land. The image is painted onto ThumbYoutubeMP3 from code. -->
+                    <Border x:Name="CardYoutubeMP3Video" Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26"
+                            Padding="18" Visibility="Collapsed">
+                        <StackPanel HorizontalAlignment="Center">
+                            <Grid Width="480" Height="270" HorizontalAlignment="Center">
+                                <Border CornerRadius="10" Background="#0D1526"
+                                        BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"/>
+                                <TextBlock x:Name="TextYoutubeMP3ThumbHint" Text="" HorizontalAlignment="Center"
+                                           VerticalAlignment="Center" FontFamily="{StaticResource FontData}" FontSize="11.5"
+                                           Foreground="{StaticResource BrushTextMuted}"/>
+                                <Border x:Name="ThumbYoutubeMP3" CornerRadius="10"/>
+                                <Border x:Name="BadgeYoutubeMP3Length" Background="#D9000000" CornerRadius="4"
+                                        Padding="7,2" Margin="0,0,10,10" HorizontalAlignment="Right"
+                                        VerticalAlignment="Bottom" Visibility="Collapsed">
+                                    <TextBlock x:Name="TextYoutubeMP3Length" FontFamily="{StaticResource FontData}"
+                                               FontSize="11.5" FontWeight="SemiBold" Foreground="#FFFFFF"/>
+                                </Border>
+                            </Grid>
+                            <TextBlock x:Name="TextYoutubeMP3Title" Text="" FontSize="15.5" FontWeight="Bold"
+                                       Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
+                                       TextAlignment="Center" TextWrapping="Wrap" MaxWidth="640" Margin="0,14,0,0"/>
+                            <TextBlock x:Name="TextYoutubeMP3Meta" Text="" FontSize="11.5"
+                                       Foreground="{StaticResource BrushGoldValue}" FontFamily="{StaticResource FontData}"
+                                       TextAlignment="Center" Margin="0,6,0,0"/>
+                        </StackPanel>
+                    </Border>
+
                     <Border Style="{StaticResource CardBorderStyle}">
                         <StackPanel>
-                            <ProgressBar x:Name="ProgressBarYoutubeMP3" Style="{StaticResource ProgressBarStyle}" Value="0"/>
+                            <!-- The glide is the "working, no percentage yet" highlight; it is slid across
+                                 from code, and the Grid clips it to the bar. -->
+                            <Grid ClipToBounds="True">
+                                <ProgressBar x:Name="ProgressBarYoutubeMP3" Style="{StaticResource ProgressBarStyle}" Value="0"/>
+                                <Border x:Name="GlideYoutubeMP3" Width="160" Height="7" Margin="1" CornerRadius="4"
+                                        HorizontalAlignment="Left" Background="{StaticResource BrushAccentGradient}"
+                                        Visibility="Collapsed" IsHitTestVisible="False"/>
+                            </Grid>
                             <Grid Margin="0,8,0,0">
+                                <!-- Right margin + wrapping: a failure message is a full sentence
+                                     and must not run under the ETA on the same row. -->
                                 <TextBlock x:Name="TextYoutubeMP3Status" Text="Waiting for a link" FontFamily="{StaticResource FontData}"
-                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"
+                                           TextWrapping="Wrap" Margin="0,0,80,0"/>
                                 <TextBlock x:Name="TextYoutubeMP3Eta" Text="--:--:--" FontFamily="{StaticResource FontData}"
                                            FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
                             </Grid>
+                            <!-- The four steps (Find video, Connect, Download, Finish) are built into this
+                                 from code, each with its own timer. -->
+                            <UniformGrid x:Name="StepsYoutubeMP3" Columns="4" Margin="0,16,0,0"/>
                             <Button x:Name="ButtonYoutubeMP3Cancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}"
                                     HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
                         </StackPanel>
@@ -781,6 +823,35 @@
                         </DockPanel>
                     </Border>
 
+                    <!-- Filled in by YouTubeDownload.psm1 once yt-dlp has found the video. The frame
+                         shows first with a hint, so the panel does not jump when the name and the
+                         preview image land. The image is painted onto ThumbYoutubeMP4 from code. -->
+                    <Border x:Name="CardYoutubeMP4Video" Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,20"
+                            Padding="18" Visibility="Collapsed">
+                        <StackPanel HorizontalAlignment="Center">
+                            <Grid Width="480" Height="270" HorizontalAlignment="Center">
+                                <Border CornerRadius="10" Background="#0D1526"
+                                        BorderBrush="{StaticResource BrushBorderGold}" BorderThickness="1"/>
+                                <TextBlock x:Name="TextYoutubeMP4ThumbHint" Text="" HorizontalAlignment="Center"
+                                           VerticalAlignment="Center" FontFamily="{StaticResource FontData}" FontSize="11.5"
+                                           Foreground="{StaticResource BrushTextMuted}"/>
+                                <Border x:Name="ThumbYoutubeMP4" CornerRadius="10"/>
+                                <Border x:Name="BadgeYoutubeMP4Length" Background="#D9000000" CornerRadius="4"
+                                        Padding="7,2" Margin="0,0,10,10" HorizontalAlignment="Right"
+                                        VerticalAlignment="Bottom" Visibility="Collapsed">
+                                    <TextBlock x:Name="TextYoutubeMP4Length" FontFamily="{StaticResource FontData}"
+                                               FontSize="11.5" FontWeight="SemiBold" Foreground="#FFFFFF"/>
+                                </Border>
+                            </Grid>
+                            <TextBlock x:Name="TextYoutubeMP4Title" Text="" FontSize="15.5" FontWeight="Bold"
+                                       Foreground="{StaticResource BrushTextPrimary}" FontFamily="{StaticResource FontChrome}"
+                                       TextAlignment="Center" TextWrapping="Wrap" MaxWidth="640" Margin="0,14,0,0"/>
+                            <TextBlock x:Name="TextYoutubeMP4Meta" Text="" FontSize="11.5"
+                                       Foreground="{StaticResource BrushGoldValue}" FontFamily="{StaticResource FontData}"
+                                       TextAlignment="Center" Margin="0,6,0,0"/>
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock Text="QUALITY" Style="{StaticResource SectionLabelStyle}"/>
                     <Border Style="{StaticResource OptionCardBorderStyle}" Margin="0,0,0,26">
                         <DockPanel LastChildFill="True">
@@ -788,20 +859,32 @@
                                     Style="{StaticResource PrimaryButtonStyle}" Margin="14,0,0,0" IsEnabled="False"/>
                             <!-- Populated by Find qualities; only the resolutions the video
                                  actually offers are listed. -->
-                            <ComboBox x:Name="ComboYoutubeMP4Quality" Width="240" HorizontalAlignment="Left"
+                            <ComboBox x:Name="ComboYoutubeMP4Quality" Width="320" HorizontalAlignment="Left"
                                       IsEnabled="False"/>
                         </DockPanel>
                     </Border>
 
                     <Border Style="{StaticResource CardBorderStyle}">
                         <StackPanel>
-                            <ProgressBar x:Name="ProgressBarYoutubeMP4" Style="{StaticResource ProgressBarStyle}" Value="0"/>
+                            <!-- The glide is the "working, no percentage yet" highlight; it is slid across
+                                 from code, and the Grid clips it to the bar. -->
+                            <Grid ClipToBounds="True">
+                                <ProgressBar x:Name="ProgressBarYoutubeMP4" Style="{StaticResource ProgressBarStyle}" Value="0"/>
+                                <Border x:Name="GlideYoutubeMP4" Width="160" Height="7" Margin="1" CornerRadius="4"
+                                        HorizontalAlignment="Left" Background="{StaticResource BrushAccentGradient}"
+                                        Visibility="Collapsed" IsHitTestVisible="False"/>
+                            </Grid>
                             <Grid Margin="0,8,0,0">
+                                <!-- Same right margin + wrapping as the MP3 status above. -->
                                 <TextBlock x:Name="TextYoutubeMP4Status" Text="Waiting for a link" FontFamily="{StaticResource FontData}"
-                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"/>
+                                           FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Left"
+                                           TextWrapping="Wrap" Margin="0,0,80,0"/>
                                 <TextBlock x:Name="TextYoutubeMP4Eta" Text="--:--:--" FontFamily="{StaticResource FontData}"
                                            FontSize="11.5" Foreground="{StaticResource BrushTextMuted}" HorizontalAlignment="Right"/>
                             </Grid>
+                            <!-- The four steps (Find video, Connect, Download, Finish) are built into this
+                                 from code, each with its own timer. -->
+                            <UniformGrid x:Name="StepsYoutubeMP4" Columns="4" Margin="0,16,0,0"/>
                             <Button x:Name="ButtonYoutubeMP4Cancel" Content="Cancel" Style="{StaticResource PresetButtonStyle}"
                                     HorizontalAlignment="Left" Width="100" Margin="0,16,0,0" IsEnabled="False"/>
                         </StackPanel>
@@ -858,9 +941,9 @@
                              three independent row Grids, whatever length version string a tool reports. -->
                         <StackPanel Grid.IsSharedSizeScope="True">
                             <TextBlock Text="ffmpeg and yt-dlp do the actual work. Keeping yt-dlp current is what stops YouTube links from failing."
-                                       FontSize="12" Foreground="{StaticResource BrushTextBody}"
+                                       FontSize="15" FontWeight="Bold" Foreground="{StaticResource BrushGoldValue}"
                                        FontFamily="{StaticResource FontChrome}" TextWrapping="Wrap"
-                                       Margin="0,0,0,18" MaxWidth="560" HorizontalAlignment="Left"/>
+                                       Margin="0,0,0,20" MaxWidth="820" HorizontalAlignment="Left"/>
 
                             <Grid Margin="0,0,0,12">
                                 <Grid.ColumnDefinitions>
@@ -880,13 +963,19 @@
                                 <Button Grid.Column="2" x:Name="ButtonUpdateFfmpeg" Content="Checking&#8230;"
                                         Style="{StaticResource PrimaryButtonStyle}"
                                         MinWidth="164" IsEnabled="False" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="3" x:Name="TextToolPathFfmpeg" Text="&#8212;"
-                                           VerticalAlignment="Center" Margin="22,0,0,0"
-                                           HorizontalAlignment="Left" MaxWidth="430"
-                                           FontFamily="{StaticResource FontData}" FontSize="10.5"
-                                           Foreground="{StaticResource BrushTextMuted}"
-                                           TextTrimming="CharacterEllipsis"
-                                           ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                <!-- The badge host keeps its width but stays empty and hidden until this tool has an update
+                                     waiting; 85-tools-card.ps1 puts the glowing "!" in it. -->
+                                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Border x:Name="BadgeToolFfmpeg" Margin="14,0,0,0" VerticalAlignment="Center"
+                                            Width="20" Height="20" Visibility="Hidden" ToolTip="Update available"/>
+                                    <TextBlock x:Name="TextToolPathFfmpeg" Text="&#8212;"
+                                               VerticalAlignment="Center" Margin="22,0,0,0"
+                                               HorizontalAlignment="Left" MaxWidth="430"
+                                               FontFamily="{StaticResource FontData}" FontSize="10.5"
+                                               Foreground="{StaticResource BrushTextMuted}"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                </StackPanel>
                             </Grid>
 
                             <Grid Margin="0,0,0,12">
@@ -911,7 +1000,7 @@
                                            FontFamily="{StaticResource FontChrome}" FontSize="11" FontStyle="Italic"
                                            Foreground="{StaticResource BrushTextMuted}"/>
                                 <TextBlock Grid.Column="3" x:Name="TextToolPathFfprobe" Text="&#8212;"
-                                           VerticalAlignment="Center" Margin="22,0,0,0"
+                                           VerticalAlignment="Center" Margin="56,0,0,0"
                                            HorizontalAlignment="Left" MaxWidth="430"
                                            FontFamily="{StaticResource FontData}" FontSize="10.5"
                                            Foreground="{StaticResource BrushTextMuted}"
@@ -937,13 +1026,19 @@
                                 <Button Grid.Column="2" x:Name="ButtonUpdateYtDlp" Content="Checking&#8230;"
                                         Style="{StaticResource PrimaryButtonStyle}"
                                         MinWidth="164" IsEnabled="False" VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="3" x:Name="TextToolPathYtDlp" Text="&#8212;"
-                                           VerticalAlignment="Center" Margin="22,0,0,0"
-                                           HorizontalAlignment="Left" MaxWidth="430"
-                                           FontFamily="{StaticResource FontData}" FontSize="10.5"
-                                           Foreground="{StaticResource BrushTextMuted}"
-                                           TextTrimming="CharacterEllipsis"
-                                           ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                <!-- The badge host keeps its width but stays empty and hidden until this tool has an update
+                                     waiting; 85-tools-card.ps1 puts the glowing "!" in it. -->
+                                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Border x:Name="BadgeToolYtDlp" Margin="14,0,0,0" VerticalAlignment="Center"
+                                            Width="20" Height="20" Visibility="Hidden" ToolTip="Update available"/>
+                                    <TextBlock x:Name="TextToolPathYtDlp" Text="&#8212;"
+                                               VerticalAlignment="Center" Margin="22,0,0,0"
+                                               HorizontalAlignment="Left" MaxWidth="430"
+                                               FontFamily="{StaticResource FontData}" FontSize="10.5"
+                                               Foreground="{StaticResource BrushTextMuted}"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"/>
+                                </StackPanel>
                             </Grid>
 
                             <ProgressBar x:Name="ProgressBarTools" Style="{StaticResource ProgressBarStyle}"

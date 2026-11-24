@@ -230,6 +230,9 @@
             Show-PanelMessage -Block $status -Text "Enter a full video URL starting with http." -IsError
             return
         }
+        # Resets the block's color first: the run writes plain text into it, and a red
+        # left over from a failed attempt would otherwise tint the whole next download.
+        Show-PanelMessage -Block $status -Text "Finding the video..."
         Register-Job (Save-YouTubeMP3Async -Context $ctx -Url $url)
     })
 
@@ -238,6 +241,34 @@
     $buttonMp4Start = $panelYtMp4.FindName("ButtonYoutubeMP4Start")
     $statusMp4 = $panelYtMp4.FindName("TextYoutubeMP4Status")
 
+    # Fills the quality list from a finished lookup. A function, not inline in the
+    # callback: the write to $script:YoutubeMP4Resolutions has to land in this script's
+    # scope whoever invokes it, and the lookup invokes its callback from a module.
+    function Set-YoutubeMp4Options {
+        param($Options, [string]$Message, [bool]$IsError)
+
+        # Where-Object drops the $null that an empty result arrives as; @($null) would
+        # otherwise count as one quality.
+        $script:YoutubeMP4Resolutions = @($Options | Where-Object { $_ })
+
+        $comboQuality.Items.Clear()
+        foreach ($res in $script:YoutubeMP4Resolutions) {
+            $comboQuality.Items.Add($res.Label) | Out-Null
+        }
+
+        $found = $comboQuality.Items.Count -gt 0
+        if ($found) { $comboQuality.SelectedIndex = 0 }
+        $comboQuality.IsEnabled = $found
+        $buttonMp4Start.IsEnabled = $found
+        Show-PanelMessage -Block $statusMp4 -Text $Message -IsError:$IsError
+    }
+
+    # Deliberately not a closure: see Set-YoutubeMp4Options.
+    $onMp4Lookup = {
+        param($options, $message, $isError)
+        Set-YoutubeMp4Options -Options $options -Message $message -IsError $isError
+    }
+
     $panelYtMp4.FindName("ButtonYoutubeMP4Fetch").Add_Click({
         $url = $panelYtMp4.FindName("TextYoutubeMP4Url").Text.Trim()
         if ($url -notmatch '^https?://') {
@@ -245,38 +276,19 @@
             return
         }
 
-        Show-PanelMessage -Block $statusMp4 -Text "Looking up available qualities..."
-        # Blocks the UI thread briefly. Acceptable for a short metadata call, and far
-        # simpler than marshalling a background runspace for a one-shot lookup.
-        $ctx.Window.Cursor = [System.Windows.Input.Cursors]::Wait
-        try {
-            $script:YoutubeMP4Resolutions = @(Get-YouTubeResolutions -Url $url)
-        } catch {
-            $script:YoutubeMP4Resolutions = @()
-        } finally {
-            $ctx.Window.Cursor = $null
-        }
-
-        $comboQuality.Items.Clear()
-        foreach ($res in $script:YoutubeMP4Resolutions) {
-            $comboQuality.Items.Add("$($res.name) ($($res.height)p)") | Out-Null
-        }
-
-        $found = $comboQuality.Items.Count -gt 0
-        if ($found) { $comboQuality.SelectedIndex = 0 }
-        $comboQuality.IsEnabled = $found
-        $buttonMp4Start.IsEnabled = $found
-        if ($found) {
-            Show-PanelMessage -Block $statusMp4 -Text "$($comboQuality.Items.Count) qualities available"
-        } else {
-            Show-PanelMessage -Block $statusMp4 -Text "No downloadable formats found for that link." -IsError
-        }
+        # The lookup runs in the background now (it used to freeze the whole window
+        # until YouTube answered), so the old list is cleared up front: a Download
+        # pressed mid-lookup must not start the previous video's quality.
+        Show-PanelMessage -Block $statusMp4 -Text "Looking up the video..."
+        Set-YoutubeMp4Options -Options @() -Message "Looking up the video..." -IsError $false
+        Register-Job (Start-YouTubeLookup -Context $ctx -Url $url -OnDone $onMp4Lookup)
     })
 
     $buttonMp4Start.Add_Click({
         $url = $panelYtMp4.FindName("TextYoutubeMP4Url").Text.Trim()
         $index = $comboQuality.SelectedIndex
         if ($index -lt 0 -or $index -ge $script:YoutubeMP4Resolutions.Count) { return }
+        Show-PanelMessage -Block $statusMp4 -Text "Connecting to YouTube..."
         Register-Job (Save-YouTubeMP4Async -Context $ctx -Url $url -Resolution $script:YoutubeMP4Resolutions[$index])
     })
 

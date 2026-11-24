@@ -273,7 +273,13 @@ function Start-TrackedProcess {
         [Parameter(Mandatory = $true)][string]$Arguments,
         [ValidateSet("Output", "Error")][string]$ReadStream = "Error",
         [Parameter(Mandatory = $true)][scriptblock]$OnLine,
-        [Parameter(Mandatory = $true)][scriptblock]$OnExit
+        [Parameter(Mandatory = $true)][scriptblock]$OnExit,
+        # Optional tap on the stream $ReadStream is NOT reading. yt-dlp is why: its
+        # progress rides stdout but the ERROR: line explaining a failure rides stderr,
+        # and with only one stream redirected that explanation evaporated. When given,
+        # the other stream is redirected too and drained by the same tick (an undrained
+        # redirected pipe fills up and deadlocks the child once it has written ~4KB).
+        [scriptblock]$OnOtherLine
     )
 
     $pInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -284,6 +290,11 @@ function Start-TrackedProcess {
     $pInfo.CreateNoWindow = $true
     if ($ReadStream -eq "Error") { $pInfo.RedirectStandardError = $true }
     else { $pInfo.RedirectStandardOutput = $true }
+    if ($OnOtherLine) {
+        # Redirect the other stream as well; harmless when the child writes nothing there.
+        if ($ReadStream -eq "Error") { $pInfo.RedirectStandardOutput = $true }
+        else { $pInfo.RedirectStandardError = $true }
+    }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $pInfo
@@ -295,6 +306,19 @@ function Start-TrackedProcess {
     $encoding = $reader.CurrentEncoding
     $readBuffer = New-Object byte[] 4096
     $peekBuffer = New-Object byte[] 1
+
+    # Second-pipe state mirrors the first; all $null when no tap was requested, and the
+    # tick below gates every channel-2 touch on $stream2. Declared unconditionally so
+    # the .GetNewClosure() blocks below always have the names to capture.
+    $stream2 = $null
+    $pipeHandle2 = $null
+    $encoding2 = $null
+    if ($OnOtherLine) {
+        $reader2 = if ($ReadStream -eq "Error") { $process.StandardOutput } else { $process.StandardError }
+        $stream2 = $reader2.BaseStream
+        $pipeHandle2 = $stream2.SafeFileHandle
+        $encoding2 = $reader2.CurrentEncoding
+    }
 
     # NOTE on the polling design (deviation from the brief's literal add_ErrorDataReceived /
     # add_OutputDataReceived / add_Exited + Register-ObjectEvent sample):
@@ -340,6 +364,7 @@ function Start-TrackedProcess {
         [System.Windows.Threading.DispatcherPriority]::Normal, $Context.Window.Dispatcher)
     $timer.Interval = [TimeSpan]::FromMilliseconds(40)
     $lineBuffer = New-Object System.Text.StringBuilder
+    $lineBuffer2 = New-Object System.Text.StringBuilder
     $exitHandled = $false
 
     $appendChunk = {
@@ -353,6 +378,21 @@ function Start-TrackedProcess {
                 }
             } else {
                 [void]$lineBuffer.Append($ch)
+            }
+        }
+    }.GetNewClosure()
+
+    $appendChunk2 = {
+        param([byte[]]$Bytes, [int]$Count)
+        $text = $encoding2.GetString($Bytes, 0, $Count)
+        foreach ($ch in $text.ToCharArray()) {
+            if ($ch -eq "`r" -or $ch -eq "`n") {
+                if ($lineBuffer2.Length -gt 0) {
+                    & $OnOtherLine $lineBuffer2.ToString()
+                    [void]$lineBuffer2.Clear()
+                }
+            } else {
+                [void]$lineBuffer2.Append($ch)
             }
         }
     }.GetNewClosure()
@@ -371,6 +411,17 @@ function Start-TrackedProcess {
                 & $appendChunk $readBuffer $actuallyRead
             }
 
+            if ($stream2) {
+                while (-not $pipeHandle2.IsClosed -and
+                       [FFmpegGui.NamedPipePeek]::PeekNamedPipe($pipeHandle2, $peekBuffer, 0, [ref]$bytesRead, [ref]$bytesAvail, [ref]$bytesLeftThisMessage) -and
+                       $bytesAvail -gt 0) {
+                    $toRead = [Math]::Min([int]$bytesAvail, $readBuffer.Length)
+                    $actuallyRead = $stream2.Read($readBuffer, 0, $toRead)
+                    if ($actuallyRead -le 0) { break }
+                    & $appendChunk2 $readBuffer $actuallyRead
+                }
+            }
+
             if (-not $exitHandled -and $process.HasExited) {
                 $exitHandled = $true
                 # HasExited becoming true doesn't guarantee every byte the child wrote
@@ -385,6 +436,17 @@ function Start-TrackedProcess {
                 if ($lineBuffer.Length -gt 0) {
                     & $OnLine $lineBuffer.ToString()
                     [void]$lineBuffer.Clear()
+                }
+                if ($stream2) {
+                    while ($true) {
+                        $actuallyRead = $stream2.Read($readBuffer, 0, $readBuffer.Length)
+                        if ($actuallyRead -le 0) { break }
+                        & $appendChunk2 $readBuffer $actuallyRead
+                    }
+                    if ($lineBuffer2.Length -gt 0) {
+                        & $OnOtherLine $lineBuffer2.ToString()
+                        [void]$lineBuffer2.Clear()
+                    }
                 }
                 $timer.Stop()
                 & $OnExit $process.ExitCode
