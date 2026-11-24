@@ -1,32 +1,41 @@
 What's New in This Update:
 
-Version 3.0.1 - a polish pass over the new editor: undo covers more, exports of
-deep zooms are twice as fast, and "done" finally looks like done.
+Version 3.1.0 - the app now shows you it is working: a loading screen at
+launch, a step-by-step tracker for YouTube downloads, and a badge when a tool
+needs updating.
+
+New:
+
+- YouTube downloads show the video before you commit to it: a large preview
+  image, the title, the channel and the length appear as soon as the link is
+  found.
+- Every quality option lists its download size (for example
+  "Full HD (1080p) - ~128 MB"), so you know what you are getting before you
+  press Download. The MP3 panel shows the audio size on the video card.
+- A step tracker under the progress bar: Find video, Connect, Download,
+  Finish. Each step has its own timer, so a slow start no longer looks like
+  a stuck one.
+- A glowing "!" appears next to Settings when ffmpeg or yt-dlp has an update
+  waiting. It clears when you open Settings; a matching "!" stays beside the
+  tool itself until you update it.
+- A loading screen at launch: the app icon with a gold ring spinning around
+  it, from the moment you start the launcher until the window is ready.
+  NOTE: this one lives in Launcher.exe, which the in-app update does not
+  replace. To get it, download the new zip from the GitHub releases page.
 
 Improved:
 
-- "Done" messages are unmissable now: when a compression, merge, download or
-  save finishes, the confirmation is big, bold, bright green and glowing -
-  no more squinting to check whether it worked. Saving with Ctrl+S gets the
-  same treatment (it used to be plain grey text).
-- Exporting a video with a deep zoom glide is about 2x faster. The encoder
-  now only processes the part of the frame your zoom can actually show,
-  instead of blowing the whole frame up first.
-- Undo now covers fades: turning a dissolve on or off, or changing its
-  length, is a proper undo step, and Ctrl+Z restores your fades exactly.
-- The main video track's header wears a gold edge, so V1 reads as "the"
-  track at a glance next to overlay tracks.
+- "Find qualities" no longer freezes the window while it talks to YouTube.
+  It runs in the background, and Cancel stops it.
+- A failed download now says why (video unavailable, a tool that needs
+  updating, and so on) instead of a bare "exit 1". Hover the message for the
+  full detail.
+- The note above the tool list in Settings is bigger, bold and in the accent
+  colour, so it is harder to miss.
 
 Fixed:
 
-- Right after splitting a clip, the "+ FADE" button at the new cut was
-  unclickable (the playhead sitting exactly there swallowed the click).
-- A caption timed to the incoming side of a crossfade did not appear during
-  the dissolve - it either showed up late or not at all. It now fades in
-  with its footage, mid-dissolve included.
-- A zoom keyframe at the very start of the timeline drew as a clipped
-  half-diamond.
-- The zoom badge could read "2,5x" instead of "2.5x" on systems using a
-  comma decimal.
-- A hand-edited or corrupted project file could ask the export for a
-  zero-size picture-in-picture; it is now clamped to something sane on load.
+- The Full HD, HD, SD and Low qualities could fail with "Requested format is
+  not available" on videos where YouTube no longer offers a single-file
+  version. Every quality now downloads video and audio separately and joins
+  them, the way 2K and above already did.
